@@ -65,11 +65,10 @@ body {
     radial-gradient(900px 600px at 0% 110%, rgba(70, 20, 80, 0.28), transparent 55%),
     /* semi-opaque base: desktop bleeds through in overlay mode, still readable */
     linear-gradient(180deg, rgba(5, 7, 14, 0.86), rgba(4, 6, 12, 0.9));
-  -webkit-app-region: drag; /* frameless overlay + macOS titlebar: whole shell drags */
+  /* No -webkit-app-region here: cards float and drag independently; dragging a
+     card must NOT move the OS window. The overlay is fullscreen, so the window
+     never needs to be moved. */
 }
-
-/* interactive children opt back out of the drag region */
-.app input, .app button, .app textarea, .app a, .app .no-drag { -webkit-app-region: no-drag; }
 
 .app::before {
   content: '';
@@ -100,18 +99,55 @@ body {
   animation: scan 7s linear infinite;
 }
 
-/* ── bento grid ────────────────────────────────────────────────────── */
-.grid {
-  position: relative;
-  flex: 1;
-  min-height: 0;
-  display: grid;
-  grid-template-columns: minmax(300px, 360px) 1fr minmax(300px, 360px);
-  grid-template-rows: 1fr;
-  gap: 14px;
-}
+/* ── widget canvas (floating cards live here) ──────────────────────── */
+/* Full-window layer behind the fixed header; cards are absolutely positioned
+   in true window coordinates (0,0 = window top-left). */
+.canvas { position: absolute; inset: 0; z-index: 0; overflow: hidden; }
 
-.col { display: flex; flex-direction: column; gap: 14px; min-height: 0; }
+/* Fixed header chrome paints above the canvas. */
+.topbar, .alerts, .alfred-commandbar { position: relative; z-index: 2; }
+
+/* ── floating card ─────────────────────────────────────────────────── */
+.dcard {
+  position: absolute;
+  padding: 0; /* header/body manage their own padding */
+}
+.dcard-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 12px 14px 10px;
+  cursor: move;
+  flex-shrink: 0;
+  touch-action: none; /* pointer drag, not scroll/gesture */
+  user-select: none;
+}
+.dcard-head-right { display: flex; align-items: center; gap: 8px; }
+.dcard-hide {
+  background: transparent;
+  border: 1px solid var(--panel-border);
+  color: var(--dim);
+  border-radius: 5px;
+  font: inherit;
+  font-size: 11px;
+  line-height: 1;
+  padding: 2px 6px;
+  cursor: pointer;
+}
+.dcard-hide:hover { color: var(--text); border-color: rgba(64, 224, 255, 0.4); }
+.dcard-body { flex: 1; min-height: 0; overflow: auto; padding: 0 14px 14px; display: flex; flex-direction: column; }
+.dcard-resize {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  width: 16px;
+  height: 16px;
+  cursor: nwse-resize;
+  touch-action: none;
+  background: linear-gradient(135deg, transparent 50%, rgba(64, 224, 255, 0.4) 50%);
+  border-bottom-right-radius: 14px;
+}
 
 /* ── glass panel ───────────────────────────────────────────────────── */
 .panel {
@@ -255,8 +291,16 @@ body {
   border-radius: 7px;
   border: 1px solid var(--panel-border);
   opacity: 0.55;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  font: inherit;
+  cursor: default;
 }
 .brain.on { opacity: 1; }
+.brain.on:not(.active) { cursor: pointer; }
+.brain.on:not(.active):hover { border-color: var(--cyan); }
+.brain:disabled { cursor: default; }
 .brain.active { border-color: var(--cyan); box-shadow: 0 0 10px rgba(53, 229, 255, 0.25); }
 .brain-dot {
   grid-area: dot;
@@ -349,7 +393,7 @@ body {
 .overlay {
   position: absolute;
   inset: 0;
-  z-index: 50;
+  z-index: 9999; /* always above every floating card, whatever its z */
   display: grid;
   place-items: center;
   padding: 40px;

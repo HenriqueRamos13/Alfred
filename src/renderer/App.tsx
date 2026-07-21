@@ -9,18 +9,21 @@
  *   ProjectList    { projects: ProjectRecord[] }              (also AI-renderable)
  *   ApprovalPrompt { request: ApprovalRequest, onResolve(id, decision) }
  */
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { alfred } from './lib/ipc.ts';
 import { Surface } from './surface.tsx';
 import { CommandBar } from './components/CommandBar.tsx';
 import { ChatLog } from './components/ChatLog.tsx';
 import { ProjectList } from './components/ProjectList.tsx';
 import { ApprovalPrompt } from './components/ApprovalPrompt.tsx';
+import { DraggableCard } from './components/DraggableCard.tsx';
 import type {
   AgentStatus,
   ApprovalDecision,
   ApprovalRequest,
   BudgetState,
+  CardLayout,
+  CardPatch,
   ChatMessage,
   CostSnapshot,
   ProjectRecord,
@@ -73,8 +76,26 @@ export default function App() {
   const [killed, setKilled] = useState(false);
   const [alerts, setAlerts] = useState<{ id: number; msg: string }[]>([]);
   const [brains, setBrains] = useState<BrainInfo[]>([]);
+  const [activeBrain, setActiveBrain] = useState<string | null>(null);
+  const [cards, setCards] = useState<CardLayout[]>([]);
 
   const logRef = useRef<HTMLDivElement>(null);
+  const cardsRef = useRef<CardLayout[]>([]);
+  cardsRef.current = cards;
+
+  const patchCard = (id: string, patch: CardPatch) => {
+    // Optimistic: reflect immediately; the 'layout' event will confirm.
+    setCards((prev) => prev.map((c) => (c.id === id ? { ...c, ...patch } : c)));
+    alfred.updateCard(id, patch).catch(() => {});
+  };
+
+  const focusCard = (id: string) => {
+    const list = cardsRef.current;
+    const maxZ = list.reduce((m, c) => Math.max(m, c.z), 0);
+    const card = list.find((c) => c.id === id);
+    if (!card || card.z === maxZ) return;
+    patchCard(id, { z: maxZ + 1 });
+  };
 
   const pushAlert = (msg: string) =>
     setAlerts((prev) => {
@@ -84,6 +105,12 @@ export default function App() {
 
   const refreshBrains = () => {
     alfred.listBrains().then(setBrains).catch(() => {});
+    alfred.getActiveBrain().then(setActiveBrain).catch(() => {});
+  };
+
+  const selectBrain = (b: BrainInfo) => {
+    if (!b.enabled || b.id === activeBrain) return;
+    alfred.setActiveBrain(b.id).then(setActiveBrain).catch(() => {});
   };
 
   const pushLog = (row: Omit<LogRow, 'id' | 'time'>) =>
@@ -99,6 +126,7 @@ export default function App() {
   useEffect(() => {
     refreshProjects();
     refreshBrains();
+    alfred.getLayout().then(setCards).catch(() => {});
     const off = alfred.onStream((e: StreamEvent) => {
       switch (e.kind) {
         case 'chat.delta':
@@ -132,6 +160,9 @@ export default function App() {
           break;
         case 'ui.render':
           setTree(e.payload.tree);
+          break;
+        case 'layout':
+          setCards(e.cards);
           break;
         case 'agent.status':
           setStatus(e.status);
@@ -190,6 +221,148 @@ export default function App() {
     setApproval((a) => (a && a.id === id ? null : a));
   };
 
+  /** Right-of-header meta + scrollable body for each card, keyed by id. */
+  const cardParts = (id: string): { meta?: ReactNode; body: ReactNode } => {
+    switch (id) {
+      case 'conversation':
+        return { body: <ChatLog messages={messages} streaming={streaming} /> };
+      case 'surface':
+        return {
+          meta: <span className="panel-meta">{status.toUpperCase()}</span>,
+          body: (
+            <div className="surface-body">
+              <Surface tree={tree} />
+            </div>
+          ),
+        };
+      case 'brains':
+        return {
+          meta: (
+            <span className="panel-meta">
+              {brains.filter((b) => b.enabled).length}/{brains.length} CONNECTED
+            </span>
+          ),
+          body: brains.length ? (
+            <div className="brains">
+              {brains.map((b) => {
+                const active = activeBrain === b.id;
+                return (
+                  <button
+                    type="button"
+                    className={`brain no-drag${b.enabled ? ' on' : ''}${active ? ' active' : ''}`}
+                    key={b.id}
+                    disabled={!b.enabled}
+                    title={b.enabled ? (active ? 'Active brain' : 'Set as main brain') : 'Not connected'}
+                    onClick={() => selectBrain(b)}
+                  >
+                    <span className={`brain-dot${b.enabled ? ' on' : ''}`} />
+                    <span className="brain-label">{b.label}</span>
+                    <span className="brain-model">{b.model}</span>
+                    <span className="brain-state">
+                      {active && b.enabled ? 'ACTIVE' : b.enabled ? 'CONNECTED' : 'offline'}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          ) : (
+            <div className="empty">NO BRAINS</div>
+          ),
+        };
+      case 'cost':
+        return {
+          meta: <span className="panel-meta">{cost ? cost.activeBrain.toUpperCase() : '—'}</span>,
+          body: cost?.external ? (
+            <div className="cost">
+              <div className="cost-active">
+                <span className="cost-active-label">ACTIVE MODEL</span>
+                <span className="cost-active-model">{cost.activeModel}</span>
+              </div>
+              <div className="cost-note" style={{ marginTop: 8 }}>
+                externo / gerido pelo Claude Code — sem estimativa US$ (subscrição / faturação à parte)
+              </div>
+            </div>
+          ) : cost ? (
+            <div className="cost">
+              <div className="cost-active">
+                <span className="cost-active-label">ACTIVE MODEL</span>
+                <span className="cost-active-model">{cost.activeModel}</span>
+              </div>
+              <div className="cost-tiles">
+                <div className={`cost-tile${cost.overUsdBudget ? ' warn' : ''}`}>
+                  <span className="cost-tile-label">TODAY ~US$</span>
+                  <span className="cost-tile-value">{usd(cost.today.usd)}</span>
+                  <span className="cost-tile-sub">
+                    {cost.today.tokens.toLocaleString()} / {cost.dailyTokenCap.toLocaleString()} tok
+                  </span>
+                </div>
+                <div className="cost-tile">
+                  <span className="cost-tile-label">SESSION ~US$</span>
+                  <span className="cost-tile-value">{usd(cost.session.usd)}</span>
+                  <span className="cost-tile-sub">{cost.session.tokens.toLocaleString()} tok</span>
+                </div>
+              </div>
+              {cost.overUsdBudget && (
+                <div className="cost-warn">
+                  ⚠ over daily US$ budget ({usd(cost.dailyUsdBudget ?? 0)}) — soft warning, not blocking
+                </div>
+              )}
+              <table className="cost-table">
+                <thead>
+                  <tr>
+                    <th>MODEL</th>
+                    <th>TOK</th>
+                    <th>~US$</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {cost.byModel.map((m) => (
+                    <tr key={m.model}>
+                      <td>
+                        {m.model}
+                        {m.unknownPrice && ' *'}
+                      </td>
+                      <td>{m.tokens.toLocaleString()}</td>
+                      <td>{usd(m.usd)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              {cost.byModel.some((m) => m.unknownPrice) && (
+                <div className="cost-note">* no price on file — US$ estimated as 0</div>
+              )}
+            </div>
+          ) : (
+            <div className="empty">NO SPEND YET</div>
+          ),
+        };
+      case 'projects':
+        return {
+          meta: <span className="panel-meta">{projects.length}</span>,
+          body: <ProjectList projects={projects} />,
+        };
+      case 'activity':
+        return {
+          meta: <span className="panel-meta">live tail —f</span>,
+          body: (
+            <div className="log" ref={logRef}>
+              {logs.map((l) => (
+                <div className="log-row" key={l.id}>
+                  <span className="log-time">{l.time}</span>
+                  <span className={`log-tag tone-${l.tone}`}>{l.tag}</span>
+                  <span className="log-msg">{l.msg}</span>
+                </div>
+              ))}
+            </div>
+          ),
+        };
+      default:
+        return { body: null };
+    }
+  };
+
+  const hidden = cards.filter((c) => !c.visible);
+
   return (
     <div className="app">
       <div className="scanline">
@@ -198,6 +371,17 @@ export default function App() {
 
       <div className="topbar">
         <span className="topbar-title">◆ ALFRED</span>
+        {hidden.map((c) => (
+          <button
+            key={c.id}
+            type="button"
+            className="topbar-btn no-drag"
+            title={`Show ${c.title}`}
+            onClick={() => patchCard(c.id, { visible: true })}
+          >
+            + {c.title}
+          </button>
+        ))}
         <span className="topbar-spacer" />
         <button type="button" className="topbar-btn no-drag" onClick={() => alfred.hideWindow()} title="Hide (⌘⇧A to toggle)">
           HIDE
@@ -236,157 +420,24 @@ export default function App() {
         </div>
       )}
 
-      <div className="grid">
-        <div className="col">
-          <section className="panel grow">
-            <div className="panel-head">
-              <div className="panel-title">
-                <span className="dot" />
-                CONVERSATION
-              </div>
-            </div>
-            <ChatLog messages={messages} streaming={streaming} />
-          </section>
-        </div>
-
-        <div className="col">
-          <section className="panel grow">
-            <div className="panel-head">
-              <div className="panel-title">
-                <span className="dot live" style={{ background: 'var(--violet)', boxShadow: '0 0 8px var(--violet)' }} />
-                GENERATIVE SURFACE
-              </div>
-              <span className="panel-meta">{status.toUpperCase()}</span>
-            </div>
-            <div className="surface-body">
-              <Surface tree={tree} />
-            </div>
-          </section>
-        </div>
-
-        <div className="col">
-          <section className="panel">
-            <div className="panel-head">
-              <div className="panel-title">
-                <span className="dot live" style={{ background: 'var(--cyan)', boxShadow: '0 0 8px var(--cyan)' }} />
-                BRAINS
-              </div>
-              <span className="panel-meta">{brains.filter((b) => b.enabled).length}/{brains.length} CONNECTED</span>
-            </div>
-            {brains.length ? (
-              <div className="brains">
-                {brains.map((b) => {
-                  const active = (cost?.activeBrain ?? brains.find((x) => x.enabled && x.id !== 'claude-code')?.id) === b.id;
-                  return (
-                    <div className={`brain${b.enabled ? ' on' : ''}${active ? ' active' : ''}`} key={b.id}>
-                      <span className={`brain-dot${b.enabled ? ' on' : ''}`} />
-                      <span className="brain-label">{b.label}</span>
-                      <span className="brain-model">{b.model}</span>
-                      <span className="brain-state">
-                        {active && b.enabled ? 'ACTIVE' : b.enabled ? 'CONNECTED' : 'offline'}
-                      </span>
-                    </div>
-                  );
-                })}
-              </div>
-            ) : (
-              <div className="empty">NO BRAINS</div>
-            )}
-          </section>
-
-          <section className="panel">
-            <div className="panel-head">
-              <div className="panel-title">
-                <span className="dot live" style={{ background: 'var(--lime)', boxShadow: '0 0 8px var(--lime)' }} />
-                COST · ESTIMATED US$
-              </div>
-              <span className="panel-meta">{cost ? cost.activeBrain.toUpperCase() : '—'}</span>
-            </div>
-            {cost ? (
-              <div className="cost">
-                <div className="cost-active">
-                  <span className="cost-active-label">ACTIVE MODEL</span>
-                  <span className="cost-active-model">{cost.activeModel}</span>
-                </div>
-                <div className="cost-tiles">
-                  <div className={`cost-tile${cost.overUsdBudget ? ' warn' : ''}`}>
-                    <span className="cost-tile-label">TODAY ~US$</span>
-                    <span className="cost-tile-value">{usd(cost.today.usd)}</span>
-                    <span className="cost-tile-sub">
-                      {cost.today.tokens.toLocaleString()} / {cost.dailyTokenCap.toLocaleString()} tok
-                    </span>
-                  </div>
-                  <div className="cost-tile">
-                    <span className="cost-tile-label">SESSION ~US$</span>
-                    <span className="cost-tile-value">{usd(cost.session.usd)}</span>
-                    <span className="cost-tile-sub">{cost.session.tokens.toLocaleString()} tok</span>
-                  </div>
-                </div>
-                {cost.overUsdBudget && (
-                  <div className="cost-warn">
-                    ⚠ over daily US$ budget ({usd(cost.dailyUsdBudget ?? 0)}) — soft warning, not blocking
-                  </div>
-                )}
-                <table className="cost-table">
-                  <thead>
-                    <tr>
-                      <th>MODEL</th>
-                      <th>TOK</th>
-                      <th>~US$</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {cost.byModel.map((m) => (
-                      <tr key={m.model}>
-                        <td>
-                          {m.model}
-                          {m.unknownPrice && ' *'}
-                        </td>
-                        <td>{m.tokens.toLocaleString()}</td>
-                        <td>{usd(m.usd)}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-                {cost.byModel.some((m) => m.unknownPrice) && (
-                  <div className="cost-note">* no price on file — US$ estimated as 0</div>
-                )}
-              </div>
-            ) : (
-              <div className="empty">NO SPEND YET</div>
-            )}
-          </section>
-
-          <section className="panel">
-            <div className="panel-head">
-              <div className="panel-title">
-                <span className="dot" />
-                PROJECTS
-              </div>
-              <span className="panel-meta">{projects.length}</span>
-            </div>
-            <ProjectList projects={projects} />
-          </section>
-
-          <section className="panel grow">
-            <div className="panel-head">
-              <div className="panel-title">
-                <span className="dot live" style={{ background: 'var(--lime)', boxShadow: '0 0 8px var(--lime)' }} />
-                OBSERVABILITY · TOOL-CALL STREAM
-              </div>
-              <span className="panel-meta">live tail —f</span>
-            </div>
-            <div className="log" ref={logRef}>
-              {logs.map((l) => (
-                <div className="log-row" key={l.id}>
-                  <span className="log-time">{l.time}</span>
-                  <span className={`log-tag tone-${l.tone}`}>{l.tag}</span>
-                  <span className="log-msg">{l.msg}</span>
-                </div>
-              ))}
-            </div>
-          </section>
-        </div>
+      <div className="canvas">
+        {cards
+          .filter((c) => c.visible)
+          .map((c) => {
+            const { meta, body } = cardParts(c.id);
+            return (
+              <DraggableCard
+                key={c.id}
+                card={c}
+                meta={meta}
+                onChange={(patch) => patchCard(c.id, patch)}
+                onFocus={() => focusCard(c.id)}
+                onHide={() => patchCard(c.id, { visible: false })}
+              >
+                {body}
+              </DraggableCard>
+            );
+          })}
       </div>
 
       {approval && (

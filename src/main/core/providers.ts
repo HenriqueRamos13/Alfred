@@ -77,6 +77,31 @@ export function selectBrainId(
   return { id: firstEnabled?.id ?? null, fellBack: !!firstEnabled };
 }
 
+/**
+ * Resolve the effective active brain id (may be 'claude-code'). Order:
+ *   1. persisted choice (settings 'active_brain'), if still enabled
+ *   2. ALFRED_PROVIDER from env, if enabled
+ *   3. first enabled brain, preferring an API chat brain; claude-code only if
+ *      it is the sole enabled brain.
+ * Returns null when nothing is enabled. Pure — tested in logic.test.ts.
+ */
+export function resolveActiveBrainId(
+  persisted: string | undefined,
+  env: Env,
+  brains: readonly BrainInfo[],
+): string | null {
+  const p = (persisted ?? '').trim();
+  if (p) {
+    const b = brains.find((x) => x.id === p);
+    if (b?.enabled) return b.id;
+  }
+  const envBrain = brains.find((x) => x.id === defaultProviderId(env));
+  if (envBrain?.enabled) return envBrain.id;
+  const chat = brains.find((x) => x.enabled && x.id !== 'claude-code');
+  if (chat) return chat.id;
+  return brains.find((x) => x.enabled)?.id ?? null;
+}
+
 // ── registry + resolution (touches the AI SDK) ────────────────────────────────
 
 function anthropicModel(env: Env): string {
@@ -135,7 +160,7 @@ export function listBrains(env: Env = process.env): BrainInfo[] {
   const brains: BrainInfo[] = apiBrains(env).map(({ id, label, enabled, model }) => ({ id, label, enabled, model }));
   brains.push({
     id: 'claude-code',
-    label: 'Claude Code CLI (claude -p — delegation)',
+    label: 'Claude Code CLI (claude -p)',
     enabled: hasClaudeCli(env),
     model: 'claude -p',
   });

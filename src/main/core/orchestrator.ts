@@ -17,6 +17,7 @@
 
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
+import { execFile } from 'node:child_process';
 import { streamText, tool, jsonSchema, stepCountIs } from 'ai';
 import type { LanguageModel, ToolSet } from 'ai';
 import { HITL_TIERS } from './types.ts';
@@ -25,6 +26,8 @@ import type {
   AlfredConfig,
   ApprovalDecision,
   AuditEntry,
+  CardLayout,
+  CardPatch,
   ChatMessage,
   ProjectRecord,
   RiskTier,
@@ -32,6 +35,7 @@ import type {
   Tool,
   ToolCtx,
 } from './types.ts';
+import { getLayout as readLayout, updateCard as writeCard } from './layout.ts';
 import { BudgetTracker, callSignature, isLoop, isOverDailyBudget } from './budget.ts';
 import {
   classifyAction,
@@ -44,8 +48,10 @@ import {
 import { ensureScaffold, readStable } from './memory.ts';
 import { createSecrets } from './secrets.ts';
 import { getProject, listProjects } from './projects.ts';
-import { resolveProvider, listBrains } from './providers.ts';
+import { resolveProvider, listBrains, resolveActiveBrainId } from './providers.ts';
 import type { BrainInfo } from './providers.ts';
+import { getSetting, setSetting } from './db.ts';
+import { dayKey } from './budget.ts';
 import { tools, createBrowserHandle } from '../tools/index.ts';
 
 type AlfredDb = import('better-sqlite3').Database;
@@ -150,22 +156,28 @@ export class Orchestrator {
           }
           return {};
         },
-        // Runs after every model call — count usage from ANY provider.
+        // Runs after every model call — count usage from ANY provider. Wrapped so a
+        // failed SQLite write / malformed emit degrades gracefully instead of
+        // rejecting inside the AI-SDK callback and taking the process down.
         onStepFinish: ({ usage }) => {
-          const state = this.budget.record(
-            { inputTokens: usage.inputTokens ?? 0, outputTokens: usage.outputTokens ?? 0 },
-            this.deps.modelId,
-          );
-          ctx.emit({ kind: 'budget', state });
-          const snapshot = this.budget.costSnapshot(this.deps.brainId, this.deps.modelId);
-          ctx.emit({ kind: 'cost', snapshot });
-          if (snapshot.overUsdBudget && !this.usdWarned) {
-            this.usdWarned = true;
-            ctx.emit({
-              kind: 'error',
-              sessionId: ctx.sessionId,
-              message: `Soft budget: est. $${snapshot.today.usd.toFixed(2)} today exceeds ALFRED_DAILY_USD_BUDGET ($${snapshot.dailyUsdBudget}). Not blocking (token cap still applies).`,
-            });
+          try {
+            const state = this.budget.record(
+              { inputTokens: usage.inputTokens ?? 0, outputTokens: usage.outputTokens ?? 0 },
+              this.deps.modelId,
+            );
+            ctx.emit({ kind: 'budget', state });
+            const snapshot = this.budget.costSnapshot(this.deps.brainId, this.deps.modelId);
+            ctx.emit({ kind: 'cost', snapshot });
+            if (snapshot.overUsdBudget && !this.usdWarned) {
+              this.usdWarned = true;
+              ctx.emit({
+                kind: 'error',
+                sessionId: ctx.sessionId,
+                message: `Soft budget: est. $${snapshot.today.usd.toFixed(2)} today exceeds ALFRED_DAILY_USD_BUDGET ($${snapshot.dailyUsdBudget}). Not blocking (token cap still applies).`,
+              });
+            }
+          } catch (err) {
+            console.error('[alfred] post-step accounting failed:', err instanceof Error ? err.message : err);
           }
         },
       });
@@ -331,8 +343,51 @@ export class Orchestrator {
   }
 
   private audit(e: Omit<AuditEntry, 'sessionId' | 'ts'>): void {
-    recordAudit(this.deps.ctx.db, { ...e, sessionId: this.deps.ctx.sessionId, ts: Date.now() });
+    // Never let an audit write failure crash a turn — log and continue.
+    try {
+      recordAudit(this.deps.ctx.db, { ...e, sessionId: this.deps.ctx.sessionId, ts: Date.now() });
+    } catch (err) {
+      console.error('[alfred] audit write failed:', err instanceof Error ? err.message : err);
+    }
   }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// claude-code conversational brain — bypasses streamText. Runs `claude -p` with
+// session continuity (--resume). Claude Code uses ITS OWN tools; Alfred's tools
+// and per-turn HITL do not apply here. cwd is confined to the workspace.
+// ─────────────────────────────────────────────────────────────────────────────
+
+interface ClaudeTurn {
+  sessionId?: string;
+  result?: string;
+  error?: string;
+  enoent?: boolean;
+}
+
+function spawnClaudeConversation(prompt: string, cwd: string, resumeId?: string): Promise<ClaudeTurn> {
+  const args = ['-p', prompt, '--output-format', 'json'];
+  if (resumeId) args.push('--resume', resumeId);
+  return new Promise((resolve) => {
+    execFile(
+      'claude',
+      args,
+      { cwd, maxBuffer: 16 * 1024 * 1024, timeout: 30 * 60_000, killSignal: 'SIGKILL' },
+      (err, stdout, stderr) => {
+        const e = err as (Error & { code?: number | string }) | null;
+        if ((e as { code?: string } | null)?.code === 'ENOENT') return resolve({ enoent: true });
+        if (e && typeof e.code === 'number' && e.code !== 0) {
+          return resolve({ error: `claude -p exited ${e.code}: ${(stderr || stdout || '').trim()}` });
+        }
+        try {
+          const parsed = JSON.parse(stdout) as { session_id?: string; result?: string };
+          resolve({ sessionId: parsed.session_id, result: parsed.result ?? stdout.trim() });
+        } catch {
+          resolve({ result: (stdout || '').trim() });
+        }
+      },
+    );
+  });
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -356,7 +411,15 @@ export interface OrchestratorHandle {
   listAccounts(): AccountRecord[];
   /** Brain availability (enabled/disabled) for the UI. */
   listBrains(): BrainInfo[];
+  /** The effective active brain id (resolved: persisted → env → first enabled). */
+  getActiveBrain(): string | null;
+  /** Persist the active brain (only if it exists and is enabled); returns the new effective id. */
+  setActiveBrain(id: string): string | null;
   connectGmail(): Promise<AccountRecord | null>;
+  /** Full floating-card layout (seeds defaults on first read). */
+  getLayout(): CardLayout[];
+  /** Persist a card patch (user drag/resize), emit 'layout', return the new layout. */
+  updateCard(id: string, patch: CardPatch): CardLayout[];
 }
 
 export function createOrchestrator(opts: CreateOrchestratorOpts): OrchestratorHandle {
@@ -406,15 +469,93 @@ export function createOrchestrator(opts: CreateOrchestratorOpts): OrchestratorHa
       .join('\n');
   }
 
+  /** Resolve the effective active brain id from persisted settings + env. */
+  const activeBrainId = (): string | null =>
+    resolveActiveBrainId(getSetting(db, 'active_brain'), process.env, listBrains());
+
+  /**
+   * claude-code conversational turn: run `claude -p` with session continuity.
+   * Claude Code drives its own tools; no Alfred tools, no per-turn HITL. Cost is
+   * external (subscription), so the COST panel is flagged external, not estimated.
+   */
+  async function runClaudeTurn(text: string): Promise<void> {
+    emit({ kind: 'agent.status', sessionId, status: 'thinking' });
+    const key = `claude_session:${sessionId}`;
+    const resumeId = getSetting(db, key);
+    const turn = await spawnClaudeConversation(text, config.workspace, resumeId);
+
+    if (turn.enoent) {
+      emit({
+        kind: 'error',
+        sessionId,
+        message: 'Claude Code CLI not found on PATH. Install it: npm i -g @anthropic-ai/claude-code',
+      });
+      emit({ kind: 'agent.status', sessionId, status: 'error' });
+      return;
+    }
+    if (turn.error) {
+      emit({ kind: 'error', sessionId, message: turn.error });
+      emit({ kind: 'agent.status', sessionId, status: 'error' });
+      return;
+    }
+    if (turn.sessionId) {
+      try {
+        setSetting(db, key, turn.sessionId);
+      } catch (err) {
+        console.error('[alfred] persist claude session failed:', err instanceof Error ? err.message : err);
+      }
+    }
+    const content = turn.result ?? '';
+    if (content.trim()) {
+      emit({ kind: 'chat.delta', sessionId, text: content });
+      emit({
+        kind: 'chat.message',
+        message: { id: randomUUID(), sessionId, role: 'assistant', content, ts: Date.now() },
+      });
+    }
+    // Spend is billed by the Claude Code subscription, not Alfred's estimator.
+    emit({
+      kind: 'cost',
+      snapshot: {
+        activeBrain: 'claude-code',
+        activeModel: 'claude -p',
+        day: dayKey(),
+        today: { inputTokens: 0, outputTokens: 0, tokens: 0, usd: 0 },
+        session: { inputTokens: 0, outputTokens: 0, tokens: 0, usd: 0 },
+        byModel: [],
+        dailyTokenCap: config.dailyTokenBudget,
+        overUsdBudget: false,
+        external: true,
+      },
+    });
+    emit({ kind: 'agent.status', sessionId, status: 'done' });
+  }
+
   return {
     async send(text) {
       gov.resetTrifecta();
+      const brainId = activeBrainId();
+      if (!brainId) {
+        emit({
+          kind: 'error',
+          sessionId,
+          message:
+            'No brain connected: set an API key in .env (ANTHROPIC_API_KEY / OPENAI_API_KEY / DEEPSEEK_API_KEY) or install the Claude Code CLI, then restart.',
+        });
+        emit({ kind: 'agent.status', sessionId, status: 'error' });
+        return;
+      }
+
+      if (brainId === 'claude-code') {
+        await runClaudeTurn(text);
+        return;
+      }
+
       let provider: ReturnType<typeof resolveProvider>;
       try {
-        provider = resolveProvider(config.provider);
+        // brainId is already resolved to an enabled API brain → no noisy fallback.
+        provider = resolveProvider(brainId);
       } catch (err) {
-        // Zero brains enabled (or the requested one is unusable): don't let this
-        // reject the IPC call — surface a clear, actionable error to the UI.
         const detail = err instanceof Error ? err.message : String(err);
         console.error('[alfred] cannot start turn:', detail);
         emit({
@@ -452,6 +593,14 @@ export function createOrchestrator(opts: CreateOrchestratorOpts): OrchestratorHa
     listBrains() {
       return listBrains();
     },
+    getActiveBrain() {
+      return activeBrainId();
+    },
+    setActiveBrain(id) {
+      const brain = listBrains().find((b) => b.id === id);
+      if (brain?.enabled) setSetting(db, 'active_brain', id);
+      return activeBrainId();
+    },
     async connectGmail() {
       const gmailTool = tools.find((t) => t.name === 'gmail');
       if (!gmailTool) return null;
@@ -459,6 +608,14 @@ export function createOrchestrator(opts: CreateOrchestratorOpts): OrchestratorHa
       if (!out.ok) return null;
       const email = (out.result as { email?: string } | undefined)?.email;
       return queryAccounts().find((a) => a.email === email) ?? null;
+    },
+    getLayout() {
+      return readLayout(db);
+    },
+    updateCard(id, patch) {
+      const cards = writeCard(db, id, patch);
+      emit({ kind: 'layout', cards });
+      return cards;
     },
   };
 }

@@ -64,6 +64,27 @@ CREATE TABLE IF NOT EXISTS accounts (
   secret_ref    TEXT NOT NULL,
   connected_at  INTEGER NOT NULL
 );
+
+-- Key/value settings that must survive restart: the persisted active brain
+-- (key 'active_brain') and per-session claude-code session ids
+-- (key 'claude_session:<sessionId>').
+CREATE TABLE IF NOT EXISTS settings (
+  key    TEXT PRIMARY KEY,
+  value  TEXT NOT NULL
+);
+
+-- Floating-card canvas layout. One row per card; geometry + visibility only
+-- (title is a fixed label supplied by core/layout.ts). Both the user's drags
+-- (via IPC) and the AI's ui_layout tool read/write this same table.
+CREATE TABLE IF NOT EXISTS layout (
+  cardId   TEXT PRIMARY KEY,
+  x        INTEGER NOT NULL,
+  y        INTEGER NOT NULL,
+  w        INTEGER NOT NULL,
+  h        INTEGER NOT NULL,
+  z        INTEGER NOT NULL,
+  visible  INTEGER NOT NULL DEFAULT 1
+);
 `;
 
 export function openDb(dbPath: string): AlfredDb {
@@ -73,4 +94,18 @@ export function openDb(dbPath: string): AlfredDb {
   db.pragma('foreign_keys = ON');
   db.exec(SCHEMA);
   return db;
+}
+
+/** Read a persisted setting; undefined when absent. */
+export function getSetting(db: AlfredDb, key: string): string | undefined {
+  const row = db.prepare('SELECT value FROM settings WHERE key = ?').get(key) as { value: string } | undefined;
+  return row?.value;
+}
+
+/** Upsert a persisted setting. */
+export function setSetting(db: AlfredDb, key: string, value: string): void {
+  db.prepare('INSERT INTO settings(key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value').run(
+    key,
+    value,
+  );
 }

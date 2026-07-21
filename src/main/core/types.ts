@@ -123,6 +123,8 @@ export interface CostSnapshot {
   dailyUsdBudget?: number;
   /** True when today's estimated USD passed the soft budget (warning only). */
   overUsdBudget: boolean;
+  /** True when the active brain's spend is billed externally (claude-code): no US$ estimate. */
+  external?: boolean;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -160,6 +162,25 @@ export interface RenderUiPayload {
   target?: string;
   tree: UiNode;
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Floating card layout (canvas of widgets). Geometry + visibility persist in
+// SQLite; `title` is a fixed per-card label supplied by the layout module.
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface CardLayout {
+  id: string;
+  title: string;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  z: number;
+  visible: boolean;
+}
+
+/** Fields a drag/resize or the AI may patch on a card. */
+export type CardPatch = Partial<Pick<CardLayout, 'x' | 'y' | 'w' | 'h' | 'z' | 'visible'>>;
 
 /** Components the AI may render via render_ui (whitelist enforced in the registry). */
 export const AI_COMPONENTS = [
@@ -200,6 +221,7 @@ export type StreamEvent =
   | { kind: 'approval.request'; request: ApprovalRequest }
   | { kind: 'approval.resolved'; resolution: ApprovalResolution }
   | { kind: 'ui.render'; payload: RenderUiPayload }
+  | { kind: 'layout'; cards: CardLayout[] }
   | { kind: 'agent.status'; sessionId: string; status: AgentStatus }
   | { kind: 'budget'; state: BudgetState }
   | { kind: 'cost'; snapshot: CostSnapshot }

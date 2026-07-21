@@ -8,6 +8,8 @@ import type {
   ProjectRecord,
   AccountRecord,
   ApprovalDecision,
+  CardLayout,
+  CardPatch,
 } from '../main/core/types.ts';
 import type { BrainInfo } from '../main/core/providers.ts';
 
@@ -23,8 +25,17 @@ const api = {
   listAccounts: (): Promise<AccountRecord[]> => ipcRenderer.invoke('alfred:listAccounts'),
   /** Brain availability (enabled/disabled) for the UI. */
   listBrains: (): Promise<BrainInfo[]> => ipcRenderer.invoke('alfred:listBrains'),
+  /** Effective active brain id (persisted → env → first enabled). */
+  getActiveBrain: (): Promise<string | null> => ipcRenderer.invoke('alfred:getActiveBrain'),
+  /** Select the active/main brain (enabled only); resolves with the new effective id. */
+  setActiveBrain: (id: string): Promise<string | null> => ipcRenderer.invoke('alfred:setActiveBrain', id),
   /** Launch the Gmail OAuth flow; resolves with the connected account. */
   connectGmail: (): Promise<AccountRecord | null> => ipcRenderer.invoke('alfred:connectGmail'),
+  /** Full floating-card layout (seeds defaults on first read). */
+  getLayout: (): Promise<CardLayout[]> => ipcRenderer.invoke('alfred:getLayout'),
+  /** Persist a card patch from a drag/resize; resolves with the new layout. */
+  updateCard: (id: string, patch: CardPatch): Promise<CardLayout[]> =>
+    ipcRenderer.invoke('alfred:updateCard', id, patch),
   /** Overlay window controls (frameless HUD). */
   hideWindow: (): void => ipcRenderer.send('window:hide'),
   quitWindow: (): void => ipcRenderer.send('window:quit'),

@@ -20,7 +20,13 @@ import {
   isLoop,
 } from '../src/main/core/budget.ts';
 import { slugify } from '../src/main/core/projects.ts';
-import { defaultProviderId, parseProviderSpec, selectBrainId, keyEnabled } from '../src/main/core/providers.ts';
+import {
+  defaultProviderId,
+  parseProviderSpec,
+  selectBrainId,
+  keyEnabled,
+  resolveActiveBrainId,
+} from '../src/main/core/providers.ts';
 import { costOf, isKnownModel } from '../src/main/core/pricing.ts';
 
 test('classifyAction — read/list/search are T0 autopilot', () => {
@@ -184,4 +190,28 @@ test('selectBrainId — requested when enabled, else first enabled with fellBack
   // nothing enabled → null, no fallback
   const none = brains.map((b) => ({ ...b, enabled: false }));
   assert.deepEqual(selectBrainId('openai', none), { id: null, fellBack: false });
+});
+
+test('resolveActiveBrainId — persisted → env → first enabled (claude-code last)', () => {
+  const brains = [
+    { id: 'anthropic', label: 'A', enabled: true, model: 'm' },
+    { id: 'openai', label: 'O', enabled: true, model: 'm' },
+    { id: 'deepseek', label: 'D', enabled: false, model: 'm' },
+    { id: 'claude-code', label: 'CC', enabled: true, model: 'claude -p' },
+  ];
+  // persisted wins when enabled
+  assert.equal(resolveActiveBrainId('openai', {}, brains), 'openai');
+  assert.equal(resolveActiveBrainId('claude-code', {}, brains), 'claude-code');
+  // persisted disabled → env (ALFRED_PROVIDER)
+  assert.equal(resolveActiveBrainId('deepseek', { ALFRED_PROVIDER: 'openai' }, brains), 'openai');
+  // no persisted, no env → default anthropic (enabled)
+  assert.equal(resolveActiveBrainId(undefined, {}, brains), 'anthropic');
+  // env set but disabled → first enabled chat brain, never claude-code while a chat brain is up
+  const noAnthropic = brains.map((b) => (b.id === 'anthropic' ? { ...b, enabled: false } : b));
+  assert.equal(resolveActiveBrainId(undefined, { ALFRED_PROVIDER: 'anthropic' }, noAnthropic), 'openai');
+  // only claude-code enabled → it becomes active
+  const onlyCc = brains.map((b) => ({ ...b, enabled: b.id === 'claude-code' }));
+  assert.equal(resolveActiveBrainId(undefined, {}, onlyCc), 'claude-code');
+  // nothing enabled → null
+  assert.equal(resolveActiveBrainId('openai', {}, brains.map((b) => ({ ...b, enabled: false }))), null);
 });

@@ -13,6 +13,8 @@ import type {
   ApprovalDecision,
   ProjectRecord,
   AccountRecord,
+  CardLayout,
+  CardPatch,
   StreamEvent,
 } from './core/types.ts';
 import type { BrainInfo } from './core/providers.ts';
@@ -28,7 +30,26 @@ export interface Orchestrator {
   listAccounts(): AccountRecord[] | Promise<AccountRecord[]>;
   /** Brain availability for the UI. */
   listBrains(): BrainInfo[] | Promise<BrainInfo[]>;
+  /** Effective active brain id. */
+  getActiveBrain(): string | null | Promise<string | null>;
+  /** Persist the active brain (enabled only); returns the new effective id. */
+  setActiveBrain(id: string): string | null | Promise<string | null>;
   connectGmail(): Promise<AccountRecord | null>;
+  /** Full floating-card layout. */
+  getLayout(): CardLayout[] | Promise<CardLayout[]>;
+  /** Persist a card patch from a user drag/resize; returns the new layout. */
+  updateCard(id: string, patch: CardPatch): CardLayout[] | Promise<CardLayout[]>;
+}
+
+/** Trust boundary: keep only well-formed numeric/boolean fields from the renderer. */
+function sanitizeCardPatch(patch: unknown): CardPatch {
+  const p = (patch ?? {}) as Record<string, unknown>;
+  const out: CardPatch = {};
+  for (const k of ['x', 'y', 'w', 'h', 'z'] as const) {
+    if (typeof p[k] === 'number' && Number.isFinite(p[k])) out[k] = p[k] as number;
+  }
+  if (typeof p.visible === 'boolean') out.visible = p.visible;
+  return out;
 }
 
 export function registerIpc(core: Orchestrator, emit: (e: StreamEvent) => void): void {
@@ -59,7 +80,27 @@ export function registerIpc(core: Orchestrator, emit: (e: StreamEvent) => void):
   ipcMain.handle('alfred:listProjects', guard('list projects', () => core.listProjects(), [] as ProjectRecord[]));
   ipcMain.handle('alfred:listAccounts', guard('list accounts', () => core.listAccounts(), [] as AccountRecord[]));
   ipcMain.handle('alfred:listBrains', guard('list brains', () => core.listBrains(), [] as BrainInfo[]));
+  ipcMain.handle('alfred:getActiveBrain', guard('get active brain', () => core.getActiveBrain(), null as string | null));
+  ipcMain.handle('alfred:setActiveBrain', async (_e, id: unknown) => {
+    if (typeof id !== 'string') return null;
+    try {
+      return await core.setActiveBrain(id);
+    } catch (err) {
+      fail('set active brain', err);
+      return null;
+    }
+  });
   ipcMain.handle('alfred:connectGmail', guard('connect Gmail', () => core.connectGmail(), null as AccountRecord | null));
+  ipcMain.handle('alfred:getLayout', guard('get layout', () => core.getLayout(), [] as CardLayout[]));
+  ipcMain.handle('alfred:updateCard', async (_e, id: unknown, patch: unknown) => {
+    if (typeof id !== 'string') return [] as CardLayout[];
+    try {
+      return await core.updateCard(id, sanitizeCardPatch(patch));
+    } catch (err) {
+      fail('update card', err);
+      return [] as CardLayout[];
+    }
+  });
 
   ipcMain.on('alfred:stop', () => core.stop());
   ipcMain.on('alfred:resolveApproval', (_e, id: unknown, decision: unknown) => {

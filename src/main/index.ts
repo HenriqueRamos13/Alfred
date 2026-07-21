@@ -16,7 +16,7 @@ import { homedir } from 'node:os';
 import { openDb } from './core/db.ts';
 import { createOrchestrator } from './core/orchestrator.ts';
 import { loadPricingOverrides } from './core/pricing.ts';
-import { listBrains, selectBrainId, defaultProviderId } from './core/providers.ts';
+import { listBrains, resolveActiveBrainId } from './core/providers.ts';
 import { registerIpc, registerWindowIpc, type Orchestrator } from './ipc.ts';
 import type { AlfredConfig, StreamEvent } from './core/types.ts';
 
@@ -67,17 +67,16 @@ function parseEnvInto(text: string, env: NodeJS.ProcessEnv): void {
 function logBrainStatus(): void {
   const brains = listBrains();
   const enabled = brains.filter((b) => b.enabled).map((b) => b.id);
-  // claude-code is a delegation tool, not a chat brain — exclude it from "active".
-  const chat = brains.filter((b) => b.id !== 'claude-code');
-  const { id: activeId } = selectBrainId(defaultProviderId(process.env), chat);
+  // Boot diagnostic uses the env-derived active brain (the persisted choice lives
+  // in the DB, which isn't open yet). claude-code counts as answerable.
+  const activeId = resolveActiveBrainId(undefined, process.env, brains);
   if (!activeId) {
     console.warn(
       '\n  ================================================================\n' +
-        '  ⚠  ALFRED: no chat brain is connected — Alfred cannot answer.\n' +
+        '  ⚠  ALFRED: no brain is connected — Alfred cannot answer.\n' +
         '     Put an API key in .env (ANTHROPIC_API_KEY / OPENAI_API_KEY /\n' +
-        '     DEEPSEEK_API_KEY) and restart.' +
-        (enabled.length ? `\n     (available for delegation: ${enabled.join(', ')})` : '') +
-        '\n  ================================================================\n',
+        '     DEEPSEEK_API_KEY) or install the Claude Code CLI, then restart.\n' +
+        '  ================================================================\n',
     );
     return;
   }
@@ -190,7 +189,28 @@ function boot(): BrowserWindow {
   const core = createOrchestrator({ config, db, emit, dataDir: data }) as Orchestrator;
   registerIpc(core, emit);
   registerWindowIpc(win);
+
+  // Crash-proofing: a stray throw / rejection anywhere must NOT close Alfred.
+  // Log (secret-free) + surface to the UI + stay alive. Registered once.
+  installProcessGuards(emit);
   return win;
+}
+
+let guardsInstalled = false;
+function installProcessGuards(emit: (e: StreamEvent) => void): void {
+  if (guardsInstalled) return;
+  guardsInstalled = true;
+  const report = (label: string, err: unknown): void => {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error(`[alfred] ${label}:`, message);
+    try {
+      emit({ kind: 'error', sessionId: '', message: `${label}: ${message}` });
+    } catch {
+      /* window gone — nothing we can do, but never rethrow */
+    }
+  };
+  process.on('uncaughtException', (err) => report('uncaught exception (kept alive)', err));
+  process.on('unhandledRejection', (reason) => report('unhandled rejection (kept alive)', reason));
 }
 
 app.whenReady().then(() => {
