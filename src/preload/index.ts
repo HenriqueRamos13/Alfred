@@ -10,14 +10,19 @@ import type {
   ApprovalDecision,
   CardLayout,
   CardPatch,
+  ChatMessage,
 } from '../main/core/types.ts';
 import type { BrainInfo } from '../main/core/providers.ts';
 
 const api = {
   /** Auto-hide the top strip (command bar + toolbar). Default ON; ALFRED_AUTOHIDE_TOP=0 disables. */
   autoHideTop: process.env.ALFRED_AUTOHIDE_TOP !== '0',
+  /** Whether Google OAuth is configured — drives the "connect Gmail" hint in the UI. */
+  gmailConfigured: !!(process.env.GOOGLE_OAUTH_CLIENT_ID && process.env.GOOGLE_OAUTH_CLIENT_SECRET),
   /** Send a user command / chat turn to the orchestrator. */
   send: (text: string): Promise<void> => ipcRenderer.invoke('alfred:send', text),
+  /** Load recent persisted chat history to repopulate the conversation on open. */
+  getHistory: (limit?: number): Promise<ChatMessage[]> => ipcRenderer.invoke('alfred:getHistory', limit),
   /** Kill switch — abort the running task. */
   stop: (): void => ipcRenderer.send('alfred:stop'),
   /** Resolve a pending HITL approval. */

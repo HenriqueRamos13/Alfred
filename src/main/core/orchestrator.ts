@@ -44,12 +44,12 @@ import {
   recordAudit,
   trifectaImpact,
 } from './governance.ts';
-import { ensureClaudeMd, ensureScaffold, readStable } from './memory.ts';
+import { ensureClaudeMd, ensureScaffold, readStable, recentMemoryText, formatTranscript } from './memory.ts';
 import { createSecrets } from './secrets.ts';
 import { getProject, listProjects } from './projects.ts';
 import { resolveProvider, listBrains, resolveActiveBrainId } from './providers.ts';
 import type { BrainInfo } from './providers.ts';
-import { getSetting, setSetting } from './db.ts';
+import { getSetting, setSetting, insertMessage, getRecentMessages } from './db.ts';
 import { dayKey } from './budget.ts';
 import { spawnClaudeCli } from './claudeSpawn.ts';
 import { tools, createBrowserHandle } from '../tools/index.ts';
@@ -79,6 +79,13 @@ Governance you must respect:
 Organise substantial work as projects under the workspace (ICM
 folder-as-context); render live status into the surface with render_ui using
 only the whitelisted components.
+
+Memory: you have a file-based long-term memory via the memory tool. Proactively
+'remember' important things as they happen — durable facts about the user or the
+world with kind:"semantic", and noteworthy events with kind:"episodic" (a dated
+journal). When the user refers to the past ("what did we discuss last week", "do
+you remember X"), 'recall' (optionally with a query / sinceDays) or 'list' your
+memory BEFORE answering. Never invent memories: if recall finds nothing, say so.
 
 You can inspect and reorganise your own floating control-centre cards with the
 ui_layout tool (T1, no approval): get_layout (also returns the canvas viewport
@@ -262,9 +269,16 @@ export class Orchestrator {
   }
 
   private async buildSystem(): Promise<string> {
+    const { ctx } = this.deps;
     let sys = ALFRED_IDENTITY;
-    const mem = await readStable(this.deps.ctx.workspace).catch(() => '');
+    const mem = await readStable(ctx.workspace).catch(() => '');
     if (mem.trim()) sys += `\n\n# Stable memory (honour these)\n${mem}`;
+    const recent = await recentMemoryText(ctx.workspace).catch(() => '');
+    if (recent.trim()) sys += `\n\n# Recent memory (last 7 days)\n${recent}`;
+    // The just-sent user turn is persisted before run() and is passed as the
+    // prompt, so drop it here to avoid duplicating it in the transcript.
+    const transcript = formatTranscript(getRecentMessages(ctx.db, 13).slice(0, -1), 2000);
+    if (transcript.trim()) sys += `\n\n# Recent conversation (for continuity)\n${transcript}`;
     if (this.deps.projectContext?.trim()) sys += `\n\n# Active project\n${this.deps.projectContext}`;
     return sys;
   }
@@ -394,6 +408,14 @@ async function spawnClaudeConversation(prompt: string, cwd: string, resumeId?: s
   }
 }
 
+/** Prepend recent persisted history to a claude prompt (cold-start continuity). */
+function withHistoryPreamble(db: AlfredDb, text: string): string {
+  // Drop the just-persisted current user turn (last row); it's the actual prompt.
+  const transcript = formatTranscript(getRecentMessages(db, 13).slice(0, -1), 2000);
+  if (!transcript.trim()) return text;
+  return `# Earlier in our conversation (for continuity)\n${transcript}\n\n# Now\n${text}`;
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Composition — builds the ToolCtx, governance and browser handle, then exposes
 // the IPC façade the shell (index.ts / ipc.ts) consumes.
@@ -409,6 +431,8 @@ export interface CreateOrchestratorOpts {
 
 export interface OrchestratorHandle {
   send(text: string): Promise<void>;
+  /** Recent persisted chat messages (oldest→newest) for the UI to reload on open. */
+  getHistory(limit?: number): ChatMessage[];
   stop(): void;
   resolveApproval(resolution: { id: string; decision: ApprovalDecision }): void;
   listProjects(): ProjectRecord[];
@@ -429,8 +453,22 @@ export interface OrchestratorHandle {
 }
 
 export function createOrchestrator(opts: CreateOrchestratorOpts): OrchestratorHandle {
-  const { config, db, emit } = opts;
+  const { config, db } = opts;
   const sessionId = randomUUID();
+
+  // Single persistence choke point: every chat.message (assistant, from either
+  // brain path) is stored before it streams to the UI. A failed write must not
+  // break the turn.
+  const emit = (event: StreamEvent): void => {
+    if (event.kind === 'chat.message') {
+      try {
+        insertMessage(db, event.message);
+      } catch (err) {
+        console.error('[alfred] persist message failed:', err instanceof Error ? err.message : err);
+      }
+    }
+    opts.emit(event);
+  };
 
   const gov = createGovernance({ sessionId, emit });
   const browser = createBrowserHandle(join(opts.dataDir, 'browser-profile'));
@@ -491,9 +529,14 @@ export function createOrchestrator(opts: CreateOrchestratorOpts): OrchestratorHa
     await ensureClaudeMd(config.workspace, ALFRED_IDENTITY).catch((err) => {
       console.error('[alfred] ensure workspace CLAUDE.md failed:', err instanceof Error ? err.message : err);
     });
-    const key = `claude_session:${sessionId}`;
+    // Stable per-workspace key (not the per-boot sessionId) so --resume picks up
+    // the last conversation after Alfred restarts.
+    const key = 'claude_session:default';
     const resumeId = getSetting(db, key);
-    const turn = await spawnClaudeConversation(text, config.workspace, resumeId);
+    // On a cold start (no resume id yet) seed the prompt with recent history so
+    // continuity survives even the first turn; --resume carries it thereafter.
+    const prompt = resumeId ? text : withHistoryPreamble(db, text);
+    const turn = await spawnClaudeConversation(prompt, config.workspace, resumeId);
 
     if (turn.enoent) {
       emit({
@@ -545,6 +588,16 @@ export function createOrchestrator(opts: CreateOrchestratorOpts): OrchestratorHa
   return {
     async send(text) {
       gov.resetTrifecta();
+      // Persist the user turn before routing so it survives restarts and feeds
+      // the continuity transcript. The renderer shows it optimistically, so it
+      // is stored (not re-emitted) to avoid a duplicate bubble in-session.
+      if (text.trim()) {
+        try {
+          insertMessage(db, { id: randomUUID(), sessionId, role: 'user', content: text, ts: Date.now() });
+        } catch (err) {
+          console.error('[alfred] persist user message failed:', err instanceof Error ? err.message : err);
+        }
+      }
       const brainId = activeBrainId();
       if (!brainId) {
         emit({
@@ -588,6 +641,9 @@ export function createOrchestrator(opts: CreateOrchestratorOpts): OrchestratorHa
         projectContext: await projectContext(text),
       });
       await active.run(text);
+    },
+    getHistory(limit) {
+      return getRecentMessages(db, limit ?? 100) as ChatMessage[];
     },
     stop() {
       active?.abort();

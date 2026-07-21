@@ -22,6 +22,7 @@ import type {
   AgentStatus,
   ApprovalDecision,
   ApprovalRequest,
+  AccountRecord,
   BudgetState,
   CardLayout,
   CardPatch,
@@ -73,6 +74,8 @@ export default function App() {
   const [approval, setApproval] = useState<ApprovalRequest | null>(null);
   const [tree, setTree] = useState<UiNode | null>(null);
   const [projects, setProjects] = useState<ProjectRecord[]>([]);
+  const [accounts, setAccounts] = useState<AccountRecord[]>([]);
+  const [connectingGmail, setConnectingGmail] = useState(false);
   const [cost, setCost] = useState<CostSnapshot | null>(null);
   const [killed, setKilled] = useState(false);
   const [alerts, setAlerts] = useState<{ id: number; msg: string }[]>([]);
@@ -205,9 +208,34 @@ export default function App() {
     alfred.listProjects().then(setProjects).catch(() => {});
   };
 
+  const refreshAccounts = () => {
+    alfred.listAccounts().then(setAccounts).catch(() => {});
+  };
+
+  const connectGmail = () => {
+    if (connectingGmail) return;
+    setConnectingGmail(true);
+    pushLog({ tag: 'GMAIL', tone: 'cyan', msg: 'connect — approve in the HITL prompt, then Google consent' });
+    alfred
+      .connectGmail()
+      .then((acc) => {
+        if (acc) pushLog({ tag: 'GMAIL', tone: 'lime', msg: `connected ${acc.email}` });
+        refreshAccounts();
+      })
+      .catch((err) => {
+        const m = err instanceof Error ? err.message : String(err);
+        pushLog({ tag: 'GMAIL', tone: 'red', msg: m });
+        pushAlert(m);
+      })
+      .finally(() => setConnectingGmail(false));
+  };
+
   useEffect(() => {
     refreshProjects();
     refreshBrains();
+    refreshAccounts();
+    // Reload the persisted conversation so history survives restarts.
+    alfred.getHistory().then(setMessages).catch(() => {});
     alfred.getLayout().then(setCards).catch(() => {});
     const off = alfred.onStream((e: StreamEvent) => {
       switch (e.kind) {
@@ -423,9 +451,42 @@ export default function App() {
           meta: <span className="panel-meta">{projects.length}</span>,
           body: <ProjectList projects={projects} />,
         };
+      case 'accounts':
+        return {
+          meta: <span className="panel-meta">{accounts.length} CONNECTED</span>,
+          body: (
+            <div className="accounts">
+              {accounts.length ? (
+                accounts.map((a) => (
+                  <div className="account" key={a.id}>
+                    <span className="account-dot" />
+                    <span className="account-email">{a.email}</span>
+                    <span className="account-provider">{a.provider}</span>
+                  </div>
+                ))
+              ) : (
+                <div className="empty">NO ACCOUNTS</div>
+              )}
+              <button
+                type="button"
+                className="account-connect no-drag"
+                disabled={connectingGmail}
+                onClick={connectGmail}
+              >
+                {connectingGmail ? 'CONNECTING…' : '+ Conectar Gmail'}
+              </button>
+              {!alfred.gmailConfigured && (
+                <div className="account-hint">
+                  Falta o OAuth client do Google. Cria um em Google Cloud Console e define
+                  GOOGLE_OAUTH_CLIENT_ID / GOOGLE_OAUTH_CLIENT_SECRET no .env (ver README).
+                </div>
+              )}
+            </div>
+          ),
+        };
       case 'activity':
         return {
-          meta: <span className="panel-meta">live tail —f</span>,
+          meta: <span className="panel-meta">live tail —f · memory on</span>,
           body: (
             <div className="log" ref={logRef}>
               {logs.map((l) => (

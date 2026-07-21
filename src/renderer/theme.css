@@ -367,6 +367,36 @@ body {
 .brain.on .brain-state { color: var(--lime); }
 .brain.active .brain-state { color: var(--cyan); }
 
+/* ── accounts panel (connected email) ──────────────────────────────── */
+.accounts { display: flex; flex-direction: column; gap: 6px; min-height: 0; overflow: auto; }
+.account {
+  display: grid;
+  grid-template-columns: 8px 1fr auto;
+  align-items: center;
+  column-gap: 8px;
+  padding: 6px 9px;
+  border-radius: 7px;
+  border: 1px solid var(--panel-border);
+}
+.account-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--lime); box-shadow: 0 0 8px var(--lime); }
+.account-email { font-size: 11px; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.account-provider { font-size: 9px; font-weight: 700; letter-spacing: 1px; color: var(--dim); text-transform: uppercase; }
+.account-connect {
+  background: rgba(10, 16, 28, 0.6);
+  border: 1px solid rgba(64, 224, 255, 0.4);
+  color: var(--cyan);
+  border-radius: 7px;
+  padding: 6px 12px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 1.5px;
+  font-weight: 700;
+  cursor: pointer;
+}
+.account-connect:hover:not(:disabled) { background: rgba(64, 224, 255, 0.12); }
+.account-connect:disabled { opacity: 0.5; cursor: default; }
+.account-hint { font-size: 10px; line-height: 1.4; color: var(--amber); }
+
 /* ── top-bar (drag + HIDE/QUIT for the frameless overlay) ──────────── */
 .topbar {
   display: flex;

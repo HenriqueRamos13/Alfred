@@ -76,6 +76,7 @@ const CARD_TITLES: Record<string, string> = {
   brains: 'BRAINS',
   cost: 'COST',
   projects: 'PROJECTS',
+  accounts: 'ACCOUNTS',
   activity: 'ACTIVITY',
 };
 
@@ -86,7 +87,8 @@ const DEFAULTS: ReadonlyArray<readonly [string, number, number, number, number]>
   ['surface', 470, 118, 640, 752],
   ['cost', 1126, 118, 300, 240],
   ['brains', 1126, 368, 300, 210],
-  ['projects', 1126, 588, 300, 282],
+  ['accounts', 1126, 588, 300, 160],
+  ['projects', 1126, 758, 300, 200],
 ];
 
 const clampPos = (v: number): number => Math.max(0, Math.round(v));

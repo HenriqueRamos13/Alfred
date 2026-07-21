@@ -29,7 +29,16 @@ import {
 } from '../src/main/core/providers.ts';
 import { costOf, isKnownModel } from '../src/main/core/pricing.ts';
 import { clampBox, tileLayout } from '../src/main/core/layout.ts';
-import { claudeMdNeedsWrite, buildClaudeMd } from '../src/main/core/memory.ts';
+import {
+  claudeMdNeedsWrite,
+  buildClaudeMd,
+  journalDay,
+  isWithinDays,
+  matchesQuery,
+  filterLines,
+  truncateHead,
+  formatTranscript,
+} from '../src/main/core/memory.ts';
 
 test('classifyAction — read/list/search are T0 autopilot', () => {
   assert.equal(classifyAction('fs_read', { path: '/a' }), 'T0');
@@ -241,6 +250,57 @@ test('claudeMdNeedsWrite — (re)write only when the Alfred marker is absent', (
   assert.match(managed, /managed by Alfred/);
   assert.match(managed, /Alfred/);
   assert.match(managed, /IDENTITY-BODY/); // single-source identity is embedded
+});
+
+// ── long-term memory: date filtering, grep, truncation, transcript ───────────
+
+test('journalDay formats local YYYY-MM-DD', () => {
+  assert.equal(journalDay(new Date(2026, 6, 21)), '2026-07-21');
+  assert.equal(journalDay(new Date(2026, 0, 3)), '2026-01-03');
+});
+
+test('isWithinDays — inclusive window back from today, future excluded', () => {
+  const today = '2026-07-21';
+  assert.equal(isWithinDays('2026-07-21', today, 7), true); // today
+  assert.equal(isWithinDays('2026-07-15', today, 7), true); // 6 days back
+  assert.equal(isWithinDays('2026-07-14', today, 7), false); // 7 days back → out
+  assert.equal(isWithinDays('2026-07-22', today, 7), false); // future
+  assert.equal(isWithinDays('garbage', today, 7), false);
+});
+
+test('matchesQuery — case-insensitive substring, blank matches all', () => {
+  assert.equal(matchesQuery('Bought milk', 'milk'), true);
+  assert.equal(matchesQuery('Bought MILK', 'milk'), true);
+  assert.equal(matchesQuery('Bought milk', 'eggs'), false);
+  assert.equal(matchesQuery('anything', ''), true);
+  assert.equal(matchesQuery('anything', undefined), true);
+});
+
+test('filterLines — keeps non-blank matching lines only', () => {
+  const content = '- [t1] apple\n\n- [t2] banana\n- [t3] apple pie';
+  assert.deepEqual(filterLines(content), ['- [t1] apple', '- [t2] banana', '- [t3] apple pie']);
+  assert.deepEqual(filterLines(content, 'apple'), ['- [t1] apple', '- [t3] apple pie']);
+  assert.deepEqual(filterLines('   \n\n', 'x'), []);
+});
+
+test('truncateHead — keeps the recent tail, drops oldest whole lines', () => {
+  assert.equal(truncateHead('short', 100), 'short'); // under cap → unchanged
+  const text = 'line1\nline2\nline3\nline4';
+  const out = truncateHead(text, 12);
+  assert.ok(out.startsWith('…(truncated)\n'));
+  assert.ok(out.includes('line4')); // newest survives
+  assert.ok(!out.includes('line1')); // oldest dropped
+  assert.ok(out.length <= '…(truncated)\n'.length + 12);
+});
+
+test('formatTranscript — role: content lines, blanks skipped, tail-capped', () => {
+  const msgs = [
+    { role: 'user', content: 'hi' },
+    { role: 'assistant', content: '  ' },
+    { role: 'user', content: 'again' },
+  ];
+  assert.equal(formatTranscript(msgs, 1000), 'user: hi\nuser: again');
+  assert.equal(formatTranscript([], 1000), '');
 });
 
 test('resolveActiveBrainId — persisted → env → first enabled (claude-code last)', () => {

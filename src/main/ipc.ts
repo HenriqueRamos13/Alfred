@@ -15,6 +15,7 @@ import type {
   AccountRecord,
   CardLayout,
   CardPatch,
+  ChatMessage,
   StreamEvent,
 } from './core/types.ts';
 import type { BrainInfo } from './core/providers.ts';
@@ -22,6 +23,8 @@ import type { BrainInfo } from './core/providers.ts';
 export interface Orchestrator {
   /** Run one command / chat turn; streams StreamEvents via the injected emit. */
   send(text: string): Promise<void>;
+  /** Recent persisted chat messages for the UI to reload on open. */
+  getHistory(limit?: number): ChatMessage[] | Promise<ChatMessage[]>;
   /** Kill switch — abort the running task. */
   stop(): void;
   /** Resolve a pending HITL approval (unblocks governance.requestApproval). */
@@ -77,6 +80,15 @@ export function registerIpc(core: Orchestrator, emit: (e: StreamEvent) => void):
       await core.send(String(text ?? ''));
     } catch (err) {
       fail('send', err);
+    }
+  });
+  ipcMain.handle('alfred:getHistory', async (_e, limit: unknown) => {
+    const n = typeof limit === 'number' && Number.isFinite(limit) ? limit : undefined;
+    try {
+      return await core.getHistory(n);
+    } catch (err) {
+      fail('get history', err);
+      return [] as ChatMessage[];
     }
   });
   ipcMain.handle('alfred:listProjects', guard('list projects', () => core.listProjects(), [] as ProjectRecord[]));

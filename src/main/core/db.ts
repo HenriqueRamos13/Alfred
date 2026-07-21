@@ -73,6 +73,17 @@ CREATE TABLE IF NOT EXISTS settings (
   value  TEXT NOT NULL
 );
 
+-- Persisted chat history. Every user + assistant message is stored so the UI
+-- can reload the conversation and the model gets cross-restart continuity.
+CREATE TABLE IF NOT EXISTS messages (
+  id          TEXT PRIMARY KEY,
+  session_id  TEXT NOT NULL,
+  role        TEXT NOT NULL,
+  content     TEXT NOT NULL,
+  ts          INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, ts);
+
 -- Floating-card canvas layout. One row per card; geometry + visibility only
 -- (title is a fixed label supplied by core/layout.ts). Both the user's drags
 -- (via IPC) and the AI's ui_layout tool read/write this same table.
@@ -108,4 +119,31 @@ export function setSetting(db: AlfredDb, key: string, value: string): void {
     key,
     value,
   );
+}
+
+export interface StoredMessage {
+  id: string;
+  sessionId: string;
+  role: string;
+  content: string;
+  ts: number;
+}
+
+/** Persist one chat message (idempotent on id). */
+export function insertMessage(db: AlfredDb, m: StoredMessage): void {
+  db.prepare('INSERT OR IGNORE INTO messages(id, session_id, role, content, ts) VALUES (?, ?, ?, ?, ?)').run(
+    m.id,
+    m.sessionId,
+    m.role,
+    m.content,
+    m.ts,
+  );
+}
+
+/** Recent messages across all sessions, oldest→newest (for UI reload + model continuity). */
+export function getRecentMessages(db: AlfredDb, limit = 100): StoredMessage[] {
+  const rows = db
+    .prepare('SELECT id, session_id AS sessionId, role, content, ts FROM messages ORDER BY ts DESC, rowid DESC LIMIT ?')
+    .all(limit) as StoredMessage[];
+  return rows.reverse();
 }
