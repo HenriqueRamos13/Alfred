@@ -8,7 +8,7 @@
  * injected `emit` callback (see index.ts), so IPC is only inbound commands
  * plus a couple of read queries.
  */
-import { ipcMain } from 'electron';
+import { app, ipcMain, type BrowserWindow } from 'electron';
 import type {
   ApprovalDecision,
   ProjectRecord,
@@ -44,4 +44,14 @@ export function registerIpc(core: Orchestrator): void {
     if (decision !== 'approve' && decision !== 'deny') return;
     core.resolveApproval({ id, decision });
   });
+}
+
+/**
+ * Window controls for the frameless overlay — without these (and the draggable
+ * top-bar in the UI) a frameless always-on-top window would trap the user.
+ */
+export function registerWindowIpc(win: BrowserWindow): void {
+  ipcMain.on('window:hide', () => win.hide());
+  ipcMain.on('window:quit', () => app.quit());
+  ipcMain.on('window:toggle', () => (win.isVisible() ? win.hide() : win.show()));
 }

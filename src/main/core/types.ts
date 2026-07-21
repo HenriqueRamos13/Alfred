@@ -90,6 +90,42 @@ export interface TokenUsage {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Cost visibility (estimated USD — the hard cap is still tokens; see budget.ts)
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface CostTotals {
+  inputTokens: number;
+  outputTokens: number;
+  tokens: number;
+  /** Estimated USD. */
+  usd: number;
+}
+
+export interface ModelCost extends CostTotals {
+  model: string;
+  /** True when no price is on file for this model (its usd is 0, not real). */
+  unknownPrice: boolean;
+}
+
+export interface CostSnapshot {
+  /** Brain id currently driving (e.g. 'anthropic'). */
+  activeBrain: string;
+  /** Model id currently driving (e.g. 'claude-sonnet-5'). */
+  activeModel: string;
+  day: string;
+  today: CostTotals;
+  session: CostTotals;
+  /** Per-model breakdown for today (all sessions). */
+  byModel: ModelCost[];
+  /** Hard token kill-switch for the day (from budget). */
+  dailyTokenCap: number;
+  /** Soft USD budget (ALFRED_DAILY_USD_BUDGET); undefined when unset. */
+  dailyUsdBudget?: number;
+  /** True when today's estimated USD passed the soft budget (warning only). */
+  overUsdBudget: boolean;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Audit
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -166,6 +202,7 @@ export type StreamEvent =
   | { kind: 'ui.render'; payload: RenderUiPayload }
   | { kind: 'agent.status'; sessionId: string; status: AgentStatus }
   | { kind: 'budget'; state: BudgetState }
+  | { kind: 'cost'; snapshot: CostSnapshot }
   | { kind: 'error'; sessionId: string; message: string };
 
 export type AgentStatus = 'idle' | 'thinking' | 'tool' | 'awaiting-approval' | 'error' | 'done';
@@ -280,6 +317,8 @@ export interface AlfredConfig {
   model: string;
   workspace: string;
   dailyTokenBudget: number;
+  /** Soft daily USD warning threshold (ALFRED_DAILY_USD_BUDGET); does not block. */
+  dailyUsdBudget?: number;
   stepCap: number;
   googleOAuthClientId?: string;
   googleOAuthClientSecret?: string;

@@ -25,6 +25,10 @@ const api = {
   listBrains: (): Promise<BrainInfo[]> => ipcRenderer.invoke('alfred:listBrains'),
   /** Launch the Gmail OAuth flow; resolves with the connected account. */
   connectGmail: (): Promise<AccountRecord | null> => ipcRenderer.invoke('alfred:connectGmail'),
+  /** Overlay window controls (frameless HUD). */
+  hideWindow: (): void => ipcRenderer.send('window:hide'),
+  quitWindow: (): void => ipcRenderer.send('window:quit'),
+  toggleWindow: (): void => ipcRenderer.send('window:toggle'),
   /** Subscribe to the main→renderer event stream. Returns an unsubscribe fn. */
   onStream: (cb: (event: StreamEvent) => void): (() => void) => {
     const listener = (_e: unknown, event: StreamEvent) => cb(event);

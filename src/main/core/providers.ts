@@ -22,6 +22,16 @@ import type { LanguageModel } from 'ai';
 
 type Env = Record<string, string | undefined>;
 
+/**
+ * A key counts as usable only when it's non-empty AND not an obvious placeholder
+ * (the `.env.example` keys are `sk-...xxxx...`). Prevents accidentally enabling a
+ * brain with a dummy key copied straight from the template.
+ */
+export function keyEnabled(key: string | undefined): boolean {
+  const k = (key ?? '').trim();
+  return k.length > 0 && !/xxxx/i.test(k);
+}
+
 /** Brain state as surfaced to the UI. */
 export interface BrainInfo {
   id: string;
@@ -86,21 +96,21 @@ function apiBrains(env: Env): ApiBrain[] {
     {
       id: 'anthropic',
       label: 'Anthropic (Claude API)',
-      enabled: !!anthropicKey,
+      enabled: keyEnabled(anthropicKey),
       model: aModel,
       makeModel: () => createAnthropic({ apiKey: anthropicKey })(aModel),
     },
     {
       id: 'openai',
       label: 'OpenAI (ChatGPT API)',
-      enabled: !!openaiKey,
+      enabled: keyEnabled(openaiKey),
       model: oModel,
       makeModel: () => createOpenAI({ apiKey: openaiKey })(oModel),
     },
     {
       id: 'deepseek',
       label: 'DeepSeek API',
-      enabled: !!deepseekKey,
+      enabled: keyEnabled(deepseekKey),
       model: dModel,
       makeModel: () => createDeepSeek({ apiKey: deepseekKey })(dModel),
     },

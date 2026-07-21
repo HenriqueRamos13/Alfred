@@ -20,7 +20,8 @@ import {
   isLoop,
 } from '../src/main/core/budget.ts';
 import { slugify } from '../src/main/core/projects.ts';
-import { defaultProviderId, parseProviderSpec, selectBrainId } from '../src/main/core/providers.ts';
+import { defaultProviderId, parseProviderSpec, selectBrainId, keyEnabled } from '../src/main/core/providers.ts';
+import { costOf, isKnownModel } from '../src/main/core/pricing.ts';
 
 test('classifyAction — read/list/search are T0 autopilot', () => {
   assert.equal(classifyAction('fs_read', { path: '/a' }), 'T0');
@@ -140,6 +141,33 @@ test('parseProviderSpec — bare id vs provider:model', () => {
     model: 'deepseek-reasoner',
   });
   assert.deepEqual(parseProviderSpec('anthropic:'), { id: 'anthropic', model: undefined });
+});
+
+test('keyEnabled — empty or xxxx-placeholder keys are disabled', () => {
+  assert.equal(keyEnabled(undefined), false);
+  assert.equal(keyEnabled(''), false);
+  assert.equal(keyEnabled('   '), false);
+  assert.equal(keyEnabled('sk-ant-xxxxxxxxxxxx'), false); // .env.example placeholder
+  assert.equal(keyEnabled('sk-XXXX'), false); // case-insensitive
+  assert.equal(keyEnabled('sk-ant-real0123456789'), true);
+});
+
+// ── pricing / cost estimation ────────────────────────────────────────────────
+
+test('costOf — known models priced per 1M tokens', () => {
+  // claude-sonnet-5: $2/M in, $10/M out
+  assert.equal(costOf('claude-sonnet-5', { inputTokens: 1_000_000, outputTokens: 0 }), 2);
+  assert.equal(costOf('claude-sonnet-5', { inputTokens: 0, outputTokens: 1_000_000 }), 10);
+  assert.equal(costOf('claude-sonnet-5', { inputTokens: 500_000, outputTokens: 100_000 }), 2);
+  // deepseek-v4-flash: $0.14/M in, $0.28/M out
+  assert.ok(Math.abs(costOf('deepseek-v4-flash', { inputTokens: 1_000_000, outputTokens: 1_000_000 }) - 0.42) < 1e-9);
+});
+
+test('costOf — unknown model falls back to 0, flagged by isKnownModel', () => {
+  assert.equal(costOf('mystery-model', { inputTokens: 1_000_000, outputTokens: 1_000_000 }), 0);
+  assert.equal(isKnownModel('mystery-model'), false);
+  assert.equal(isKnownModel('gpt-4o'), true);
+  assert.equal(isKnownModel('deepseek-v4-pro'), true);
 });
 
 test('selectBrainId — requested when enabled, else first enabled with fellBack', () => {

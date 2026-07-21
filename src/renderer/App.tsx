@@ -22,6 +22,7 @@ import type {
   ApprovalRequest,
   BudgetState,
   ChatMessage,
+  CostSnapshot,
   ProjectRecord,
   StreamEvent,
   UiNode,
@@ -51,6 +52,11 @@ function summarize(value: unknown): string {
   return s.length > 80 ? `${s.slice(0, 80)}…` : s;
 }
 
+/** Estimated USD: sub-dollar amounts need more precision to be meaningful. */
+function usd(n: number): string {
+  return `$${n < 1 ? n.toFixed(4) : n.toFixed(2)}`;
+}
+
 export default function App() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [streaming, setStreaming] = useState('');
@@ -60,6 +66,7 @@ export default function App() {
   const [approval, setApproval] = useState<ApprovalRequest | null>(null);
   const [tree, setTree] = useState<UiNode | null>(null);
   const [projects, setProjects] = useState<ProjectRecord[]>([]);
+  const [cost, setCost] = useState<CostSnapshot | null>(null);
   const [killed, setKilled] = useState(false);
 
   const logRef = useRef<HTMLDivElement>(null);
@@ -117,6 +124,9 @@ export default function App() {
         case 'budget':
           setBudget(e.state);
           break;
+        case 'cost':
+          setCost(e.snapshot);
+          break;
         case 'error':
           pushLog({ tag: 'ERROR', tone: 'red', msg: e.message });
           break;
@@ -162,6 +172,17 @@ export default function App() {
         <div />
       </div>
 
+      <div className="topbar">
+        <span className="topbar-title">◆ ALFRED</span>
+        <span className="topbar-spacer" />
+        <button type="button" className="topbar-btn no-drag" onClick={() => alfred.hideWindow()} title="Hide (⌘⇧A to toggle)">
+          HIDE
+        </button>
+        <button type="button" className="topbar-btn danger no-drag" onClick={() => alfred.quitWindow()} title="Quit Alfred">
+          QUIT
+        </button>
+      </div>
+
       <CommandBar status={status} killed={killed} budget={budget} onSubmit={onSubmit} onKill={onKill} />
 
       <div className="grid">
@@ -193,6 +214,69 @@ export default function App() {
         </div>
 
         <div className="col">
+          <section className="panel">
+            <div className="panel-head">
+              <div className="panel-title">
+                <span className="dot live" style={{ background: 'var(--lime)', boxShadow: '0 0 8px var(--lime)' }} />
+                COST · ESTIMATED US$
+              </div>
+              <span className="panel-meta">{cost ? cost.activeBrain.toUpperCase() : '—'}</span>
+            </div>
+            {cost ? (
+              <div className="cost">
+                <div className="cost-active">
+                  <span className="cost-active-label">ACTIVE MODEL</span>
+                  <span className="cost-active-model">{cost.activeModel}</span>
+                </div>
+                <div className="cost-tiles">
+                  <div className={`cost-tile${cost.overUsdBudget ? ' warn' : ''}`}>
+                    <span className="cost-tile-label">TODAY ~US$</span>
+                    <span className="cost-tile-value">{usd(cost.today.usd)}</span>
+                    <span className="cost-tile-sub">
+                      {cost.today.tokens.toLocaleString()} / {cost.dailyTokenCap.toLocaleString()} tok
+                    </span>
+                  </div>
+                  <div className="cost-tile">
+                    <span className="cost-tile-label">SESSION ~US$</span>
+                    <span className="cost-tile-value">{usd(cost.session.usd)}</span>
+                    <span className="cost-tile-sub">{cost.session.tokens.toLocaleString()} tok</span>
+                  </div>
+                </div>
+                {cost.overUsdBudget && (
+                  <div className="cost-warn">
+                    ⚠ over daily US$ budget ({usd(cost.dailyUsdBudget ?? 0)}) — soft warning, not blocking
+                  </div>
+                )}
+                <table className="cost-table">
+                  <thead>
+                    <tr>
+                      <th>MODEL</th>
+                      <th>TOK</th>
+                      <th>~US$</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {cost.byModel.map((m) => (
+                      <tr key={m.model}>
+                        <td>
+                          {m.model}
+                          {m.unknownPrice && ' *'}
+                        </td>
+                        <td>{m.tokens.toLocaleString()}</td>
+                        <td>{usd(m.usd)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+                {cost.byModel.some((m) => m.unknownPrice) && (
+                  <div className="cost-note">* no price on file — US$ estimated as 0</div>
+                )}
+              </div>
+            ) : (
+              <div className="empty">NO SPEND YET</div>
+            )}
+          </section>
+
           <section className="panel">
             <div className="panel-head">
               <div className="panel-title">

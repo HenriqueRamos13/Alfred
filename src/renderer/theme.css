@@ -23,7 +23,10 @@
 html, body, #root {
   margin: 0;
   height: 100%;
-  background: var(--bg);
+  /* Transparent so the overlay/HUD lets the desktop show through; the semi-
+     opaque .app backdrop below keeps the neon legible. In windowed mode the
+     window's own backgroundColor sits behind this. */
+  background: transparent;
 }
 
 body {
@@ -60,8 +63,9 @@ body {
   background:
     radial-gradient(1200px 700px at 70% -10%, rgba(24, 60, 96, 0.35), transparent 60%),
     radial-gradient(900px 600px at 0% 110%, rgba(70, 20, 80, 0.28), transparent 55%),
-    linear-gradient(180deg, #05070e, #04060c);
-  -webkit-app-region: drag; /* macOS hiddenInset titlebar drag */
+    /* semi-opaque base: desktop bleeds through in overlay mode, still readable */
+    linear-gradient(180deg, rgba(5, 7, 14, 0.86), rgba(4, 6, 12, 0.9));
+  -webkit-app-region: drag; /* frameless overlay + macOS titlebar: whole shell drags */
 }
 
 /* interactive children opt back out of the drag region */
@@ -186,6 +190,73 @@ body {
 .tone-magenta { color: var(--magenta); }
 .tone-red { color: var(--red); }
 .tone-dim { color: var(--dim); }
+
+/* ── top-bar (drag + HIDE/QUIT for the frameless overlay) ──────────── */
+.topbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-shrink: 0;
+}
+.topbar-title {
+  font-size: 11px;
+  letter-spacing: 3px;
+  font-weight: 700;
+  color: var(--cyan);
+  text-shadow: 0 0 10px rgba(53, 229, 255, 0.5);
+}
+.topbar-spacer { flex: 1; }
+.topbar-btn {
+  background: rgba(10, 16, 28, 0.6);
+  border: 1px solid var(--panel-border);
+  color: var(--muted);
+  border-radius: 7px;
+  padding: 4px 12px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 1.5px;
+  font-weight: 700;
+  cursor: pointer;
+}
+.topbar-btn:hover { color: var(--text); border-color: rgba(64, 224, 255, 0.4); }
+.topbar-btn.danger { color: var(--red); border-color: rgba(255, 59, 82, 0.4); }
+.topbar-btn.danger:hover { background: rgba(255, 59, 82, 0.12); }
+
+/* ── cost panel ────────────────────────────────────────────────────── */
+.cost { display: flex; flex-direction: column; gap: 10px; min-height: 0; overflow: auto; }
+.cost-active {
+  display: flex; flex-direction: column; gap: 2px;
+  padding-bottom: 8px; border-bottom: 1px solid var(--panel-border);
+}
+.cost-active-label { font-size: 9px; letter-spacing: 1.5px; color: #4d6b80; }
+.cost-active-model {
+  font-size: 15px; font-weight: 700; color: var(--violet);
+  text-shadow: 0 0 10px rgba(185, 139, 255, 0.4);
+}
+.cost-tiles { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.cost-tile {
+  display: flex; flex-direction: column; gap: 3px;
+  padding: 8px 10px; border-radius: 9px;
+  background: rgba(10, 16, 28, 0.5); border: 1px solid var(--panel-border);
+}
+.cost-tile.warn { border-color: rgba(255, 176, 32, 0.6); }
+.cost-tile-label { font-size: 9px; letter-spacing: 1.5px; color: #4d6b80; }
+.cost-tile-value {
+  font-size: 22px; font-weight: 700; color: var(--lime);
+  text-shadow: 0 0 12px rgba(184, 255, 58, 0.35);
+}
+.cost-tile.warn .cost-tile-value { color: var(--amber); text-shadow: 0 0 12px rgba(255, 176, 32, 0.45); }
+.cost-tile-sub { font-size: 10px; color: var(--dim); }
+.cost-warn { font-size: 10.5px; color: var(--amber); letter-spacing: 0.5px; }
+.cost-table { width: 100%; border-collapse: collapse; font-size: 11px; }
+.cost-table th {
+  text-align: left; padding: 4px 6px; color: #7fa6bd;
+  border-bottom: 1px solid var(--panel-border);
+  font-size: 9px; letter-spacing: 1px; font-weight: 700;
+}
+.cost-table th:not(:first-child), .cost-table td:not(:first-child) { text-align: right; }
+.cost-table td { padding: 4px 6px; color: #9fb6c6; border-bottom: 1px solid rgba(64, 224, 255, 0.07); }
+.cost-note { font-size: 9.5px; color: var(--dim); letter-spacing: 0.5px; }
 
 /* ── approval overlay ──────────────────────────────────────────────── */
 .overlay {

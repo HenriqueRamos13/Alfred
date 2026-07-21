@@ -36,6 +36,19 @@ CREATE TABLE IF NOT EXISTS budget (
   tokens  INTEGER NOT NULL DEFAULT 0
 );
 
+-- Cost visibility (estimated USD per model, per day, per session). The hard
+-- kill-switch stays on the token counters above; this is additive.
+CREATE TABLE IF NOT EXISTS usage_by_model (
+  day           TEXT NOT NULL,
+  session_id    TEXT NOT NULL,
+  model         TEXT NOT NULL,
+  input_tokens  INTEGER NOT NULL DEFAULT 0,
+  output_tokens INTEGER NOT NULL DEFAULT 0,
+  cost_usd      REAL NOT NULL DEFAULT 0,
+  PRIMARY KEY (day, session_id, model)
+);
+CREATE INDEX IF NOT EXISTS idx_usage_day ON usage_by_model(day);
+
 CREATE TABLE IF NOT EXISTS projects (
   slug     TEXT PRIMARY KEY,
   name     TEXT NOT NULL,

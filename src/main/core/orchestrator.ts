@@ -78,6 +78,10 @@ export interface OrchestratorDeps {
   tools: Tool[];
   /** Resolved AI-SDK model for this turn (selected brain). */
   model: LanguageModel;
+  /** Brain id (e.g. 'anthropic') driving this turn. */
+  brainId: string;
+  /** Model id (e.g. 'claude-sonnet-5') driving this turn — used for cost. */
+  modelId: string;
   /** Brain id/model label, for logs. */
   brainLabel: string;
   /** Extra system context (active project manifest, etc.), assembled by the caller. */
@@ -93,11 +97,16 @@ export class Orchestrator {
   private controller: AbortController | null = null;
   private readonly history: string[] = [];
   private stopInfo: StopInfo | null = null;
+  private usdWarned = false;
 
   constructor(private readonly deps: OrchestratorDeps) {
     this.budget = new BudgetTracker(
       deps.ctx.db,
-      { dailyLimit: deps.config.dailyTokenBudget, stepCap: deps.config.stepCap },
+      {
+        dailyLimit: deps.config.dailyTokenBudget,
+        stepCap: deps.config.stepCap,
+        dailyUsdBudget: deps.config.dailyUsdBudget,
+      },
       deps.ctx.sessionId,
     );
     this.stepCap = deps.config.stepCap;
@@ -143,11 +152,21 @@ export class Orchestrator {
         },
         // Runs after every model call — count usage from ANY provider.
         onStepFinish: ({ usage }) => {
-          const state = this.budget.record({
-            inputTokens: usage.inputTokens ?? 0,
-            outputTokens: usage.outputTokens ?? 0,
-          });
+          const state = this.budget.record(
+            { inputTokens: usage.inputTokens ?? 0, outputTokens: usage.outputTokens ?? 0 },
+            this.deps.modelId,
+          );
           ctx.emit({ kind: 'budget', state });
+          const snapshot = this.budget.costSnapshot(this.deps.brainId, this.deps.modelId);
+          ctx.emit({ kind: 'cost', snapshot });
+          if (snapshot.overUsdBudget && !this.usdWarned) {
+            this.usdWarned = true;
+            ctx.emit({
+              kind: 'error',
+              sessionId: ctx.sessionId,
+              message: `Soft budget: est. $${snapshot.today.usd.toFixed(2)} today exceeds ALFRED_DAILY_USD_BUDGET ($${snapshot.dailyUsdBudget}). Not blocking (token cap still applies).`,
+            });
+          }
         },
       });
 
@@ -396,6 +415,8 @@ export function createOrchestrator(opts: CreateOrchestratorOpts): OrchestratorHa
         ctx,
         tools,
         model: provider.languageModel,
+        brainId: provider.id,
+        modelId: provider.model,
         brainLabel: `${provider.id}:${provider.model}`,
         projectContext: await projectContext(text),
       });
