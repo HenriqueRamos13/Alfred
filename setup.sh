@@ -40,6 +40,30 @@ npm run rebuild
 say "Installing Playwright Chromium"
 npx playwright install chromium
 
+# 4a. Verify (and auto-repair) the macOS toolchain before compiling the Swift
+#     helper. On a half-configured Mac `xcrun --show-sdk-path` fails to resolve
+#     an SDK (symptom: "failed to load module CoreFoundation"), which breaks the
+#     swiftc build in 4b. We repair it automatically so the user need not run
+#     commands by hand. VOICE INPUT IS OPTIONAL, so this step must NEVER abort
+#     setup: every step that can fail is guarded (if-condition or `|| true`) so
+#     `set -e` can't trip. sudo runs ONLY when the SDK genuinely won't resolve,
+#     to avoid a needless password prompt. Idempotent: safe to re-run.
+if ! xcrun --show-sdk-path >/dev/null 2>&1; then
+  say "macOS toolchain looks misconfigured — trying to repair it (may ask for your password)"
+  sudo xcode-select --reset || true
+  if ! xcrun --show-sdk-path >/dev/null 2>&1; then
+    # Reset didn't fix it — the Command Line Tools are likely missing/incomplete.
+    # Kick off the (non-blocking) installer and warn clearly; don't abort.
+    xcode-select --install 2>/dev/null || true
+    cat >&2 <<'TOOLCHAIN'
+
+⚠  The Command Line Tools may be missing or incomplete. Finish the install in
+   the window that appears (or install Xcode), then run ./setup.sh again.
+   Voice INPUT stays disabled until then; the rest of Alfred works.
+TOOLCHAIN
+  fi
+fi
+
 # 4b. Compile the on-device speech-to-text helper (Swift → native binary).
 #     Uses SFSpeechRecognizer + AVAudioEngine; only builds on macOS. VOICE INPUT
 #     IS OPTIONAL — Alfred runs fine without this binary (stt.ts handles it being

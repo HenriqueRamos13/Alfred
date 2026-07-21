@@ -122,7 +122,10 @@ found"*, re-run `./setup.sh`.
 ### Troubleshooting: CoreFoundation / Swift build
 
 If the Swift compile fails (e.g. *"failed to load module CoreFoundation"*), the
-macOS toolchain is usually mis-pointed. Repair it, then recompile manually:
+macOS toolchain is usually mis-pointed. `./setup.sh` now attempts this repair
+automatically (it resets the toolchain and, if needed, reinstalls the Command
+Line Tools) before compiling — so re-running `./setup.sh` is usually enough. To
+repair it by hand instead, then recompile manually:
 
 ```sh
 xcode-select -p            # show the active developer dir
