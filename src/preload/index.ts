@@ -36,6 +36,8 @@ const api = {
   /** Persist a card patch from a drag/resize; resolves with the new layout. */
   updateCard: (id: string, patch: CardPatch): Promise<CardLayout[]> =>
     ipcRenderer.invoke('alfred:updateCard', id, patch),
+  /** Report the live canvas size so the AI's ui_layout tool knows the bounds. */
+  setViewport: (w: number, h: number): void => ipcRenderer.send('alfred:setViewport', w, h),
   /** Overlay window controls (frameless HUD). */
   hideWindow: (): void => ipcRenderer.send('window:hide'),
   quitWindow: (): void => ipcRenderer.send('window:quit'),

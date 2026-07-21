@@ -39,6 +39,8 @@ export interface Orchestrator {
   getLayout(): CardLayout[] | Promise<CardLayout[]>;
   /** Persist a card patch from a user drag/resize; returns the new layout. */
   updateCard(id: string, patch: CardPatch): CardLayout[] | Promise<CardLayout[]>;
+  /** Record the live canvas size (renderer) so the AI's ui_layout stays in-bounds. */
+  setViewport(w: number, h: number): void;
 }
 
 /** Trust boundary: keep only well-formed numeric/boolean fields from the renderer. */
@@ -99,6 +101,12 @@ export function registerIpc(core: Orchestrator, emit: (e: StreamEvent) => void):
     } catch (err) {
       fail('update card', err);
       return [] as CardLayout[];
+    }
+  });
+
+  ipcMain.on('alfred:setViewport', (_e, w: unknown, h: unknown) => {
+    if (typeof w === 'number' && typeof h === 'number' && Number.isFinite(w) && Number.isFinite(h)) {
+      core.setViewport(w, h);
     }
   });
 

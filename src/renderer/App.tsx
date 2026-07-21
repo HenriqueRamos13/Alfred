@@ -17,6 +17,7 @@ import { ChatLog } from './components/ChatLog.tsx';
 import { ProjectList } from './components/ProjectList.tsx';
 import { ApprovalPrompt } from './components/ApprovalPrompt.tsx';
 import { DraggableCard } from './components/DraggableCard.tsx';
+import { clampBox, tileLayout, type Bounds } from '../main/core/layout.ts';
 import type {
   AgentStatus,
   ApprovalDecision,
@@ -79,9 +80,36 @@ export default function App() {
   const [activeBrain, setActiveBrain] = useState<string | null>(null);
   const [cards, setCards] = useState<CardLayout[]>([]);
 
+  const [bounds, setBounds] = useState<Bounds | null>(null);
+
   const logRef = useRef<HTMLDivElement>(null);
+  const canvasRef = useRef<HTMLDivElement>(null);
   const cardsRef = useRef<CardLayout[]>([]);
   cardsRef.current = cards;
+
+  // Track the real canvas size: clamp cards on-screen and tell main so the AI's
+  // ui_layout tool knows the live bounds.
+  useEffect(() => {
+    const el = canvasRef.current;
+    if (!el) return;
+    const report = () => {
+      const b = { w: el.clientWidth, h: el.clientHeight };
+      setBounds(b);
+      alfred.setViewport(b.w, b.h);
+    };
+    report();
+    const ro = new ResizeObserver(report);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
+  /** Recoloca todos os cards (incl. escondidos) numa grelha limpa ajustada à janela. */
+  const arrangeAll = () => {
+    if (!bounds) return;
+    const list = cardsRef.current;
+    const tiles = tileLayout(list.map((c) => c.id), bounds);
+    list.forEach((c, i) => patchCard(c.id, { ...tiles[i], visible: true }));
+  };
 
   const patchCard = (id: string, patch: CardPatch) => {
     // Optimistic: reflect immediately; the 'layout' event will confirm.
@@ -383,6 +411,14 @@ export default function App() {
           </button>
         ))}
         <span className="topbar-spacer" />
+        <button
+          type="button"
+          className="topbar-btn no-drag"
+          onClick={arrangeAll}
+          title="Organise all cards into a clean grid"
+        >
+          ⊞ ORGANIZAR
+        </button>
         <button type="button" className="topbar-btn no-drag" onClick={() => alfred.hideWindow()} title="Hide (⌘⇧A to toggle)">
           HIDE
         </button>
@@ -420,15 +456,17 @@ export default function App() {
         </div>
       )}
 
-      <div className="canvas">
+      <div className="canvas" ref={canvasRef}>
         {cards
           .filter((c) => c.visible)
           .map((c) => {
             const { meta, body } = cardParts(c.id);
+            // Defensive: never render a card off-screen, whatever the store/AI wrote.
+            const view = bounds ? { ...c, ...clampBox(c, bounds) } : c;
             return (
               <DraggableCard
                 key={c.id}
-                card={c}
+                card={view}
                 meta={meta}
                 onChange={(patch) => patchCard(c.id, patch)}
                 onFocus={() => focusCard(c.id)}

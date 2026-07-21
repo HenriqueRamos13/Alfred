@@ -73,7 +73,15 @@ Governance you must respect:
   report rather than repeating.
 Organise substantial work as projects under the workspace (ICM
 folder-as-context); render live status into the surface with render_ui using
-only the whitelisted components.`;
+only the whitelisted components.
+
+You can inspect and reorganise your own floating control-centre cards with the
+ui_layout tool (T1, no approval): get_layout (also returns the canvas viewport
+size — the bounds you must stay within), move_card, resize_card, show_card,
+hide_card, arrange (tidy every card into a clean grid that fits the window) and
+reset (restore defaults). Coordinates are pixels relative to the canvas whose
+width/height get_layout reports; call get_layout first, since the user drags
+cards too.`;
 
 /** Reason the loop was hard-stopped by a guardrail (vs a plain user stop). */
 type StopInfo = { kind: 'budget' | 'step' | 'loop'; message: string };
@@ -420,6 +428,8 @@ export interface OrchestratorHandle {
   getLayout(): CardLayout[];
   /** Persist a card patch (user drag/resize), emit 'layout', return the new layout. */
   updateCard(id: string, patch: CardPatch): CardLayout[];
+  /** Record the live canvas size (renderer) so ui_layout stays in-bounds. */
+  setViewport(w: number, h: number): void;
 }
 
 export function createOrchestrator(opts: CreateOrchestratorOpts): OrchestratorHandle {
@@ -616,6 +626,9 @@ export function createOrchestrator(opts: CreateOrchestratorOpts): OrchestratorHa
       const cards = writeCard(db, id, patch);
       emit({ kind: 'layout', cards });
       return cards;
+    },
+    setViewport(w, h) {
+      setSetting(db, 'viewport', `${Math.round(w)}x${Math.round(h)}`);
     },
   };
 }

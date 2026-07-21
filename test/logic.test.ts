@@ -28,6 +28,7 @@ import {
   resolveActiveBrainId,
 } from '../src/main/core/providers.ts';
 import { costOf, isKnownModel } from '../src/main/core/pricing.ts';
+import { clampBox, tileLayout } from '../src/main/core/layout.ts';
 
 test('classifyAction — read/list/search are T0 autopilot', () => {
   assert.equal(classifyAction('fs_read', { path: '/a' }), 'T0');
@@ -190,6 +191,43 @@ test('selectBrainId — requested when enabled, else first enabled with fellBack
   // nothing enabled → null, no fallback
   const none = brains.map((b) => ({ ...b, enabled: false }));
   assert.deepEqual(selectBrainId('openai', none), { id: null, fellBack: false });
+});
+
+// ── card layout: clamp + responsive tiling ──────────────────────────────────
+
+test('clampBox keeps a card on-screen and never larger than the canvas', () => {
+  const b = { w: 1000, h: 800 };
+  // negative origin pulled back to 0
+  assert.deepEqual(clampBox({ x: -50, y: -80, w: 300, h: 200 }, b), { x: 0, y: 0, w: 300, h: 200 });
+  // far off bottom-right → at least a sliver (MIN_VISIBLE) + header stay inside
+  const c = clampBox({ x: 9999, y: 9999, w: 300, h: 200 }, b);
+  assert.ok(c.x >= 0 && c.x <= b.w, 'x within canvas');
+  assert.ok(c.x < b.w, 'some of the card is visible horizontally');
+  assert.ok(c.y >= 0 && c.y < b.h, 'header stays reachable');
+  // oversized card capped to the canvas
+  const big = clampBox({ x: 0, y: 0, w: 5000, h: 5000 }, b);
+  assert.equal(big.w, 1000);
+  assert.equal(big.h, 800);
+  // sub-minimum size floored to the minimum card size
+  assert.equal(clampBox({ x: 0, y: 0, w: 10, h: 10 }, b).w, 220);
+  assert.equal(clampBox({ x: 0, y: 0, w: 10, h: 10 }, b).h, 120);
+});
+
+test('tileLayout fits every card inside the bounds, in order', () => {
+  const ids = ['a', 'b', 'c', 'd', 'e', 'f'];
+  const tiles = tileLayout(ids, { w: 1200, h: 800 });
+  assert.equal(tiles.length, ids.length);
+  for (const t of tiles) {
+    assert.ok(t.x >= 0 && t.y >= 0, 'non-negative origin');
+    assert.ok(t.x + t.w <= 1200 + 1, 'within width');
+    assert.ok(t.y + t.h <= 800 + 1, 'within height');
+    assert.ok(t.w >= 220 && t.h >= 120, 'respects minimum size');
+  }
+  assert.equal(tileLayout([], { w: 100, h: 100 }).length, 0);
+  // narrow window → single column, cards stacked vertically
+  const narrow = tileLayout(['a', 'b'], { w: 300, h: 800 });
+  assert.equal(narrow[0].x, narrow[1].x);
+  assert.ok(narrow[1].y > narrow[0].y);
 });
 
 test('resolveActiveBrainId — persisted → env → first enabled (claude-code last)', () => {

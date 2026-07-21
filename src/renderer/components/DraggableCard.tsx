@@ -2,16 +2,19 @@
  * A floating, draggable, resizable card. Positioned absolutely from the layout
  * store; dragged by its header, resized from the bottom-right handle, brought to
  * the front on any pointer-down. Local box state gives smooth 60fps drags; on
- * release (and on drag-end) it persists via onChange. When the store pushes a
- * new position (e.g. the AI moved this card) and we're not mid-drag, we resync.
+ * release it persists via onChange. When the store pushes a new position (e.g.
+ * the AI moved this card) and we're not mid-drag, we resync.
  *
- * No external drag library — pointer events + pointer capture only.
+ * Drag is rect-based, not delta-based: on pointerdown we measure the real card
+ * and canvas rects (getBoundingClientRect) and remember where inside the card
+ * the cursor grabbed. On move the new position is `cursor - grabOffset -
+ * canvasOrigin`, so the card follows the cursor exactly regardless of the
+ * canvas's own offset (the .app padding, header chrome, etc.) — no jump — and
+ * every position is clamped on-screen. No external drag library.
  */
 import { useEffect, useRef, useState, type PointerEvent, type ReactNode } from 'react';
 import type { CardLayout, CardPatch } from '../../main/core/types.ts';
-
-const MIN_W = 220;
-const MIN_H = 120;
+import { clampBox, MIN_W, MIN_H } from '../../main/core/layout.ts';
 
 interface Props {
   card: CardLayout;
@@ -24,10 +27,17 @@ interface Props {
 
 interface DragState {
   mode: 'move' | 'resize';
-  px: number;
-  py: number;
-  ax: number;
-  ay: number;
+  /** Cursor offset inside the card at grab time (move). */
+  grabDX: number;
+  grabDY: number;
+  /** Card's viewport top-left at grab time (resize). */
+  cardLeft: number;
+  cardTop: number;
+  /** Canvas rect at grab time — the coordinate origin + clamp bounds. */
+  canvasLeft: number;
+  canvasTop: number;
+  canvasW: number;
+  canvasH: number;
 }
 
 export function DraggableCard({ card, meta, onChange, onFocus, onHide, children }: Props) {
@@ -38,7 +48,7 @@ export function DraggableCard({ card, meta, onChange, onFocus, onHide, children 
   const rootRef = useRef<HTMLDivElement>(null);
 
   // Resync to the store when it changes underneath us (AI move, other window)
-  // — but never while the user is actively dragging this card.
+  // — but never while the user is actively dragging this card (drag ref set).
   useEffect(() => {
     if (!drag.current) setBox({ x: card.x, y: card.y, w: card.w, h: card.h });
   }, [card.x, card.y, card.w, card.h]);
@@ -46,27 +56,41 @@ export function DraggableCard({ card, meta, onChange, onFocus, onHide, children 
   const start = (mode: 'move' | 'resize') => (e: PointerEvent) => {
     if ((e.target as HTMLElement).closest('button')) return; // let header buttons work
     e.preventDefault();
-    // focus already fired via onPointerDownCapture on the root
+    const root = rootRef.current;
+    if (!root) return;
+    const cardRect = root.getBoundingClientRect();
+    // Cards live directly inside .canvas; its rect is the coordinate origin.
+    const canvas = (root.parentElement ?? root).getBoundingClientRect();
     drag.current = {
       mode,
-      px: e.clientX,
-      py: e.clientY,
-      ax: mode === 'move' ? box.x : box.w,
-      ay: mode === 'move' ? box.y : box.h,
+      grabDX: e.clientX - cardRect.left,
+      grabDY: e.clientY - cardRect.top,
+      cardLeft: cardRect.left,
+      cardTop: cardRect.top,
+      canvasLeft: canvas.left,
+      canvasTop: canvas.top,
+      canvasW: canvas.width,
+      canvasH: canvas.height,
     };
-    rootRef.current?.setPointerCapture(e.pointerId);
+    root.setPointerCapture(e.pointerId);
   };
 
   const onMove = (e: PointerEvent) => {
     const d = drag.current;
     if (!d) return;
-    const dx = e.clientX - d.px;
-    const dy = e.clientY - d.py;
-    setBox((b) =>
-      d.mode === 'move'
-        ? { ...b, x: Math.max(0, d.ax + dx), y: Math.max(0, d.ay + dy) }
-        : { ...b, w: Math.max(MIN_W, d.ax + dx), h: Math.max(MIN_H, d.ay + dy) },
-    );
+    const bounds = { w: d.canvasW, h: d.canvasH };
+    if (d.mode === 'move') {
+      const x = e.clientX - d.grabDX - d.canvasLeft;
+      const y = e.clientY - d.grabDY - d.canvasTop;
+      setBox((b) => ({ ...b, ...clampBox({ x, y, w: b.w, h: b.h }, bounds) }));
+    } else {
+      // Resize from the card's fixed top-left; clamp so it never exits the canvas.
+      setBox((b) => {
+        const w = Math.min(Math.max(MIN_W, e.clientX - d.cardLeft), Math.max(MIN_W, d.canvasW - b.x));
+        const h = Math.min(Math.max(MIN_H, e.clientY - d.cardTop), Math.max(MIN_H, d.canvasH - b.y));
+        return { ...b, w: Math.round(w), h: Math.round(h) };
+      });
+    }
   };
 
   const onUp = (e: PointerEvent) => {
@@ -86,7 +110,8 @@ export function DraggableCard({ card, meta, onChange, onFocus, onHide, children 
     <div
       ref={rootRef}
       className="dcard panel"
-      style={{ left: box.x, top: box.y, width: box.w, height: box.h, zIndex: card.z }}
+      // position:absolute inline so it always wins over .panel's position:relative.
+      style={{ position: 'absolute', left: box.x, top: box.y, width: box.w, height: box.h, zIndex: card.z }}
       onPointerDownCapture={() => onFocus()}
       onPointerMove={onMove}
       onPointerUp={onUp}
