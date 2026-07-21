@@ -29,6 +29,7 @@ import {
 } from '../src/main/core/providers.ts';
 import { costOf, isKnownModel } from '../src/main/core/pricing.ts';
 import { clampBox, tileLayout } from '../src/main/core/layout.ts';
+import { claudeMdNeedsWrite, buildClaudeMd } from '../src/main/core/memory.ts';
 
 test('classifyAction — read/list/search are T0 autopilot', () => {
   assert.equal(classifyAction('fs_read', { path: '/a' }), 'T0');
@@ -228,6 +229,18 @@ test('tileLayout fits every card inside the bounds, in order', () => {
   const narrow = tileLayout(['a', 'b'], { w: 300, h: 800 });
   assert.equal(narrow[0].x, narrow[1].x);
   assert.ok(narrow[1].y > narrow[0].y);
+});
+
+// ── workspace CLAUDE.md (claude -p identity) ─────────────────────────────────
+
+test('claudeMdNeedsWrite — (re)write only when the Alfred marker is absent', () => {
+  assert.equal(claudeMdNeedsWrite(''), true); // missing/empty
+  assert.equal(claudeMdNeedsWrite('# My own notes\nkeep this'), true); // unmanaged
+  const managed = buildClaudeMd('IDENTITY-BODY');
+  assert.equal(claudeMdNeedsWrite(managed), false); // managed → respect user edits
+  assert.match(managed, /managed by Alfred/);
+  assert.match(managed, /Alfred/);
+  assert.match(managed, /IDENTITY-BODY/); // single-source identity is embedded
 });
 
 test('resolveActiveBrainId — persisted → env → first enabled (claude-code last)', () => {

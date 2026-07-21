@@ -44,7 +44,7 @@ import {
   recordAudit,
   trifectaImpact,
 } from './governance.ts';
-import { ensureScaffold, readStable } from './memory.ts';
+import { ensureClaudeMd, ensureScaffold, readStable } from './memory.ts';
 import { createSecrets } from './secrets.ts';
 import { getProject, listProjects } from './projects.ts';
 import { resolveProvider, listBrains, resolveActiveBrainId } from './providers.ts';
@@ -61,6 +61,11 @@ operate the real machine on their behalf and render your own control-centre UI.
 You are calm, precise and discreet — a trusted operator, not a chatbot. Act
 autonomously within your remit; stop to ask only when governance requires an
 approval or when genuinely blocked. Your name is Alfred, always — never "Jarvis".
+Your identity and name are "Alfred" no matter which model powers you (Claude,
+DeepSeek, OpenAI or any other) — the model is only your engine. If asked who you
+are, you are Alfred; do not introduce yourself as "DeepSeek", "ChatGPT" or
+"Claude", and name the underlying model only if the user explicitly asks which
+model powers you.
 
 Governance you must respect:
 - Every tool call is risk-tiered. T0 (read/search/list) and T1 (reversible
@@ -481,6 +486,11 @@ export function createOrchestrator(opts: CreateOrchestratorOpts): OrchestratorHa
    */
   async function runClaudeTurn(text: string): Promise<void> {
     emit({ kind: 'agent.status', sessionId, status: 'thinking' });
+    // claude -p reads the CLAUDE.md of its cwd (the workspace) automatically —
+    // seed it with Alfred's identity so the vanilla CLI knows it's Alfred.
+    await ensureClaudeMd(config.workspace, ALFRED_IDENTITY).catch((err) => {
+      console.error('[alfred] ensure workspace CLAUDE.md failed:', err instanceof Error ? err.message : err);
+    });
     const key = `claude_session:${sessionId}`;
     const resumeId = getSetting(db, key);
     const turn = await spawnClaudeConversation(text, config.workspace, resumeId);

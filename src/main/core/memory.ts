@@ -36,6 +36,39 @@ async function exists(file: string): Promise<boolean> {
   }
 }
 
+const MANAGED_MARKER = '<!-- managed by Alfred -->';
+
+/** (Re)write the workspace CLAUDE.md when it's missing or not Alfred-managed. */
+export function claudeMdNeedsWrite(content: string): boolean {
+  return !content.includes(MANAGED_MARKER);
+}
+
+/** Workspace CLAUDE.md body, from the single-source ALFRED_IDENTITY. */
+export function buildClaudeMd(identity: string): string {
+  return `${MANAGED_MARKER}
+# Alfred — Claude Code brain
+
+Claude Code is operating as the **Alfred** brain of this Agent OS. Your name is
+**Alfred**, always — never "Jarvis". The identity below is authoritative; follow
+it in every reply.
+
+${identity}
+`;
+}
+
+/**
+ * Ensure <workspace>/CLAUDE.md carries Alfred's identity so \`claude -p\` (whose
+ * cwd is the workspace) reads it automatically. Write-if-missing to respect user
+ * edits, but re-write when the managed marker is gone. Idempotent.
+ */
+export async function ensureClaudeMd(workspace: string, identity: string): Promise<void> {
+  await mkdir(workspace, { recursive: true });
+  const file = join(workspace, 'CLAUDE.md');
+  if (claudeMdNeedsWrite(await readOptional(file))) {
+    await writeFile(file, buildClaudeMd(identity), 'utf8');
+  }
+}
+
 /** Create the memory dir and seed empty Layer-3 files if absent. Idempotent. */
 export async function ensureScaffold(workspace: string): Promise<void> {
   const p = paths(workspace);
