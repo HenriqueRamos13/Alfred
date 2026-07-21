@@ -180,13 +180,23 @@ body {
   position: absolute;
   right: 0;
   bottom: 0;
-  width: 16px;
-  height: 16px;
+  width: 26px;
+  height: 26px;
   cursor: nwse-resize;
   touch-action: none;
-  background: linear-gradient(135deg, transparent 50%, rgba(64, 224, 255, 0.4) 50%);
+  background: linear-gradient(135deg, transparent 45%, rgba(64, 224, 255, 0.35) 45%, rgba(64, 224, 255, 0.35) 60%, transparent 60%, transparent 72%, rgba(64, 224, 255, 0.55) 72%);
   border-bottom-right-radius: 14px;
 }
+.dcard-resize:hover { background: linear-gradient(135deg, transparent 42%, rgba(64, 224, 255, 0.6) 42%, rgba(64, 224, 255, 0.6) 60%, transparent 60%, transparent 70%, rgba(64, 224, 255, 0.9) 70%); }
+/* Full-length edge grips — resize by dragging the right/bottom border. */
+.dcard-resize-edge {
+  position: absolute;
+  touch-action: none;
+  background: transparent;
+}
+.dcard-resize-edge.right { top: 8px; bottom: 26px; right: 0; width: 8px; cursor: ew-resize; }
+.dcard-resize-edge.bottom { left: 8px; right: 26px; bottom: 0; height: 8px; cursor: ns-resize; }
+.dcard-resize-edge:hover { background: rgba(64, 224, 255, 0.25); }
 
 /* ── glass panel ───────────────────────────────────────────────────── */
 .panel {
@@ -253,8 +263,8 @@ body {
 }
 
 /* ── activity log (OBSERVABILITY) ──────────────────────────────────── */
-.log { flex: 1; min-height: 0; display: flex; flex-direction: column; justify-content: flex-end; gap: 2px; font-size: 11px; line-height: 1.5; overflow: hidden; }
-.log-row { display: flex; gap: 9px; white-space: nowrap; overflow: hidden; }
+.log { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 2px; font-size: 11px; line-height: 1.5; overflow-y: auto; }
+.log-row { display: flex; gap: 9px; white-space: nowrap; overflow: hidden; flex-shrink: 0; }
 .log-time { color: #4d6b80; flex-shrink: 0; }
 .log-tag { font-weight: 700; flex-shrink: 0; width: 88px; overflow: hidden; text-overflow: ellipsis; }
 .log-msg { color: #9fb6c6; overflow: hidden; text-overflow: ellipsis; }
@@ -427,6 +437,37 @@ body {
 .topbar-btn:hover { color: var(--text); border-color: rgba(64, 224, 255, 0.4); }
 .topbar-btn.danger { color: var(--red); border-color: rgba(255, 59, 82, 0.4); }
 .topbar-btn.danger:hover { background: rgba(255, 59, 82, 0.12); }
+/* DANGEROUS mode ON — the toggle is unmistakably lit. */
+.topbar-btn.danger.on {
+  color: #fff;
+  background: var(--red);
+  border-color: var(--red);
+  animation: alarm 1.1s ease-in-out infinite;
+}
+
+/* ── DANGEROUS mode: whole-app red alarm so it can never be missed ──── */
+.app.dangerous {
+  animation: alarm 1.4s ease-in-out infinite;
+  outline: 2px solid rgba(255, 59, 82, 0.85);
+  outline-offset: -2px;
+}
+.danger-banner {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 60; /* above the top strip */
+  text-align: center;
+  padding: 5px 12px;
+  background: var(--red);
+  color: #fff;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 2px;
+  pointer-events: none;
+  animation: flick 1.1s ease-in-out infinite;
+}
 
 /* ── cost panel ────────────────────────────────────────────────────── */
 .cost { display: flex; flex-direction: column; gap: 10px; min-height: 0; overflow: auto; }

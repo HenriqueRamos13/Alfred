@@ -12,7 +12,7 @@ const TIER_COLOR: Record<string, string> = {
 
 export interface ApprovalPromptProps {
   request: ApprovalRequest;
-  onResolve: (id: string, decision: ApprovalDecision) => void;
+  onResolve: (id: string, decision: ApprovalDecision, remember?: boolean) => void;
 }
 
 export function ApprovalPrompt({ request, onResolve }: ApprovalPromptProps) {
@@ -82,6 +82,22 @@ export function ApprovalPrompt({ request, onResolve }: ApprovalPromptProps) {
           }}
         >
           Deny
+        </button>
+        <button
+          type="button"
+          title="Approve now and auto-approve this action from now on (no more prompts for it)"
+          onClick={() => onResolve(request.id, 'approve', true)}
+          style={{
+            background: 'transparent',
+            border: '1px solid var(--neon-green, #34d399)',
+            color: 'var(--neon-green, #34d399)',
+            borderRadius: 6,
+            padding: '6px 16px',
+            cursor: 'pointer',
+            fontFamily: 'inherit',
+          }}
+        >
+          Approve &amp; don&apos;t ask again
         </button>
         <button
           type="button"

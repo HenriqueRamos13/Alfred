@@ -11,6 +11,7 @@ import type {
   CardLayout,
   CardPatch,
   ChatMessage,
+  CostSnapshot,
 } from '../main/core/types.ts';
 import type { BrainInfo } from '../main/core/providers.ts';
 
@@ -25,9 +26,14 @@ const api = {
   getHistory: (limit?: number): Promise<ChatMessage[]> => ipcRenderer.invoke('alfred:getHistory', limit),
   /** Kill switch — abort the running task. */
   stop: (): void => ipcRenderer.send('alfred:stop'),
-  /** Resolve a pending HITL approval. */
-  resolveApproval: (id: string, decision: ApprovalDecision): void =>
-    ipcRenderer.send('alfred:resolveApproval', id, decision),
+  /** Resolve a pending HITL approval. `remember` persists an auto-approve rule for this tool:op. */
+  resolveApproval: (id: string, decision: ApprovalDecision, remember?: boolean): void =>
+    ipcRenderer.send('alfred:resolveApproval', id, decision, remember === true),
+  /** DANGEROUS mode (bypass all approvals) — persisted; read on mount. */
+  getDangerousMode: (): Promise<boolean> => ipcRenderer.invoke('alfred:getDangerousMode'),
+  setDangerousMode: (on: boolean): Promise<boolean> => ipcRenderer.invoke('alfred:setDangerousMode', on),
+  /** Clear all persisted auto-approve rules. */
+  resetApprovals: (): void => ipcRenderer.send('alfred:resetApprovals'),
   listProjects: (): Promise<ProjectRecord[]> => ipcRenderer.invoke('alfred:listProjects'),
   listAccounts: (): Promise<AccountRecord[]> => ipcRenderer.invoke('alfred:listAccounts'),
   /** Brain availability (enabled/disabled) for the UI. */
@@ -45,6 +51,8 @@ const api = {
     ipcRenderer.invoke('alfred:updateCard', id, patch),
   /** Report the live canvas size so the AI's ui_layout tool knows the bounds. */
   setViewport: (w: number, h: number): void => ipcRenderer.send('alfred:setViewport', w, h),
+  /** Today's persisted cost snapshot, read on mount so COST isn't empty at open. */
+  getCost: (): Promise<CostSnapshot | null> => ipcRenderer.invoke('alfred:getCost'),
   /** Overlay window controls (frameless HUD). */
   hideWindow: (): void => ipcRenderer.send('window:hide'),
   quitWindow: (): void => ipcRenderer.send('window:quit'),

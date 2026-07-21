@@ -5,8 +5,9 @@
  *
  * Window modes (ALFRED_WINDOW_MODE):
  *   overlay  (default) — frameless, transparent, always-on-top HUD covering the
- *                        primary display. Drag/HIDE/QUIT live in the UI top-bar;
- *                        CommandOrControl+Shift+A toggles visibility.
+ *                        virtual desktop (all displays). Drag/HIDE/QUIT live in
+ *                        the UI top-bar; CommandOrControl+Shift+A or +Shift+H
+ *                        toggles visibility.
  *   windowed           — classic bordered window (fallback if the overlay annoys).
  */
 import { app, BrowserWindow, globalShortcut, screen } from 'electron';
@@ -21,6 +22,7 @@ import { registerIpc, registerWindowIpc, type Orchestrator } from './ipc.ts';
 import type { AlfredConfig, StreamEvent } from './core/types.ts';
 
 const TOGGLE_SHORTCUT = 'CommandOrControl+Shift+A';
+const TOGGLE_SHORTCUT_H = 'CommandOrControl+Shift+H';
 
 /**
  * Load the `.env` into process.env BEFORE config is read — without this no API
@@ -151,14 +153,26 @@ function createWindowedWindow(): BrowserWindow {
   });
 }
 
-/** Frameless transparent HUD covering the primary display, floating on top. */
+/**
+ * The virtual-desktop rectangle: the UNION of every display's bounds. The
+ * overlay spans all monitors so a card can be dragged from one to the other.
+ * NOTE (macOS): for a single window to cover 2 monitors, "Displays have
+ * separate Spaces" must be OFF (System Settings → Desktop & Dock → Mission
+ * Control). If it's ON, macOS confines the window to one monitor.
+ */
+function virtualBounds(): { x: number; y: number; width: number; height: number } {
+  const displays = screen.getAllDisplays();
+  const minX = Math.min(...displays.map((d) => d.bounds.x));
+  const minY = Math.min(...displays.map((d) => d.bounds.y));
+  const maxR = Math.max(...displays.map((d) => d.bounds.x + d.bounds.width));
+  const maxB = Math.max(...displays.map((d) => d.bounds.y + d.bounds.height));
+  return { x: minX, y: minY, width: maxR - minX, height: maxB - minY };
+}
+
+/** Frameless transparent HUD covering ALL displays (virtual desktop), floating on top. */
 function createOverlayWindow(): BrowserWindow {
-  const { x, y, width, height } = screen.getPrimaryDisplay().bounds;
   const win = new BrowserWindow({
-    x,
-    y,
-    width,
-    height,
+    ...virtualBounds(),
     frame: false,
     transparent: true,
     hasShadow: false,
@@ -170,6 +184,19 @@ function createOverlayWindow(): BrowserWindow {
   });
   win.setAlwaysOnTop(true, 'screen-saver');
   win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+
+  // Re-cover the virtual desktop whenever the display arrangement changes.
+  const refit = () => {
+    if (!win.isDestroyed()) win.setBounds(virtualBounds());
+  };
+  screen.on('display-added', refit);
+  screen.on('display-removed', refit);
+  screen.on('display-metrics-changed', refit);
+  win.on('closed', () => {
+    screen.removeListener('display-added', refit);
+    screen.removeListener('display-removed', refit);
+    screen.removeListener('display-metrics-changed', refit);
+  });
   return win;
 }
 
@@ -217,14 +244,16 @@ app.whenReady().then(() => {
   const win = boot();
 
   // Global toggle so the overlay can always be summoned/dismissed.
-  globalShortcut.register(TOGGLE_SHORTCUT, () => {
+  const toggle = () => {
     const w = BrowserWindow.getAllWindows()[0] ?? win;
     if (w.isVisible()) w.hide();
     else {
       w.show();
       w.focus();
     }
-  });
+  };
+  globalShortcut.register(TOGGLE_SHORTCUT, toggle);
+  globalShortcut.register(TOGGLE_SHORTCUT_H, toggle);
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) boot();

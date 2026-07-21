@@ -24,6 +24,12 @@ drive the machine: filesystem, shell, a real browser, and read-only Gmail.
 - **Memory (ICM)** — stable, human-curated `preferences.md` / `house-rules.md`
   plus per-session working notes.
 - **Secrets** — stored in the macOS Keychain via the `security` CLI, never on disk.
+- **Multi-monitor overlay** — the HUD spans the whole virtual desktop (union of
+  all displays), so cards drag freely between monitors. Toggle visibility with
+  `⌘/Ctrl+Shift+A` or `⌘/Ctrl+Shift+H`.
+  > macOS note: for one window to cover 2 monitors, **turn OFF** "Displays have
+  > separate Spaces" (System Settings → Desktop & Dock → Mission Control) and
+  > log out/in. If it's ON, macOS confines the overlay to a single monitor.
 
 ## Architecture
 

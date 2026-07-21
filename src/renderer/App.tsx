@@ -82,6 +82,7 @@ export default function App() {
   const [brains, setBrains] = useState<BrainInfo[]>([]);
   const [activeBrain, setActiveBrain] = useState<string | null>(null);
   const [cards, setCards] = useState<CardLayout[]>([]);
+  const [dangerous, setDangerous] = useState(false);
 
   const [bounds, setBounds] = useState<Bounds | null>(null);
 
@@ -237,6 +238,10 @@ export default function App() {
     // Reload the persisted conversation so history survives restarts.
     alfred.getHistory().then(setMessages).catch(() => {});
     alfred.getLayout().then(setCards).catch(() => {});
+    // Show today's persisted spend immediately (don't wait for the first turn).
+    alfred.getCost().then((c) => c && setCost(c)).catch(() => {});
+    // Reflect the persisted DANGEROUS-mode state in the toggle + visuals.
+    alfred.getDangerousMode().then(setDangerous).catch(() => {});
     const off = alfred.onStream((e: StreamEvent) => {
       switch (e.kind) {
         case 'chat.delta':
@@ -265,7 +270,11 @@ export default function App() {
           pushLog({
             tag: 'HITL',
             tone: e.resolution.decision === 'approve' ? 'lime' : 'red',
-            msg: e.resolution.timedOut ? `${e.resolution.decision} (timeout)` : e.resolution.decision,
+            msg: e.resolution.timedOut
+              ? `${e.resolution.decision} (timeout)`
+              : e.resolution.note
+                ? `${e.resolution.decision} — ${e.resolution.note}`
+                : e.resolution.decision,
           });
           break;
         case 'ui.render':
@@ -326,9 +335,31 @@ export default function App() {
     pushLog({ tag: 'KERNEL', tone: 'red', msg: '!! kill switch engaged' });
   };
 
-  const onResolve = (id: string, decision: ApprovalDecision) => {
-    alfred.resolveApproval(id, decision);
+  const onResolve = (id: string, decision: ApprovalDecision, remember?: boolean) => {
+    alfred.resolveApproval(id, decision, remember);
+    if (remember && decision === 'approve') {
+      pushLog({ tag: 'HITL', tone: 'amber', msg: 'rule saved — won’t ask again for this action' });
+    }
     setApproval((a) => (a && a.id === id ? null : a));
+  };
+
+  const toggleDangerous = () => {
+    const next = !dangerous;
+    setDangerous(next); // optimistic
+    alfred
+      .setDangerousMode(next)
+      .then(setDangerous)
+      .catch(() => setDangerous(!next));
+    pushLog({
+      tag: 'KERNEL',
+      tone: next ? 'red' : 'lime',
+      msg: next ? '!! DANGEROUS MODE ON — approvals bypassed' : 'dangerous mode off — approvals restored',
+    });
+  };
+
+  const resetApprovals = () => {
+    alfred.resetApprovals();
+    pushLog({ tag: 'HITL', tone: 'lime', msg: 'auto-approve rules cleared' });
   };
 
   /** Right-of-header meta + scrollable body for each card, keyed by id. */
@@ -507,10 +538,16 @@ export default function App() {
   const hidden = cards.filter((c) => !c.visible);
 
   return (
-    <div className="app">
+    <div className={`app${dangerous ? ' dangerous' : ''}`}>
       <div className="scanline">
         <div />
       </div>
+
+      {dangerous && (
+        <div className="danger-banner" role="alert">
+          ⚠ DANGEROUS MODE — approvals off · every action auto-runs
+        </div>
+      )}
 
       {/* Always-visible hint that the strip lives at the top edge; fades out once revealed. */}
       <div className={`top-hint${stripOpen ? ' hidden' : ''}`} aria-hidden />
@@ -535,6 +572,22 @@ export default function App() {
             </button>
           ))}
           <span className="topbar-spacer" />
+          <button
+            type="button"
+            className="topbar-btn no-drag"
+            onClick={resetApprovals}
+            title="Clear all saved auto-approve rules (start asking again)"
+          >
+            ⟲ RESET APPROVALS
+          </button>
+          <button
+            type="button"
+            className={`topbar-btn danger no-drag${dangerous ? ' on' : ''}`}
+            onClick={toggleDangerous}
+            title="Bypass ALL approvals (T2/T3 auto-run). Persisted. Use with care."
+          >
+            {dangerous ? '● DANGEROUS ON' : '○ DANGEROUS'}
+          </button>
           <button
             type="button"
             className="topbar-btn no-drag"

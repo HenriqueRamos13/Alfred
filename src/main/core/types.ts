@@ -67,6 +67,8 @@ export interface ApprovalResolution {
   decision: ApprovalDecision;
   /** True when the decision came from the fail-safe timeout (treated as deny). */
   timedOut?: boolean;
+  /** Provenance when auto-resolved without a prompt (e.g. "auto (rule)", "auto (dangerous mode)"). */
+  note?: string;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -145,6 +147,8 @@ export interface AuditEntry {
   result?: unknown;
   error?: string;
   durationMs?: number;
+  /** Approval provenance when the call ran without a human prompt (e.g. "auto (rule)", "auto (dangerous mode)"). */
+  note?: string;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

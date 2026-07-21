@@ -16,6 +16,7 @@ import type {
   CardLayout,
   CardPatch,
   ChatMessage,
+  CostSnapshot,
   StreamEvent,
 } from './core/types.ts';
 import type { BrainInfo } from './core/providers.ts';
@@ -27,8 +28,13 @@ export interface Orchestrator {
   getHistory(limit?: number): ChatMessage[] | Promise<ChatMessage[]>;
   /** Kill switch — abort the running task. */
   stop(): void;
-  /** Resolve a pending HITL approval (unblocks governance.requestApproval). */
-  resolveApproval(resolution: { id: string; decision: ApprovalDecision }): void;
+  /** Resolve a pending HITL approval (unblocks governance.requestApproval). `remember` persists an auto-approve rule. */
+  resolveApproval(resolution: { id: string; decision: ApprovalDecision; remember?: boolean }): void;
+  /** DANGEROUS mode (bypass all approvals): read/toggle, persisted. */
+  getDangerousMode(): boolean | Promise<boolean>;
+  setDangerousMode(on: boolean): boolean | Promise<boolean>;
+  /** Clear all persisted auto-approve rules. */
+  resetApprovals(): void;
   listProjects(): ProjectRecord[] | Promise<ProjectRecord[]>;
   listAccounts(): AccountRecord[] | Promise<AccountRecord[]>;
   /** Brain availability for the UI. */
@@ -44,6 +50,8 @@ export interface Orchestrator {
   updateCard(id: string, patch: CardPatch): CardLayout[] | Promise<CardLayout[]>;
   /** Record the live canvas size (renderer) so the AI's ui_layout stays in-bounds. */
   setViewport(w: number, h: number): void;
+  /** Today's persisted cost snapshot (read at startup). */
+  getCost(): CostSnapshot | Promise<CostSnapshot>;
 }
 
 /** Trust boundary: keep only well-formed numeric/boolean fields from the renderer. */
@@ -116,6 +124,8 @@ export function registerIpc(core: Orchestrator, emit: (e: StreamEvent) => void):
     }
   });
 
+  ipcMain.handle('alfred:getCost', guard('get cost', () => core.getCost(), null as CostSnapshot | null));
+
   ipcMain.on('alfred:setViewport', (_e, w: unknown, h: unknown) => {
     if (typeof w === 'number' && typeof h === 'number' && Number.isFinite(w) && Number.isFinite(h)) {
       core.setViewport(w, h);
@@ -123,11 +133,28 @@ export function registerIpc(core: Orchestrator, emit: (e: StreamEvent) => void):
   });
 
   ipcMain.on('alfred:stop', () => core.stop());
-  ipcMain.on('alfred:resolveApproval', (_e, id: unknown, decision: unknown) => {
+  ipcMain.on('alfred:resolveApproval', (_e, id: unknown, decision: unknown, remember: unknown) => {
     // Trust boundary: only forward well-formed decisions.
     if (typeof id !== 'string') return;
     if (decision !== 'approve' && decision !== 'deny') return;
-    core.resolveApproval({ id, decision });
+    core.resolveApproval({ id, decision, remember: remember === true });
+  });
+
+  ipcMain.handle('alfred:getDangerousMode', guard('get dangerous mode', () => core.getDangerousMode(), false));
+  ipcMain.handle('alfred:setDangerousMode', async (_e, on: unknown) => {
+    try {
+      return await core.setDangerousMode(on === true);
+    } catch (err) {
+      fail('set dangerous mode', err);
+      return false;
+    }
+  });
+  ipcMain.on('alfred:resetApprovals', () => {
+    try {
+      core.resetApprovals();
+    } catch (err) {
+      fail('reset approvals', err);
+    }
   });
 }
 

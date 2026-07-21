@@ -3,6 +3,7 @@
  * user/system/tool turns render as plain text.
  * App-driven (not renderable via render_ui). Theme tokens: see Panel.tsx.
  */
+import { useEffect, useRef } from 'react';
 import type { ChatMessage, ChatRole } from '../../main/core/types.ts';
 import { Markdown } from './Markdown.tsx';
 
@@ -26,6 +27,12 @@ export function ChatLog({ messages, streaming }: ChatLogProps) {
     key: m.id,
   }));
   if (streaming) rows.push({ role: 'assistant', content: streaming, key: '__streaming__' });
+
+  // Auto-scroll to the newest message / streamed token (same behaviour as the activity log).
+  const endRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    endRef.current?.scrollIntoView({ block: 'end' });
+  }, [messages, streaming]);
 
   return (
     <div className="alfred-chatlog" style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
@@ -66,6 +73,7 @@ export function ChatLog({ messages, streaming }: ChatLogProps) {
           </div>
         );
       })}
+      <div ref={endRef} />
     </div>
   );
 }

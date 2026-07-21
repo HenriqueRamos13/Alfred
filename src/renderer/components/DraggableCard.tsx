@@ -1,7 +1,8 @@
 /**
  * A floating, draggable, resizable card. Positioned absolutely from the layout
- * store; dragged by its header, resized from the bottom-right handle, brought to
- * the front on any pointer-down. Local box state gives smooth 60fps drags; on
+ * store; dragged by its header, resized from the bottom-right corner or the
+ * right/bottom edges, brought to the front on any pointer-down. Local box state
+ * gives smooth 60fps drags; on
  * release it persists via onChange. When the store pushes a new position (e.g.
  * the AI moved this card) and we're not mid-drag, we resync.
  *
@@ -27,6 +28,8 @@ interface Props {
 
 interface DragState {
   mode: 'move' | 'resize';
+  /** Which dimensions this resize edits ('both' = corner, 'x' = right edge, 'y' = bottom edge). */
+  dir: 'both' | 'x' | 'y';
   /** Cursor offset inside the card at grab time (move). */
   grabDX: number;
   grabDY: number;
@@ -53,7 +56,7 @@ export function DraggableCard({ card, meta, onChange, onFocus, onHide, children 
     if (!drag.current) setBox({ x: card.x, y: card.y, w: card.w, h: card.h });
   }, [card.x, card.y, card.w, card.h]);
 
-  const start = (mode: 'move' | 'resize') => (e: PointerEvent) => {
+  const start = (mode: 'move' | 'resize', dir: 'both' | 'x' | 'y' = 'both') => (e: PointerEvent) => {
     if ((e.target as HTMLElement).closest('button')) return; // let header buttons work
     e.preventDefault();
     const root = rootRef.current;
@@ -63,6 +66,7 @@ export function DraggableCard({ card, meta, onChange, onFocus, onHide, children 
     const canvas = (root.parentElement ?? root).getBoundingClientRect();
     drag.current = {
       mode,
+      dir,
       grabDX: e.clientX - cardRect.left,
       grabDY: e.clientY - cardRect.top,
       cardLeft: cardRect.left,
@@ -85,10 +89,17 @@ export function DraggableCard({ card, meta, onChange, onFocus, onHide, children 
       setBox((b) => ({ ...b, ...clampBox({ x, y, w: b.w, h: b.h }, bounds) }));
     } else {
       // Resize from the card's fixed top-left; clamp so it never exits the canvas.
+      // `dir` restricts editing to the grabbed axis (right edge = width only, etc.).
       setBox((b) => {
-        const w = Math.min(Math.max(MIN_W, e.clientX - d.cardLeft), Math.max(MIN_W, d.canvasW - b.x));
-        const h = Math.min(Math.max(MIN_H, e.clientY - d.cardTop), Math.max(MIN_H, d.canvasH - b.y));
-        return { ...b, w: Math.round(w), h: Math.round(h) };
+        const w =
+          d.dir === 'y'
+            ? b.w
+            : Math.round(Math.min(Math.max(MIN_W, e.clientX - d.cardLeft), Math.max(MIN_W, d.canvasW - b.x)));
+        const h =
+          d.dir === 'x'
+            ? b.h
+            : Math.round(Math.min(Math.max(MIN_H, e.clientY - d.cardTop), Math.max(MIN_H, d.canvasH - b.y)));
+        return { ...b, w, h };
       });
     }
   };
@@ -129,7 +140,9 @@ export function DraggableCard({ card, meta, onChange, onFocus, onHide, children 
         </div>
       </div>
       <div className="dcard-body">{children}</div>
-      <div className="dcard-resize" onPointerDown={start('resize')} title="Resize" />
+      <div className="dcard-resize-edge right no-drag" onPointerDown={start('resize', 'x')} title="Resize width" />
+      <div className="dcard-resize-edge bottom no-drag" onPointerDown={start('resize', 'y')} title="Resize height" />
+      <div className="dcard-resize no-drag" onPointerDown={start('resize', 'both')} title="Resize" />
     </div>
   );
 }

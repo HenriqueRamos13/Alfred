@@ -9,7 +9,14 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { classifyAction, isEgressTool, trifectaImpact, maskSecrets } from '../src/main/core/governance.ts';
+import {
+  classifyAction,
+  isEgressTool,
+  trifectaImpact,
+  maskSecrets,
+  approvalKey,
+  isAutoApproved,
+} from '../src/main/core/governance.ts';
 import {
   dayKey,
   makeBudget,
@@ -92,6 +99,24 @@ test('maskSecrets redacts secret-looking keys', () => {
   assert.equal(masked.token, '***');
   assert.equal((masked.nested as Record<string, unknown>).password, '***');
   assert.equal(masked.path, '/ok');
+});
+
+test('approvalKey — tool:op when args carry an op, else the bare tool name', () => {
+  assert.equal(approvalKey('filesystem', { op: 'delete', path: '/a' }), 'filesystem:delete');
+  assert.equal(approvalKey('gmail', { op: 'send' }), 'gmail:send');
+  assert.equal(approvalKey('gmail_send', {}), 'gmail_send'); // no op field
+  assert.equal(approvalKey('shell', { command: 'rm -rf x' }), 'shell'); // op absent → whole tool
+  assert.equal(approvalKey('filesystem', { op: '  ' }), 'filesystem'); // blank op ignored
+  assert.equal(approvalKey('t', null), 't');
+});
+
+test('isAutoApproved — a stored rule scopes to exactly its tool:op', () => {
+  const rules = ['filesystem:delete', 'gmail_send'];
+  assert.equal(isAutoApproved(rules, 'filesystem', { op: 'delete', path: '/x' }), true);
+  assert.equal(isAutoApproved(rules, 'filesystem', { op: 'write', path: '/x' }), false); // different op
+  assert.equal(isAutoApproved(rules, 'gmail_send', {}), true);
+  assert.equal(isAutoApproved(rules, 'shell', { command: 'rm' }), false);
+  assert.equal(isAutoApproved([], 'filesystem', { op: 'delete' }), false); // no rules → ask
 });
 
 test('dayKey formats local YYYY-MM-DD', () => {

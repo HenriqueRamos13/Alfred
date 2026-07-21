@@ -27,7 +27,8 @@ CREATE TABLE IF NOT EXISTS audit (
   status      TEXT NOT NULL,
   result      TEXT,
   error       TEXT,
-  duration_ms INTEGER
+  duration_ms INTEGER,
+  note        TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_audit_session ON audit(session_id, ts);
 
@@ -104,6 +105,10 @@ export function openDb(dbPath: string): AlfredDb {
   db.pragma('journal_mode = WAL');
   db.pragma('foreign_keys = ON');
   db.exec(SCHEMA);
+  // Idempotent migration: `audit.note` (auto-approval provenance) for DBs created
+  // before it existed. CREATE TABLE IF NOT EXISTS above won't add columns.
+  const hasNote = (db.prepare('PRAGMA table_info(audit)').all() as { name: string }[]).some((c) => c.name === 'note');
+  if (!hasNote) db.exec('ALTER TABLE audit ADD COLUMN note TEXT');
   return db;
 }
 

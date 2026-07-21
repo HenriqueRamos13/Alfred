@@ -91,6 +91,25 @@ export function fullTrifecta(f: TrifectaFlags): boolean {
   return f.readUntrusted && f.hasPrivate && f.canEgress;
 }
 
+// ── auto-approve rules ─────────────────────────────────────────────────────────
+
+/**
+ * Persisted-rule key for a tool call: `tool:op` when the args carry an `op`
+ * field (e.g. `filesystem:delete`), otherwise the bare tool name. Storing and
+ * matching both go through this, so "don't ask again" scopes exactly to the
+ * op the human approved, not the whole tool.
+ */
+export function approvalKey(toolName: string, args: unknown): string {
+  const a = args && typeof args === 'object' ? (args as Record<string, unknown>) : {};
+  const op = typeof a.op === 'string' ? a.op.trim() : '';
+  return op ? `${toolName}:${op}` : toolName;
+}
+
+/** True when a persisted auto-approve rule covers this call. */
+export function isAutoApproved(rules: readonly string[], toolName: string, args: unknown): boolean {
+  return rules.includes(approvalKey(toolName, args));
+}
+
 // ── audit ─────────────────────────────────────────────────────────────────────
 
 const SECRET_KEY = /token|secret|password|passwd|api[-_]?key|authorization|credential|cookie|bearer/i;
@@ -110,8 +129,8 @@ export function maskSecrets(value: unknown): unknown {
 
 export function recordAudit(db: DB, entry: AuditEntry): void {
   db.prepare(
-    `INSERT INTO audit (session_id, ts, tool_name, args, tier, status, result, error, duration_ms)
-     VALUES (@sessionId, @ts, @toolName, @args, @tier, @status, @result, @error, @durationMs)`,
+    `INSERT INTO audit (session_id, ts, tool_name, args, tier, status, result, error, duration_ms, note)
+     VALUES (@sessionId, @ts, @toolName, @args, @tier, @status, @result, @error, @durationMs, @note)`,
   ).run({
     sessionId: entry.sessionId,
     ts: entry.ts,
@@ -122,6 +141,7 @@ export function recordAudit(db: DB, entry: AuditEntry): void {
     result: entry.result === undefined ? null : JSON.stringify(entry.result),
     error: entry.error ?? null,
     durationMs: entry.durationMs ?? null,
+    note: entry.note ?? null,
   });
 }
 
@@ -129,10 +149,24 @@ export function recordAudit(db: DB, entry: AuditEntry): void {
 
 export interface GovernanceHandle {
   governance: Governance;
-  /** Called by IPC when the human answers an approval prompt. */
-  resolveApproval(id: string, decision: ApprovalResolution['decision']): void;
+  /** Called by IPC when the human answers an approval prompt. `remember` persists an auto-approve rule. */
+  resolveApproval(id: string, decision: ApprovalResolution['decision'], remember?: boolean): void;
   /** Reset trifecta flags (e.g. at the start of a new task). */
   resetTrifecta(): void;
+}
+
+/**
+ * Persisted approval controls, injected so governance stays free of the native
+ * DB import (keeps it strip-types testable). The orchestrator wires these to
+ * `settings`. Absent → no bypass, every T2/T3 asks the human.
+ */
+export interface ApprovalStore {
+  /** DANGEROUS mode: auto-approve everything. */
+  isDangerous(): boolean;
+  /** Current auto-approve rule keys. */
+  rules(): string[];
+  /** Persist a new auto-approve rule ("don't ask again"). */
+  rememberRule(key: string): void;
 }
 
 export function createGovernance(opts: {
@@ -140,17 +174,25 @@ export function createGovernance(opts: {
   emit: (e: StreamEvent) => void;
   /** Fail-safe: unanswered approvals resolve as deny after this many ms. */
   timeoutMs?: number;
+  store?: ApprovalStore;
 }): GovernanceHandle {
   const timeoutMs = opts.timeoutMs ?? 5 * 60_000;
-  const pending = new Map<string, (r: ApprovalResolution) => void>();
+  const pending = new Map<string, { done: (r: ApprovalResolution) => void; req: ApprovalRequest }>();
   let flags: TrifectaFlags = { readUntrusted: false, hasPrivate: false, canEgress: false };
 
   function finish(res: ApprovalResolution): void {
-    const done = pending.get(res.id);
-    if (!done) return;
+    const entry = pending.get(res.id);
+    if (!entry) return;
     pending.delete(res.id);
-    done(res);
+    entry.done(res);
     opts.emit({ kind: 'approval.resolved', resolution: res });
+  }
+
+  /** Resolve without prompting the human; the tool still runs (and is audited normally). */
+  function autoApprove(req: ApprovalRequest, note: string): Promise<ApprovalResolution> {
+    const res: ApprovalResolution = { id: req.id, decision: 'approve', note };
+    opts.emit({ kind: 'approval.resolved', resolution: res });
+    return Promise.resolve(res);
   }
 
   const governance: Governance = {
@@ -158,13 +200,15 @@ export function createGovernance(opts: {
 
     requestApproval(reqPartial) {
       const req: ApprovalRequest = { ...reqPartial, id: randomUUID(), createdAt: Date.now() };
+      // Precedence: DANGEROUS mode > auto-approve rule > ask the human.
+      if (opts.store?.isDangerous()) return autoApprove(req, 'auto (dangerous mode)');
+      if (opts.store && isAutoApproved(opts.store.rules(), req.toolName, req.args)) {
+        return autoApprove(req, 'auto (rule)');
+      }
       opts.emit({ kind: 'approval.request', request: req });
       return new Promise<ApprovalResolution>((resolve) => {
         const timer = setTimeout(() => finish({ id: req.id, decision: 'deny', timedOut: true }), timeoutMs);
-        pending.set(req.id, (r) => {
-          clearTimeout(timer);
-          resolve(r);
-        });
+        pending.set(req.id, { req, done: (r) => { clearTimeout(timer); resolve(r); } });
       });
     },
 
@@ -179,7 +223,11 @@ export function createGovernance(opts: {
 
   return {
     governance,
-    resolveApproval(id, decision) {
+    resolveApproval(id, decision, remember) {
+      const entry = pending.get(id);
+      if (entry && decision === 'approve' && remember && opts.store) {
+        opts.store.rememberRule(approvalKey(entry.req.toolName, entry.req.args));
+      }
       finish({ id, decision });
     },
     resetTrifecta() {

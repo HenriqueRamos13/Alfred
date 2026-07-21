@@ -28,6 +28,7 @@ import type {
   CardLayout,
   CardPatch,
   ChatMessage,
+  CostSnapshot,
   ProjectRecord,
   RiskTier,
   StreamEvent,
@@ -322,6 +323,9 @@ export class Orchestrator {
 
     ctx.emit({ kind: 'tool.start', sessionId: ctx.sessionId, toolName: t.name, args: maskSecrets(args), tier });
 
+    // Provenance persisted in the audit when the call ran without a human prompt
+    // (auto-approve rule or DANGEROUS mode) — so the forensic trail shows the bypass.
+    let approvalNote: string | undefined;
     if (needApproval) {
       ctx.emit({ kind: 'agent.status', sessionId: ctx.sessionId, status: 'awaiting-approval' });
       const resolution = await ctx.governance.requestApproval({
@@ -331,6 +335,7 @@ export class Orchestrator {
         tier,
         reason,
       });
+      approvalNote = resolution.note;
       if (resolution.decision === 'deny') {
         this.audit({
           toolName: t.name,
@@ -358,12 +363,13 @@ export class Orchestrator {
         result: out.ok ? out.result : undefined,
         error: out.error,
         durationMs: Date.now() - started,
+        note: approvalNote,
       });
       ctx.emit({ kind: 'tool.end', sessionId: ctx.sessionId, toolName: t.name, status, error: out.error });
       return out.ok ? out.result ?? {} : { error: out.error };
     } catch (err) {
       const error = err instanceof Error ? err.message : String(err);
-      this.audit({ toolName: t.name, args, tier, status: 'error', error, durationMs: Date.now() - started });
+      this.audit({ toolName: t.name, args, tier, status: 'error', error, durationMs: Date.now() - started, note: approvalNote });
       ctx.emit({ kind: 'tool.end', sessionId: ctx.sessionId, toolName: t.name, status: 'error', error });
       return { error };
     }
@@ -434,7 +440,12 @@ export interface OrchestratorHandle {
   /** Recent persisted chat messages (oldest→newest) for the UI to reload on open. */
   getHistory(limit?: number): ChatMessage[];
   stop(): void;
-  resolveApproval(resolution: { id: string; decision: ApprovalDecision }): void;
+  resolveApproval(resolution: { id: string; decision: ApprovalDecision; remember?: boolean }): void;
+  /** DANGEROUS mode (bypass all approvals): read/toggle, persisted. */
+  getDangerousMode(): boolean;
+  setDangerousMode(on: boolean): boolean;
+  /** Clear all persisted auto-approve rules ("ask again next time"). */
+  resetApprovals(): void;
   listProjects(): ProjectRecord[];
   listAccounts(): AccountRecord[];
   /** Brain availability (enabled/disabled) for the UI. */
@@ -450,6 +461,8 @@ export interface OrchestratorHandle {
   updateCard(id: string, patch: CardPatch): CardLayout[];
   /** Record the live canvas size (renderer) so ui_layout stays in-bounds. */
   setViewport(w: number, h: number): void;
+  /** Today's persisted cost snapshot, read at startup so the COST card isn't empty. */
+  getCost(): CostSnapshot;
 }
 
 export function createOrchestrator(opts: CreateOrchestratorOpts): OrchestratorHandle {
@@ -470,7 +483,31 @@ export function createOrchestrator(opts: CreateOrchestratorOpts): OrchestratorHa
     opts.emit(event);
   };
 
-  const gov = createGovernance({ sessionId, emit });
+  // Persisted approval controls (Phase B): DANGEROUS mode + auto-approve rules.
+  const readRules = (): string[] => {
+    const raw = getSetting(db, 'auto_approve');
+    if (!raw) return [];
+    try {
+      const v = JSON.parse(raw);
+      return Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : [];
+    } catch {
+      return [];
+    }
+  };
+  const isDangerous = (): boolean => getSetting(db, 'dangerous_mode') === '1';
+
+  const gov = createGovernance({
+    sessionId,
+    emit,
+    store: {
+      isDangerous,
+      rules: readRules,
+      rememberRule(key) {
+        const rules = readRules();
+        if (!rules.includes(key)) setSetting(db, 'auto_approve', JSON.stringify([...rules, key]));
+      },
+    },
+  });
   const browser = createBrowserHandle(join(opts.dataDir, 'browser-profile'));
 
   const ctx: ToolCtx = {
@@ -487,6 +524,14 @@ export function createOrchestrator(opts: CreateOrchestratorOpts): OrchestratorHa
   void ensureScaffold(config.workspace).catch(() => {});
 
   let active: Orchestrator | null = null;
+
+  // Read-only budget view for the startup cost snapshot (turn accounting lives
+  // in each turn's own tracker; this only READS the shared SQLite tables).
+  const costTracker = new BudgetTracker(
+    db,
+    { dailyLimit: config.dailyTokenBudget, stepCap: config.stepCap, dailyUsdBudget: config.dailyUsdBudget },
+    sessionId,
+  );
 
   const queryAccounts = (): AccountRecord[] =>
     db
@@ -648,8 +693,18 @@ export function createOrchestrator(opts: CreateOrchestratorOpts): OrchestratorHa
     stop() {
       active?.abort();
     },
-    resolveApproval({ id, decision }) {
-      gov.resolveApproval(id, decision);
+    resolveApproval({ id, decision, remember }) {
+      gov.resolveApproval(id, decision, remember);
+    },
+    getDangerousMode() {
+      return isDangerous();
+    },
+    setDangerousMode(on) {
+      setSetting(db, 'dangerous_mode', on ? '1' : '0');
+      return isDangerous();
+    },
+    resetApprovals() {
+      setSetting(db, 'auto_approve', '[]');
     },
     listProjects() {
       return listProjects(db);
@@ -686,6 +741,25 @@ export function createOrchestrator(opts: CreateOrchestratorOpts): OrchestratorHa
     },
     setViewport(w, h) {
       setSetting(db, 'viewport', `${Math.round(w)}x${Math.round(h)}`);
+    },
+    getCost() {
+      const brainId = activeBrainId();
+      // claude-code spend is external (subscription) — mirror the turn-path shape.
+      if (brainId === 'claude-code') {
+        return {
+          activeBrain: 'claude-code',
+          activeModel: 'claude -p',
+          day: dayKey(),
+          today: { inputTokens: 0, outputTokens: 0, tokens: 0, usd: 0 },
+          session: { inputTokens: 0, outputTokens: 0, tokens: 0, usd: 0 },
+          byModel: [],
+          dailyTokenCap: config.dailyTokenBudget,
+          overUsdBudget: false,
+          external: true,
+        };
+      }
+      const brain = listBrains().find((b) => b.id === brainId);
+      return costTracker.costSnapshot(brainId ?? '—', brain?.model ?? '—');
     },
   };
 }
