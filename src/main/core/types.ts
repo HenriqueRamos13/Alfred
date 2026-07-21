@@ -275,6 +275,8 @@ export interface Tool<A = any> {
 
 export interface AlfredConfig {
   anthropicApiKey: string;
+  /** Default brain id ('anthropic' | 'openai' | 'deepseek'), from ALFRED_PROVIDER. */
+  provider: string;
   model: string;
   workspace: string;
   dailyTokenBudget: number;

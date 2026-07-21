@@ -20,6 +20,7 @@ import {
   isLoop,
 } from '../src/main/core/budget.ts';
 import { slugify } from '../src/main/core/projects.ts';
+import { defaultProviderId, parseProviderSpec, selectBrainId } from '../src/main/core/providers.ts';
 
 test('classifyAction — read/list/search are T0 autopilot', () => {
   assert.equal(classifyAction('fs_read', { path: '/a' }), 'T0');
@@ -119,4 +120,40 @@ test('slugify produces filesystem-safe slugs', () => {
   assert.equal(slugify('  Weird__Name!! '), 'weird-name');
   assert.equal(slugify('Café Crème'), 'cafe-creme');
   assert.equal(slugify('already-good'), 'already-good');
+});
+
+// ── providers / brain selection ────────────────────────────────────────────────
+
+test('defaultProviderId — ALFRED_PROVIDER wins, else anthropic', () => {
+  assert.equal(defaultProviderId({}), 'anthropic');
+  assert.equal(defaultProviderId({ ALFRED_PROVIDER: '' }), 'anthropic');
+  assert.equal(defaultProviderId({ ALFRED_PROVIDER: '  ' }), 'anthropic');
+  assert.equal(defaultProviderId({ ALFRED_PROVIDER: 'openai' }), 'openai');
+  assert.equal(defaultProviderId({ ALFRED_PROVIDER: ' deepseek ' }), 'deepseek');
+});
+
+test('parseProviderSpec — bare id vs provider:model', () => {
+  assert.deepEqual(parseProviderSpec('anthropic'), { id: 'anthropic' });
+  assert.deepEqual(parseProviderSpec('openai:gpt-4o'), { id: 'openai', model: 'gpt-4o' });
+  assert.deepEqual(parseProviderSpec(' deepseek : deepseek-reasoner '), {
+    id: 'deepseek',
+    model: 'deepseek-reasoner',
+  });
+  assert.deepEqual(parseProviderSpec('anthropic:'), { id: 'anthropic', model: undefined });
+});
+
+test('selectBrainId — requested when enabled, else first enabled with fellBack', () => {
+  const brains = [
+    { id: 'anthropic', label: 'A', enabled: false, model: 'm' },
+    { id: 'openai', label: 'O', enabled: true, model: 'm' },
+    { id: 'deepseek', label: 'D', enabled: true, model: 'm' },
+  ];
+  assert.deepEqual(selectBrainId('openai', brains), { id: 'openai', fellBack: false });
+  // requested disabled → fall back to first enabled
+  assert.deepEqual(selectBrainId('anthropic', brains), { id: 'openai', fellBack: true });
+  // unknown id → fall back
+  assert.deepEqual(selectBrainId('mystery', brains), { id: 'openai', fellBack: true });
+  // nothing enabled → null, no fallback
+  const none = brains.map((b) => ({ ...b, enabled: false }));
+  assert.deepEqual(selectBrainId('openai', none), { id: null, fellBack: false });
 });

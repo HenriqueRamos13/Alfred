@@ -1,19 +1,24 @@
 /**
- * Orchestrator — manual tool-use loop over the Anthropic Messages API.
+ * Orchestrator — provider-agnostic agent loop over the Vercel AI SDK.
  *
- * Streams assistant text to the UI, runs tools through the shared ToolCtx,
- * and enforces the MVP guardrails on every step:
- *   - daily token kill-switch + per-session/day counters (BudgetTracker)
+ * The AI SDK (`streamText` + tools) drives the model↔tool round-trips for ANY
+ * brain (Anthropic / OpenAI / DeepSeek — see providers.ts). Alfred's guardrails
+ * are layered on top and preserved end to end:
+ *   - daily token kill-switch + per-session/day counters (BudgetTracker), counting
+ *     usage from whichever provider is active, checked before AND after each call
  *   - per-task step cap
  *   - identical-call loop detection
- *   - risk classification + HITL approvals (T2/T3)
+ *   - risk classification + HITL approvals (T2/T3), performed INSIDE each tool's
+ *     wrapper execute (ctx.governance.requestApproval)
  *   - trifecta-lite: block egress once untrusted-read + private data are in play
  *   - audit of every tool call (secrets masked)
+ *   - streaming to the UI via the existing StreamEvent contract
  */
 
-import Anthropic from '@anthropic-ai/sdk';
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
+import { streamText, tool, jsonSchema, stepCountIs } from 'ai';
+import type { LanguageModel, ToolSet } from 'ai';
 import { HITL_TIERS } from './types.ts';
 import type {
   AccountRecord,
@@ -27,13 +32,7 @@ import type {
   Tool,
   ToolCtx,
 } from './types.ts';
-import {
-  BudgetTracker,
-  callSignature,
-  isLoop,
-  isOverDailyBudget,
-  isOverStepCap,
-} from './budget.ts';
+import { BudgetTracker, callSignature, isLoop, isOverDailyBudget } from './budget.ts';
 import {
   classifyAction,
   createGovernance,
@@ -45,6 +44,8 @@ import {
 import { ensureScaffold, readStable } from './memory.ts';
 import { createSecrets } from './secrets.ts';
 import { getProject, listProjects } from './projects.ts';
+import { resolveProvider, listBrains } from './providers.ts';
+import type { BrainInfo } from './providers.ts';
 import { tools, createBrowserHandle } from '../tools/index.ts';
 
 type AlfredDb = import('better-sqlite3').Database;
@@ -57,8 +58,10 @@ approval or when genuinely blocked. Your name is Alfred, always — never "Jarvi
 
 Governance you must respect:
 - Every tool call is risk-tiered. T0 (read/search/list) and T1 (reversible
-  workspace writes) run freely; T2 (delete/send/install/egress) and T3
-  (money/credentials) require the human's approval, which the host enforces.
+  workspace writes) run freely; T2 (delete/send/install/egress/delegation) and
+  T3 (money/credentials) require the human's approval, which the host enforces.
+- You can delegate a self-contained autonomous task to a full Claude Code agent
+  via delegate_to_claude_code (headless \`claude -p\`); it needs approval.
 - Never print, echo, or log secret values — mask them.
 - Honour the token budget and step caps; if a task starts looping, stop and
   report rather than repeating.
@@ -66,15 +69,17 @@ Organise substantial work as projects under the workspace (ICM
 folder-as-context); render live status into the surface with render_ui using
 only the whitelisted components.`;
 
-/** Task aborted by a guardrail (loop / step cap). Distinct from a hard budget stop. */
-class TaskAbort extends Error {}
-/** Daily token kill-switch tripped. */
-class BudgetExceeded extends Error {}
+/** Reason the loop was hard-stopped by a guardrail (vs a plain user stop). */
+type StopInfo = { kind: 'budget' | 'step' | 'loop'; message: string };
 
 export interface OrchestratorDeps {
   config: AlfredConfig;
   ctx: ToolCtx;
   tools: Tool[];
+  /** Resolved AI-SDK model for this turn (selected brain). */
+  model: LanguageModel;
+  /** Brain id/model label, for logs. */
+  brainLabel: string;
   /** Extra system context (active project manifest, etc.), assembled by the caller. */
   projectContext?: string;
   /** Cap on model output tokens per turn. */
@@ -82,20 +87,20 @@ export interface OrchestratorDeps {
 }
 
 export class Orchestrator {
-  private readonly client: Anthropic;
   private readonly budget: BudgetTracker;
-  private readonly toolMap: Map<string, Tool>;
+  private readonly stepCap: number;
   private readonly maxTokens: number;
   private controller: AbortController | null = null;
+  private readonly history: string[] = [];
+  private stopInfo: StopInfo | null = null;
 
   constructor(private readonly deps: OrchestratorDeps) {
-    this.client = new Anthropic({ apiKey: deps.config.anthropicApiKey });
     this.budget = new BudgetTracker(
       deps.ctx.db,
       { dailyLimit: deps.config.dailyTokenBudget, stepCap: deps.config.stepCap },
       deps.ctx.sessionId,
     );
-    this.toolMap = new Map(deps.tools.map((t) => [t.name, t]));
+    this.stepCap = deps.config.stepCap;
     this.maxTokens = deps.maxTokens ?? 4096;
   }
 
@@ -108,72 +113,108 @@ export class Orchestrator {
   async run(userText: string): Promise<void> {
     const { ctx } = this.deps;
     this.controller = new AbortController();
-    const messages: Anthropic.MessageParam[] = [{ role: 'user', content: userText }];
-    const toolDefs: Anthropic.Tool[] = this.deps.tools.map((t) => ({
-      name: t.name,
-      description: t.description,
-      input_schema: t.inputSchema as Anthropic.Tool['input_schema'],
-    }));
     const system = await this.buildSystem();
-    const history: string[] = [];
 
     ctx.emit({ kind: 'agent.status', sessionId: ctx.sessionId, status: 'thinking' });
 
+    let assistantText = '';
     try {
-      for (;;) {
-        const state = this.budget.snapshot();
-        if (isOverDailyBudget(state)) {
-          throw new BudgetExceeded(
-            `Daily token budget exhausted (${state.dailyTokens}/${state.dailyLimit}). Halting.`,
-          );
+      const result = streamText({
+        model: this.deps.model,
+        system,
+        prompt: userText,
+        maxOutputTokens: this.maxTokens,
+        tools: this.buildTools(),
+        // Backstop; the real cap is enforced (with an error) in prepareStep.
+        stopWhen: stepCountIs(this.stepCap + 1),
+        abortSignal: this.controller.signal,
+        // Runs before every model call — the "check before each call" guardrail.
+        prepareStep: ({ stepNumber }) => {
+          if (stepNumber >= this.stepCap) {
+            this.hardStop({ kind: 'step', message: `Step cap reached (${this.stepCap}). Halting task.` });
+          } else if (isOverDailyBudget(this.budget.snapshot())) {
+            const s = this.budget.snapshot();
+            this.hardStop({
+              kind: 'budget',
+              message: `Daily token budget exhausted (${s.dailyTokens}/${s.dailyLimit}). Halting.`,
+            });
+          }
+          return {};
+        },
+        // Runs after every model call — count usage from ANY provider.
+        onStepFinish: ({ usage }) => {
+          const state = this.budget.record({
+            inputTokens: usage.inputTokens ?? 0,
+            outputTokens: usage.outputTokens ?? 0,
+          });
+          ctx.emit({ kind: 'budget', state });
+        },
+      });
+
+      for await (const part of result.fullStream) {
+        switch (part.type) {
+          case 'start-step':
+            ctx.emit({ kind: 'agent.status', sessionId: ctx.sessionId, status: 'thinking' });
+            break;
+          case 'text-delta':
+            assistantText += part.text;
+            ctx.emit({ kind: 'chat.delta', sessionId: ctx.sessionId, text: part.text });
+            break;
+          case 'finish-step':
+            if (assistantText.trim()) {
+              ctx.emit({ kind: 'chat.message', message: this.chatMessage('assistant', assistantText) });
+            }
+            assistantText = '';
+            break;
+          case 'error':
+            throw part.error instanceof Error ? part.error : new Error(String(part.error));
+          default:
+            break;
         }
-        if (isOverStepCap(state)) {
-          throw new TaskAbort(`Step cap reached (${state.stepCap}). Halting task.`);
-        }
-        this.budget.step();
-
-        ctx.emit({ kind: 'agent.status', sessionId: ctx.sessionId, status: 'thinking' });
-        const stream = this.client.messages.stream(
-          {
-            model: this.deps.config.model,
-            max_tokens: this.maxTokens,
-            system,
-            tools: toolDefs,
-            messages,
-          },
-          { signal: this.controller.signal },
-        );
-        stream.on('text', (delta) => ctx.emit({ kind: 'chat.delta', sessionId: ctx.sessionId, text: delta }));
-
-        const msg = await stream.finalMessage();
-        ctx.emit({
-          kind: 'budget',
-          state: this.budget.record({ inputTokens: msg.usage.input_tokens, outputTokens: msg.usage.output_tokens }),
-        });
-
-        const text = msg.content
-          .filter((b): b is Anthropic.TextBlock => b.type === 'text')
-          .map((b) => b.text)
-          .join('');
-        if (text) ctx.emit({ kind: 'chat.message', message: this.chatMessage('assistant', text) });
-
-        messages.push({ role: 'assistant', content: msg.content as Anthropic.ContentBlockParam[] });
-
-        if (msg.stop_reason !== 'tool_use') {
-          ctx.emit({ kind: 'agent.status', sessionId: ctx.sessionId, status: 'done' });
-          return;
-        }
-
-        const toolUses = msg.content.filter((b): b is Anthropic.ToolUseBlock => b.type === 'tool_use');
-        const results: Anthropic.ToolResultBlockParam[] = [];
-        for (const tu of toolUses) results.push(await this.runTool(tu, history));
-        messages.push({ role: 'user', content: results });
       }
+
+      if (this.stopInfo) {
+        ctx.emit({ kind: 'error', sessionId: ctx.sessionId, message: this.stopInfo.message });
+        ctx.emit({ kind: 'agent.status', sessionId: ctx.sessionId, status: 'error' });
+        return;
+      }
+      ctx.emit({ kind: 'agent.status', sessionId: ctx.sessionId, status: 'done' });
     } catch (err) {
+      // A guardrail hard-stop or user stop surfaces here as an AbortError.
+      if (this.stopInfo) {
+        ctx.emit({ kind: 'error', sessionId: ctx.sessionId, message: this.stopInfo.message });
+        ctx.emit({ kind: 'agent.status', sessionId: ctx.sessionId, status: 'error' });
+        return;
+      }
+      if (this.controller?.signal.aborted) {
+        // Plain user stop — clean halt, no error.
+        ctx.emit({ kind: 'agent.status', sessionId: ctx.sessionId, status: 'done' });
+        return;
+      }
       const message = err instanceof Error ? err.message : String(err);
       ctx.emit({ kind: 'error', sessionId: ctx.sessionId, message });
       ctx.emit({ kind: 'agent.status', sessionId: ctx.sessionId, status: 'error' });
     }
+  }
+
+  /** Record a guardrail stop and abort the in-flight generation. */
+  private hardStop(info: StopInfo): void {
+    this.stopInfo = info;
+    this.controller?.abort();
+  }
+
+  /** Wrap every registry Tool as an AI-SDK tool; governance runs inside execute. */
+  private buildTools(): ToolSet {
+    const set: ToolSet = {};
+    for (const t of this.deps.tools) {
+      set[t.name] = tool({
+        description: t.description,
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        inputSchema: jsonSchema(t.inputSchema as any),
+        execute: (args: unknown) => this.runTool(t, args),
+      });
+    }
+    return set;
   }
 
   private async buildSystem(): Promise<string> {
@@ -185,36 +226,34 @@ export class Orchestrator {
   }
 
   private chatMessage(role: ChatMessage['role'], content: string): ChatMessage {
-    return { id: crypto.randomUUID(), sessionId: this.deps.ctx.sessionId, role, content, ts: Date.now() };
+    return { id: randomUUID(), sessionId: this.deps.ctx.sessionId, role, content, ts: Date.now() };
   }
 
-  private async runTool(
-    tu: Anthropic.ToolUseBlock,
-    history: string[],
-  ): Promise<Anthropic.ToolResultBlockParam> {
+  /**
+   * Run one tool call: loop detection, risk classification, trifecta escalation,
+   * HITL approval, execution and audit. Returns the tool's output value (or an
+   * `{ error }` object) for the model — errors don't throw so the agent can react,
+   * except a detected loop which hard-stops the whole task.
+   */
+  private async runTool(t: Tool, args: unknown): Promise<unknown> {
     const { ctx } = this.deps;
-    const args = tu.input;
-    const tool = this.toolMap.get(tu.name);
 
-    if (!tool) {
-      return this.toolError(tu.id, `Unknown tool: ${tu.name}`);
+    // Loop detection — hard-stop the whole task, not just this call.
+    const sig = callSignature(t.name, args);
+    if (isLoop(this.history, sig)) {
+      this.hardStop({ kind: 'loop', message: `Loop detected: "${t.name}" called with identical args >3 times.` });
+      return { error: 'Loop detected — task halted.' };
     }
+    this.history.push(sig);
 
-    // Loop detection — abort the whole task, don't just refuse this call.
-    const sig = callSignature(tu.name, args);
-    if (isLoop(history, sig)) {
-      throw new TaskAbort(`Loop detected: "${tu.name}" called with identical args >3 times.`);
-    }
-    history.push(sig);
-
-    const tier: RiskTier = tool.risk?.(args) ?? classifyAction(tu.name, args);
+    const tier: RiskTier = t.risk?.(args) ?? classifyAction(t.name, args);
 
     // Trifecta-lite: reading web/email marks untrusted/private; an egress tool
     // that would complete the trifecta is escalated to a mandatory approval.
-    ctx.governance.markTrifecta(trifectaImpact(tu.name));
+    ctx.governance.markTrifecta(trifectaImpact(t.name));
     let needApproval = HITL_TIERS.includes(tier);
     let reason = `Risk tier ${tier}`;
-    if (isEgressTool(tu.name)) {
+    if (isEgressTool(t.name)) {
       const tf = ctx.governance.trifecta();
       if (tf.readUntrusted && tf.hasPrivate) {
         ctx.governance.markTrifecta({ canEgress: true });
@@ -223,34 +262,38 @@ export class Orchestrator {
       }
     }
 
-    ctx.emit({ kind: 'tool.start', sessionId: ctx.sessionId, toolName: tu.name, args: maskSecrets(args), tier });
+    ctx.emit({ kind: 'tool.start', sessionId: ctx.sessionId, toolName: t.name, args: maskSecrets(args), tier });
 
     if (needApproval) {
       ctx.emit({ kind: 'agent.status', sessionId: ctx.sessionId, status: 'awaiting-approval' });
       const resolution = await ctx.governance.requestApproval({
         sessionId: ctx.sessionId,
-        toolName: tu.name,
+        toolName: t.name,
         args: maskSecrets(args),
         tier,
         reason,
       });
       if (resolution.decision === 'deny') {
-        this.audit({ toolName: tu.name, args, tier, status: 'denied', error: resolution.timedOut ? 'approval timed out' : 'denied by user' });
-        ctx.emit({ kind: 'tool.end', sessionId: ctx.sessionId, toolName: tu.name, status: 'denied' });
+        this.audit({
+          toolName: t.name,
+          args,
+          tier,
+          status: 'denied',
+          error: resolution.timedOut ? 'approval timed out' : 'denied by user',
+        });
+        ctx.emit({ kind: 'tool.end', sessionId: ctx.sessionId, toolName: t.name, status: 'denied' });
         ctx.emit({ kind: 'agent.status', sessionId: ctx.sessionId, status: 'thinking' });
-        return this.toolError(tu.id, resolution.timedOut ? 'Approval timed out (treated as deny).' : 'Denied by the human.');
+        return { error: resolution.timedOut ? 'Approval timed out (treated as deny).' : 'Denied by the human.' };
       }
-      ctx.emit({ kind: 'agent.status', sessionId: ctx.sessionId, status: 'tool' });
-    } else {
-      ctx.emit({ kind: 'agent.status', sessionId: ctx.sessionId, status: 'tool' });
     }
+    ctx.emit({ kind: 'agent.status', sessionId: ctx.sessionId, status: 'tool' });
 
     const started = Date.now();
     try {
-      const out = await tool.execute(args, ctx);
+      const out = await t.execute(args, ctx);
       const status = out.ok ? 'ok' : 'error';
       this.audit({
-        toolName: tu.name,
+        toolName: t.name,
         args,
         tier,
         status,
@@ -258,23 +301,14 @@ export class Orchestrator {
         error: out.error,
         durationMs: Date.now() - started,
       });
-      ctx.emit({ kind: 'tool.end', sessionId: ctx.sessionId, toolName: tu.name, status, error: out.error });
-      return {
-        type: 'tool_result',
-        tool_use_id: tu.id,
-        content: JSON.stringify(out.ok ? out.result ?? {} : { error: out.error }),
-        is_error: !out.ok,
-      };
+      ctx.emit({ kind: 'tool.end', sessionId: ctx.sessionId, toolName: t.name, status, error: out.error });
+      return out.ok ? out.result ?? {} : { error: out.error };
     } catch (err) {
       const error = err instanceof Error ? err.message : String(err);
-      this.audit({ toolName: tu.name, args, tier, status: 'error', error, durationMs: Date.now() - started });
-      ctx.emit({ kind: 'tool.end', sessionId: ctx.sessionId, toolName: tu.name, status: 'error', error });
-      return this.toolError(tu.id, error);
+      this.audit({ toolName: t.name, args, tier, status: 'error', error, durationMs: Date.now() - started });
+      ctx.emit({ kind: 'tool.end', sessionId: ctx.sessionId, toolName: t.name, status: 'error', error });
+      return { error };
     }
-  }
-
-  private toolError(toolUseId: string, message: string): Anthropic.ToolResultBlockParam {
-    return { type: 'tool_result', tool_use_id: toolUseId, content: JSON.stringify({ error: message }), is_error: true };
   }
 
   private audit(e: Omit<AuditEntry, 'sessionId' | 'ts'>): void {
@@ -301,6 +335,8 @@ export interface OrchestratorHandle {
   resolveApproval(resolution: { id: string; decision: ApprovalDecision }): void;
   listProjects(): ProjectRecord[];
   listAccounts(): AccountRecord[];
+  /** Brain availability (enabled/disabled) for the UI. */
+  listBrains(): BrainInfo[];
   connectGmail(): Promise<AccountRecord | null>;
 }
 
@@ -354,7 +390,15 @@ export function createOrchestrator(opts: CreateOrchestratorOpts): OrchestratorHa
   return {
     async send(text) {
       gov.resetTrifecta();
-      active = new Orchestrator({ config, ctx, tools, projectContext: await projectContext(text) });
+      const provider = resolveProvider(config.provider);
+      active = new Orchestrator({
+        config,
+        ctx,
+        tools,
+        model: provider.languageModel,
+        brainLabel: `${provider.id}:${provider.model}`,
+        projectContext: await projectContext(text),
+      });
       await active.run(text);
     },
     stop() {
@@ -368,6 +412,9 @@ export function createOrchestrator(opts: CreateOrchestratorOpts): OrchestratorHa
     },
     listAccounts() {
       return queryAccounts();
+    },
+    listBrains() {
+      return listBrains();
     },
     async connectGmail() {
       const gmailTool = tools.find((t) => t.name === 'gmail');

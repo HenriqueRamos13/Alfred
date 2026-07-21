@@ -9,8 +9,9 @@ drive the machine: filesystem, shell, a real browser, and read-only Gmail.
 
 ## What it does (MVP)
 
-- **Manual tool-use orchestrator** on top of the Anthropic TS SDK, streaming to
-  a neon control UI. Default model `claude-sonnet-5` (`ALFRED_MODEL`).
+- **Provider-agnostic orchestrator** on top of the [Vercel AI SDK](https://sdk.vercel.ai),
+  streaming to a neon control UI. Swap brains without touching the loop (see
+  **Brains / Providers** below). Default brain: Anthropic `claude-sonnet-5`.
 - **Generative UI** — Claude renders panels, tables, stat tiles, logs, etc. into
   a live "surface" through a whitelisted component registry (never arbitrary JSX).
 - **Governance** — every action is risk-tiered (T0–T3). Destructive / sending /
@@ -39,6 +40,38 @@ Everything the AI can render maps through a whitelist:
 App-driven UI (`CommandBar, ChatLog, ApprovalPrompt`) is not AI-renderable.
 
 Data lives in `data/` (SQLite `alfred.db`, browser profile) — git-ignored.
+
+## Brains / Providers
+
+Alfred is provider-agnostic (Vercel AI SDK). Four brains ship by default; each is
+selectable and independently configurable in `.env`. A brain is **enabled** only
+when its key (or CLI) is present. The default active brain is **Anthropic** —
+set `ALFRED_PROVIDER` to change it.
+
+| Brain | Env | Default model | Notes |
+|-------|-----|---------------|-------|
+| **Anthropic** (default) | `ANTHROPIC_API_KEY`, `ANTHROPIC_MODEL` | `claude-sonnet-5` | The active brain out of the box. |
+| **OpenAI / ChatGPT** | `OPENAI_API_KEY`, `OPENAI_MODEL` | `gpt-4o` | |
+| **DeepSeek** | `DEEPSEEK_API_KEY`, `DEEPSEEK_MODEL` | `deepseek-chat` | |
+| **Claude Code CLI** | — (binary on `PATH`) | `claude -p` | Delegation brain, not a chat API — see below. |
+
+- **Pick the default brain:** `ALFRED_PROVIDER=anthropic|openai|deepseek`.
+- **Model IDs are adjustable** — the defaults above are just placeholders; set
+  them to whatever your account can access.
+- **Fallback:** if the selected brain isn't enabled, Alfred falls back to the
+  first enabled brain and logs it clearly.
+- **Delegation (`claude -p`):** the `delegate_to_claude_code` tool spawns the
+  headless Claude Code CLI to grind a self-contained task to completion and
+  returns its JSON result. It's a **T2** action (needs approval) and requires the
+  CLI on your `PATH`:
+
+  ```bash
+  npm i -g @anthropic-ai/claude-code
+  ```
+
+  If `claude` isn't found, the tool returns a clear error instead of crashing.
+
+Keys are read only from `process.env`, never logged, and masked in the audit log.
 
 ## Setup (from a factory Intel Mac)
 

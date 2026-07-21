@@ -18,7 +18,10 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.65.0",
+    "@ai-sdk/anthropic": "^4.0.18",
+    "@ai-sdk/deepseek": "^3.0.13",
+    "@ai-sdk/openai": "^4.0.17",
+    "ai": "^7.0.34",
     "better-sqlite3": "^11.10.0",
     "googleapis": "^148.0.0",
     "playwright": "^1.52.0"

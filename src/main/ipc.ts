@@ -14,6 +14,7 @@ import type {
   ProjectRecord,
   AccountRecord,
 } from './core/types.ts';
+import type { BrainInfo } from './core/providers.ts';
 
 export interface Orchestrator {
   /** Run one command / chat turn; streams StreamEvents via the injected emit. */
@@ -24,6 +25,8 @@ export interface Orchestrator {
   resolveApproval(resolution: { id: string; decision: ApprovalDecision }): void;
   listProjects(): ProjectRecord[] | Promise<ProjectRecord[]>;
   listAccounts(): AccountRecord[] | Promise<AccountRecord[]>;
+  /** Brain availability for the UI. */
+  listBrains(): BrainInfo[] | Promise<BrainInfo[]>;
   connectGmail(): Promise<AccountRecord | null>;
 }
 
@@ -31,6 +34,7 @@ export function registerIpc(core: Orchestrator): void {
   ipcMain.handle('alfred:send', (_e, text: unknown) => core.send(String(text ?? '')));
   ipcMain.handle('alfred:listProjects', () => core.listProjects());
   ipcMain.handle('alfred:listAccounts', () => core.listAccounts());
+  ipcMain.handle('alfred:listBrains', () => core.listBrains());
   ipcMain.handle('alfred:connectGmail', () => core.connectGmail());
 
   ipcMain.on('alfred:stop', () => core.stop());

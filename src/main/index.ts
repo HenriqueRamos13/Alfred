@@ -15,7 +15,8 @@ import type { AlfredConfig, StreamEvent } from './core/types.ts';
 function loadConfig(): AlfredConfig {
   return {
     anthropicApiKey: process.env.ANTHROPIC_API_KEY ?? '',
-    model: process.env.ALFRED_MODEL || 'claude-sonnet-5',
+    provider: process.env.ALFRED_PROVIDER || 'anthropic',
+    model: process.env.ANTHROPIC_MODEL || process.env.ALFRED_MODEL || 'claude-sonnet-5',
     workspace: process.env.ALFRED_WORKSPACE || join(homedir(), 'AlfredWorkspace'),
     dailyTokenBudget: Number(process.env.ALFRED_DAILY_TOKEN_BUDGET) || 2_000_000,
     stepCap: Number(process.env.ALFRED_STEP_CAP) || 40,

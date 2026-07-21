@@ -9,6 +9,7 @@ import type {
   AccountRecord,
   ApprovalDecision,
 } from '../main/core/types.ts';
+import type { BrainInfo } from '../main/core/providers.ts';
 
 const api = {
   /** Send a user command / chat turn to the orchestrator. */
@@ -20,6 +21,8 @@ const api = {
     ipcRenderer.send('alfred:resolveApproval', id, decision),
   listProjects: (): Promise<ProjectRecord[]> => ipcRenderer.invoke('alfred:listProjects'),
   listAccounts: (): Promise<AccountRecord[]> => ipcRenderer.invoke('alfred:listAccounts'),
+  /** Brain availability (enabled/disabled) for the UI. */
+  listBrains: (): Promise<BrainInfo[]> => ipcRenderer.invoke('alfred:listBrains'),
   /** Launch the Gmail OAuth flow; resolves with the connected account. */
   connectGmail: (): Promise<AccountRecord | null> => ipcRenderer.invoke('alfred:connectGmail'),
   /** Subscribe to the main→renderer event stream. Returns an unsubscribe fn. */

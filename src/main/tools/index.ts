@@ -15,10 +15,11 @@ import { project } from './project.ts';
 import { gmail } from './gmail.ts';
 import { renderUi } from './renderUi.ts';
 import { memory } from './memory.ts';
+import { delegate } from './delegate.ts';
 
 export { createBrowserHandle } from './browser.ts';
 
-export const tools: Tool[] = [filesystem, shell, browser, project, gmail, renderUi, memory];
+export const tools: Tool[] = [filesystem, shell, browser, project, gmail, renderUi, memory, delegate];
 
 /** Lookup by tool name (for the orchestrator's tool-use dispatch). */
 export const toolsByName: Record<string, Tool> = Object.fromEntries(tools.map((t) => [t.name, t]));
