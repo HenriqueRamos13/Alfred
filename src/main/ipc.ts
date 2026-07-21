@@ -52,6 +52,12 @@ export interface Orchestrator {
   setViewport(w: number, h: number): void;
   /** Today's persisted cost snapshot (read at startup). */
   getCost(): CostSnapshot | Promise<CostSnapshot>;
+  /** Voice output toggle (Alfred speaks replies): read/set, persisted. */
+  getTts(): boolean | Promise<boolean>;
+  setTts(on: boolean): boolean | Promise<boolean>;
+  /** Voice input (push-to-talk): start/stop the native STT helper. */
+  startListening(): void;
+  stopListening(): void;
 }
 
 /** Trust boundary: keep only well-formed numeric/boolean fields from the renderer. */
@@ -126,6 +132,16 @@ export function registerIpc(core: Orchestrator, emit: (e: StreamEvent) => void):
 
   ipcMain.handle('alfred:getCost', guard('get cost', () => core.getCost(), null as CostSnapshot | null));
 
+  ipcMain.handle('alfred:getTts', guard('get tts', () => core.getTts(), false));
+  ipcMain.handle('alfred:setTts', async (_e, on: unknown) => {
+    try {
+      return await core.setTts(on === true);
+    } catch (err) {
+      fail('set tts', err);
+      return false;
+    }
+  });
+
   ipcMain.on('alfred:setViewport', (_e, w: unknown, h: unknown) => {
     if (typeof w === 'number' && typeof h === 'number' && Number.isFinite(w) && Number.isFinite(h)) {
       core.setViewport(w, h);
@@ -133,6 +149,20 @@ export function registerIpc(core: Orchestrator, emit: (e: StreamEvent) => void):
   });
 
   ipcMain.on('alfred:stop', () => core.stop());
+  ipcMain.on('alfred:startListening', () => {
+    try {
+      core.startListening();
+    } catch (err) {
+      fail('start listening', err);
+    }
+  });
+  ipcMain.on('alfred:stopListening', () => {
+    try {
+      core.stopListening();
+    } catch (err) {
+      fail('stop listening', err);
+    }
+  });
   ipcMain.on('alfred:resolveApproval', (_e, id: unknown, decision: unknown, remember: unknown) => {
     // Trust boundary: only forward well-formed decisions.
     if (typeof id !== 'string') return;

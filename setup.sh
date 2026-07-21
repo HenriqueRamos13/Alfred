@@ -40,10 +40,25 @@ npm run rebuild
 say "Installing Playwright Chromium"
 npx playwright install chromium
 
+# 4b. Compile the on-device speech-to-text helper (Swift → native binary).
+#     Uses SFSpeechRecognizer + AVAudioEngine; only builds on macOS (swiftc ships
+#     with the Xcode CLT installed above). Source is committed; binary is gitignored.
+say "Compiling the voice-input helper (native/alfred-stt)"
+swiftc native/alfred-stt.swift -o native/alfred-stt
+
 # 5. Environment file.
 if [[ ! -f .env ]]; then
   say "Creating .env from template — edit it and add your keys"
   cp .env.example .env
+fi
+
+# 6. Optional: pre-warm the Kokoro TTS model (voice output). The ~300MB weights
+#    otherwise download lazily on Alfred's first spoken reply. Set
+#    ALFRED_PREWARM_TTS=1 to fetch them now. Voice defaults to 'af_heart';
+#    override with ALFRED_TTS_VOICE.
+if [[ "${ALFRED_PREWARM_TTS:-0}" == "1" ]]; then
+  say "Pre-warming Kokoro TTS model (downloading weights)"
+  node -e "import('kokoro-js').then(m=>m.KokoroTTS.from_pretrained('onnx-community/Kokoro-82M-v1.0-ONNX',{dtype:'q8'})).then(()=>console.log('Kokoro model cached')).catch(e=>{console.error(e);process.exit(1)})"
 fi
 
 cat <<'EOF'

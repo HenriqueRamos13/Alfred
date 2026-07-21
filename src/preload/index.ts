@@ -53,6 +53,12 @@ const api = {
   setViewport: (w: number, h: number): void => ipcRenderer.send('alfred:setViewport', w, h),
   /** Today's persisted cost snapshot, read on mount so COST isn't empty at open. */
   getCost: (): Promise<CostSnapshot | null> => ipcRenderer.invoke('alfred:getCost'),
+  /** Voice output toggle (Alfred speaks replies) — persisted; read on mount. */
+  getTts: (): Promise<boolean> => ipcRenderer.invoke('alfred:getTts'),
+  setTts: (on: boolean): Promise<boolean> => ipcRenderer.invoke('alfred:setTts', on),
+  /** Voice input (push-to-talk): start/stop the STT helper; transcript arrives via stt.partial/stt.final stream events. */
+  startListening: (): void => ipcRenderer.send('alfred:startListening'),
+  stopListening: (): void => ipcRenderer.send('alfred:stopListening'),
   /** Overlay window controls (frameless HUD). */
   hideWindow: (): void => ipcRenderer.send('window:hide'),
   quitWindow: (): void => ipcRenderer.send('window:quit'),

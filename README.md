@@ -102,6 +102,28 @@ Then grant the app the macOS permissions it needs to control the Mac:
 
 Requirements: macOS on Intel (x86_64), Node 22 LTS.
 
+## Voice input (speech-to-text)
+
+Click the 🎙 mic in the command bar to dictate. Recognition runs **on-device**
+via Apple's `SFSpeechRecognizer` (on Intel the engine is the classic
+`SFSpeechRecognizer`, **not** the newer `SpeechAnalyzer` — that's Apple-Silicon /
+newer-OS only). The transcript is dropped into the input; you still press Enter
+to send, so nothing is dispatched by accident. It stops when you click again, on
+prolonged silence, or via the kill switch. Language defaults to `en-US`; override
+with `ALFRED_STT_LOCALE` (e.g. `pt-PT`) or the `--locale` helper flag.
+
+A small Swift helper does the listening (`native/alfred-stt`). `./setup.sh`
+compiles it (`swiftc native/alfred-stt.swift -o native/alfred-stt`); the source
+is committed, the binary is gitignored. If you see *"voice input helper not
+found"*, re-run `./setup.sh`.
+
+**Permissions (dev-mode caveat):** on first use macOS prompts for **Microphone**
+and **Speech Recognition**. In `npm run dev` those permissions attach to the
+**Electron binary** (Alfred appears in *System Settings › Privacy & Security ›
+Microphone* and *› Speech Recognition* as Electron), not to a "Alfred.app" — a
+packaged build attaches them to Alfred itself. Grant both or dictation fails
+with an authorization error.
+
 ## Connecting Gmail (read-only)
 
 Alfred reads mail with the `gmail.readonly` scope only. You supply your own

@@ -5,8 +5,16 @@ directories:
   buildResources: build
 files:
   - out/**
+# Ship the compiled Swift STT helper alongside the app (→ Contents/Resources/native).
+extraResources:
+  - from: native/alfred-stt
+    to: native/alfred-stt
 mac:
   category: public.app-category.productivity
+  # Voice permissions — macOS prompts on first use with these strings.
+  extendInfo:
+    NSMicrophoneUsageDescription: Alfred listens to your voice to turn spoken commands into text, on-device.
+    NSSpeechRecognitionUsageDescription: Alfred uses Apple Speech Recognition to transcribe your voice into text, on-device.
   # Intel-only build (no Apple Silicon in the MVP target hardware).
   target:
     - target: dmg

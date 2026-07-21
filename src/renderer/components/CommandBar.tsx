@@ -3,7 +3,7 @@
  * kill switch. Submits on Enter (Shift+Enter = newline). App-driven (not
  * renderable via render_ui). Theme tokens: see Panel.tsx.
  */
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { KeyboardEvent, Ref } from 'react';
 import type { AgentStatus, BudgetState } from '../../main/core/types.ts';
 
@@ -18,6 +18,14 @@ export interface CommandBarProps {
   /** Fired on input focus/blur so the parent can keep the top strip revealed while typing. */
   onFocus?: () => void;
   onBlur?: () => void;
+  /** Voice input (push-to-talk): true while the mic is recording. */
+  listening?: boolean;
+  /** Live partial transcript to preview while listening. */
+  partial?: string;
+  /** Toggle the mic (start/stop listening). */
+  onMic?: () => void;
+  /** A settled transcript to drop into the input; appended when `seq` changes. */
+  dictation?: { text: string; seq: number };
 }
 
 const STATUS_COLOR: Record<AgentStatus, string> = {
@@ -29,8 +37,30 @@ const STATUS_COLOR: Record<AgentStatus, string> = {
   done: 'var(--neon-green, #34d399)',
 };
 
-export function CommandBar({ status, killed, budget, onSubmit, onKill, inputRef, onFocus, onBlur }: CommandBarProps) {
+export function CommandBar({
+  status,
+  killed,
+  budget,
+  onSubmit,
+  onKill,
+  inputRef,
+  onFocus,
+  onBlur,
+  listening,
+  partial,
+  onMic,
+  dictation,
+}: CommandBarProps) {
   const [value, setValue] = useState('');
+
+  // Drop a settled voice transcript into the input (the user still hits Enter).
+  const lastSeq = useRef(0);
+  useEffect(() => {
+    if (!dictation || dictation.seq === lastSeq.current) return;
+    lastSeq.current = dictation.seq;
+    const t = dictation.text.trim();
+    if (t) setValue((v) => (v ? `${v} ${t}` : t));
+  }, [dictation]);
 
   const submit = () => {
     const text = value.trim();
@@ -49,6 +79,7 @@ export function CommandBar({ status, killed, budget, onSubmit, onKill, inputRef,
   const color = STATUS_COLOR[status] ?? STATUS_COLOR.idle;
 
   return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
     <div
       className="alfred-commandbar"
       style={{
@@ -109,6 +140,30 @@ export function CommandBar({ status, killed, budget, onSubmit, onKill, inputRef,
           {budget.sessionTokens} · {budget.dailyTokens}/{budget.dailyLimit}
         </span>
       )}
+      {onMic && (
+        <button
+          type="button"
+          onClick={onMic}
+          disabled={killed}
+          title={listening ? 'Listening — click to stop' : 'Voice input — click to dictate'}
+          aria-label={listening ? 'Stop voice input' : 'Start voice input'}
+          aria-pressed={listening}
+          style={{
+            background: listening ? 'var(--neon-red, #f87171)' : 'transparent',
+            border: `1px solid ${listening ? 'var(--neon-red, #f87171)' : 'var(--neon-cyan, #22d3ee)'}`,
+            color: listening ? 'var(--bg, #080c14)' : 'var(--neon-cyan, #22d3ee)',
+            borderRadius: 6,
+            padding: '6px 12px',
+            cursor: killed ? 'not-allowed' : 'pointer',
+            fontWeight: 700,
+            fontFamily: 'var(--font-mono, ui-monospace, monospace)',
+            opacity: killed ? 0.5 : 1,
+            animation: listening ? 'alfred-pulse 1.2s ease-in-out infinite' : undefined,
+          }}
+        >
+          {listening ? '● REC' : '🎙'}
+        </button>
+      )}
       <button
         type="button"
         onClick={submit}
@@ -144,6 +199,24 @@ export function CommandBar({ status, killed, budget, onSubmit, onKill, inputRef,
       >
         Kill
       </button>
+    </div>
+    {listening && (
+      <div
+        aria-live="polite"
+        style={{
+          color: 'var(--text-dim, #7c8ba1)',
+          fontFamily: 'var(--font-mono, ui-monospace, monospace)',
+          fontSize: 12,
+          padding: '0 12px',
+          fontStyle: 'italic',
+          whiteSpace: 'nowrap',
+          overflow: 'hidden',
+          textOverflow: 'ellipsis',
+        }}
+      >
+        {partial ? partial : 'Listening…'}
+      </div>
+    )}
     </div>
   );
 }

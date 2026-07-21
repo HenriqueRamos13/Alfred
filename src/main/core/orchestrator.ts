@@ -53,6 +53,8 @@ import type { BrainInfo } from './providers.ts';
 import { getSetting, setSetting, insertMessage, getRecentMessages } from './db.ts';
 import { dayKey } from './budget.ts';
 import { spawnClaudeCli } from './claudeSpawn.ts';
+import * as tts from './tts.ts';
+import * as stt from './stt.ts';
 import { tools, createBrowserHandle } from '../tools/index.ts';
 
 type AlfredDb = import('better-sqlite3').Database;
@@ -463,6 +465,12 @@ export interface OrchestratorHandle {
   setViewport(w: number, h: number): void;
   /** Today's persisted cost snapshot, read at startup so the COST card isn't empty. */
   getCost(): CostSnapshot;
+  /** Voice output (Alfred speaks replies): read/toggle, persisted, default OFF. */
+  getTts(): boolean;
+  setTts(on: boolean): boolean;
+  /** Voice input (push-to-talk): spawn/stop the native STT helper; streams stt.partial/stt.final. */
+  startListening(): void;
+  stopListening(): void;
 }
 
 export function createOrchestrator(opts: CreateOrchestratorOpts): OrchestratorHandle {
@@ -478,6 +486,11 @@ export function createOrchestrator(opts: CreateOrchestratorOpts): OrchestratorHa
         insertMessage(db, event.message);
       } catch (err) {
         console.error('[alfred] persist message failed:', err instanceof Error ? err.message : err);
+      }
+      // Speak assistant replies when voice output is on (covers both brain
+      // paths — this is the single point every chat.message flows through).
+      if (event.message.role === 'assistant' && getSetting(db, 'tts_enabled') === '1') {
+        tts.speak(event.message.content);
       }
     }
     opts.emit(event);
@@ -692,6 +705,8 @@ export function createOrchestrator(opts: CreateOrchestratorOpts): OrchestratorHa
     },
     stop() {
       active?.abort();
+      tts.stop();
+      stt.stopListening(); // kill switch also stops the mic — no audio capture after an emergency stop
     },
     resolveApproval({ id, decision, remember }) {
       gov.resolveApproval(id, decision, remember);
@@ -760,6 +775,20 @@ export function createOrchestrator(opts: CreateOrchestratorOpts): OrchestratorHa
       }
       const brain = listBrains().find((b) => b.id === brainId);
       return costTracker.costSnapshot(brainId ?? '—', brain?.model ?? '—');
+    },
+    getTts() {
+      return getSetting(db, 'tts_enabled') === '1';
+    },
+    setTts(on) {
+      setSetting(db, 'tts_enabled', on ? '1' : '0');
+      if (!on) tts.stop(); // silence anything mid-utterance immediately
+      return on;
+    },
+    startListening() {
+      stt.startListening(emit, sessionId);
+    },
+    stopListening() {
+      stt.stopListening();
     },
   };
 }

@@ -83,6 +83,10 @@ export default function App() {
   const [activeBrain, setActiveBrain] = useState<string | null>(null);
   const [cards, setCards] = useState<CardLayout[]>([]);
   const [dangerous, setDangerous] = useState(false);
+  const [tts, setTts] = useState(false);
+  const [listening, setListening] = useState(false);
+  const [partial, setPartial] = useState('');
+  const [dictation, setDictation] = useState<{ text: string; seq: number }>({ text: '', seq: 0 });
 
   const [bounds, setBounds] = useState<Bounds | null>(null);
 
@@ -254,6 +258,8 @@ export default function App() {
     alfred.getCost().then((c) => c && setCost(c)).catch(() => {});
     // Reflect the persisted DANGEROUS-mode state in the toggle + visuals.
     alfred.getDangerousMode().then(setDangerous).catch(() => {});
+    // Reflect the persisted voice-output toggle.
+    alfred.getTts().then(setTts).catch(() => {});
     const off = alfred.onStream((e: StreamEvent) => {
       switch (e.kind) {
         case 'chat.delta':
@@ -262,6 +268,14 @@ export default function App() {
         case 'chat.message':
           setMessages((m) => [...m, e.message]);
           if (e.message.role === 'assistant') setStreaming('');
+          break;
+        case 'stt.partial':
+          setPartial(e.text);
+          break;
+        case 'stt.final':
+          setListening(false);
+          setPartial('');
+          if (e.text.trim()) setDictation((d) => ({ text: e.text, seq: d.seq + 1 }));
           break;
         case 'tool.start':
           pushLog({ tag: e.toolName, tone: 'cyan', msg: summarize(e.args) });
@@ -372,6 +386,26 @@ export default function App() {
   const resetApprovals = () => {
     alfred.resetApprovals();
     pushLog({ tag: 'HITL', tone: 'lime', msg: 'auto-approve rules cleared' });
+  };
+
+  const toggleTts = () => {
+    const next = !tts;
+    setTts(next); // optimistic
+    alfred.setTts(next).then(setTts).catch(() => setTts(!next));
+    pushLog({ tag: 'VOICE', tone: next ? 'lime' : 'dim', msg: next ? 'voice output on' : 'voice output off' });
+  };
+
+  const toggleMic = () => {
+    if (killed) return;
+    if (listening) {
+      alfred.stopListening();
+      setListening(false); // stt.final will also confirm
+      return;
+    }
+    setPartial('');
+    setListening(true);
+    alfred.startListening();
+    pushLog({ tag: 'VOICE', tone: 'cyan', msg: 'listening…' });
   };
 
   /** Right-of-header meta + scrollable body for each card, keyed by id. */
@@ -586,6 +620,14 @@ export default function App() {
           <span className="topbar-spacer" />
           <button
             type="button"
+            className={`topbar-btn no-drag${tts ? ' on' : ''}`}
+            onClick={toggleTts}
+            title={tts ? 'Voice output on — click to mute Alfred' : 'Voice output off — click to let Alfred speak'}
+          >
+            {tts ? '🔊 VOICE ON' : '🔈 VOICE OFF'}
+          </button>
+          <button
+            type="button"
             className="topbar-btn no-drag"
             onClick={resetApprovals}
             title="Clear all saved auto-approve rules (start asking again)"
@@ -625,6 +667,10 @@ export default function App() {
           inputRef={commandInputRef}
           onFocus={() => setInputFocused(true)}
           onBlur={() => setInputFocused(false)}
+          listening={listening}
+          partial={partial}
+          onMic={toggleMic}
+          dictation={dictation}
         />
       </div>
 

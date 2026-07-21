@@ -17,3 +17,6 @@ data/
 
 # os / editor
 .DS_Store
+
+# compiled STT helper (Swift source is committed; setup.sh builds the binary on the Mac)
+native/alfred-stt
