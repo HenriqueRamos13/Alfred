@@ -24,12 +24,17 @@ drive the machine: filesystem, shell, a real browser, and read-only Gmail.
 - **Memory (ICM)** — stable, human-curated `preferences.md` / `house-rules.md`
   plus per-session working notes.
 - **Secrets** — stored in the macOS Keychain via the `security` CLI, never on disk.
-- **Multi-monitor overlay** — the HUD spans the whole virtual desktop (union of
-  all displays), so cards drag freely between monitors. Toggle visibility with
-  `⌘/Ctrl+Shift+A` or `⌘/Ctrl+Shift+H`.
-  > macOS note: for one window to cover 2 monitors, **turn OFF** "Displays have
-  > separate Spaces" (System Settings → Desktop & Dock → Mission Control) and
-  > log out/in. If it's ON, macOS confines the overlay to a single monitor.
+- **Overlay window** — by default the HUD opens on the **current screen** (the
+  display under the cursor) and is sized to fill it, so it is always fully
+  visible. Toggle visibility with `⌘/Ctrl+Shift+A` or `⌘/Ctrl+Shift+H`.
+- **Multi-monitor spanning (opt-in)** — set `ALFRED_SPAN_DISPLAYS=1` to have the
+  overlay span the whole virtual desktop (union of all displays), so cards drag
+  freely between monitors.
+  > macOS note: spanning requires **turning OFF** "Displays have separate
+  > Spaces" (System Settings → Desktop & Dock → Mission Control) and logging
+  > out/in, and ideally monitors on the same scale. If it's ON — or scales
+  > differ — macOS confines the overlay to a single monitor and the content can
+  > end up outside the visible area. Leave spanning off if unsure.
 
 ## Architecture
 

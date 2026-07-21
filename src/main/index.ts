@@ -4,10 +4,12 @@
  * window's webContents.
  *
  * Window modes (ALFRED_WINDOW_MODE):
- *   overlay  (default) — frameless, transparent, always-on-top HUD covering the
- *                        virtual desktop (all displays). Drag/HIDE/QUIT live in
- *                        the UI top-bar; CommandOrControl+Shift+A or +Shift+H
- *                        toggles visibility.
+ *   overlay  (default) — frameless, transparent, always-on-top HUD sized to the
+ *                        CURRENT screen (the display under the cursor), so it is
+ *                        always fully visible. Drag/HIDE/QUIT live in the UI
+ *                        top-bar; CommandOrControl+Shift+A or +Shift+H toggles
+ *                        visibility. Set ALFRED_SPAN_DISPLAYS=1 to opt into
+ *                        spanning the whole virtual desktop (all monitors).
  *   windowed           — classic bordered window (fallback if the overlay annoys).
  */
 import { app, BrowserWindow, globalShortcut, screen } from 'electron';
@@ -153,12 +155,20 @@ function createWindowedWindow(): BrowserWindow {
   });
 }
 
+/** Spanning is opt-in: ALFRED_SPAN_DISPLAYS=1|true covers the whole virtual desktop. */
+function spanDisplays(): boolean {
+  const v = (process.env.ALFRED_SPAN_DISPLAYS || '').trim().toLowerCase();
+  return v === '1' || v === 'true';
+}
+
 /**
- * The virtual-desktop rectangle: the UNION of every display's bounds. The
+ * The virtual-desktop rectangle: the UNION of every display's bounds — the
  * overlay spans all monitors so a card can be dragged from one to the other.
+ * Used only when spanning is opted in (see spanDisplays).
  * NOTE (macOS): for a single window to cover 2 monitors, "Displays have
  * separate Spaces" must be OFF (System Settings → Desktop & Dock → Mission
- * Control). If it's ON, macOS confines the window to one monitor.
+ * Control). If it's ON, macOS confines the window to one monitor and the
+ * content can end up outside the visible area — which is why this is opt-in.
  */
 function virtualBounds(): { x: number; y: number; width: number; height: number } {
   const displays = screen.getAllDisplays();
@@ -169,10 +179,22 @@ function virtualBounds(): { x: number; y: number; width: number; height: number 
   return { x: minX, y: minY, width: maxR - minX, height: maxB - minY };
 }
 
-/** Frameless transparent HUD covering ALL displays (virtual desktop), floating on top. */
+/** Bounds of the display under the cursor (the screen the user is on); primary as fallback. */
+function currentDisplayBounds(): { x: number; y: number; width: number; height: number } {
+  const display =
+    screen.getDisplayNearestPoint(screen.getCursorScreenPoint()) ?? screen.getPrimaryDisplay();
+  return display.bounds;
+}
+
+/**
+ * Frameless transparent HUD floating on top. DEFAULT: sized to the CURRENT
+ * screen (display under the cursor) so it is always fully visible. Opt into
+ * spanning every monitor with ALFRED_SPAN_DISPLAYS=1.
+ */
 function createOverlayWindow(): BrowserWindow {
+  const span = spanDisplays();
   const win = new BrowserWindow({
-    ...virtualBounds(),
+    ...(span ? virtualBounds() : currentDisplayBounds()),
     frame: false,
     transparent: true,
     hasShadow: false,
@@ -185,18 +207,22 @@ function createOverlayWindow(): BrowserWindow {
   win.setAlwaysOnTop(true, 'screen-saver');
   win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
 
-  // Re-cover the virtual desktop whenever the display arrangement changes.
-  const refit = () => {
-    if (!win.isDestroyed()) win.setBounds(virtualBounds());
-  };
-  screen.on('display-added', refit);
-  screen.on('display-removed', refit);
-  screen.on('display-metrics-changed', refit);
-  win.on('closed', () => {
-    screen.removeListener('display-added', refit);
-    screen.removeListener('display-removed', refit);
-    screen.removeListener('display-metrics-changed', refit);
-  });
+  // Only when spanning: re-cover the virtual desktop when the arrangement
+  // changes. Default (single-screen) registers no listeners — the window stays
+  // fully visible on the screen it opened on.
+  if (span) {
+    const refit = () => {
+      if (!win.isDestroyed()) win.setBounds(virtualBounds());
+    };
+    screen.on('display-added', refit);
+    screen.on('display-removed', refit);
+    screen.on('display-metrics-changed', refit);
+    win.on('closed', () => {
+      screen.removeListener('display-added', refit);
+      screen.removeListener('display-removed', refit);
+      screen.removeListener('display-metrics-changed', refit);
+    });
+  }
   return win;
 }
 

@@ -175,6 +175,18 @@ export default function App() {
     alfred.updateCard(id, patch).catch(() => {});
   };
 
+  // Rescue cards whose persisted geometry sits outside the current visible
+  // canvas (e.g. a layout saved when the overlay spanned every display): clamp
+  // every card on-screen and persist the correction. clampBox is idempotent, so
+  // once everything fits this re-runs to a no-op — no render loop.
+  useEffect(() => {
+    if (!bounds) return;
+    for (const c of cardsRef.current) {
+      const fit = clampBox(c, bounds);
+      if (fit.x !== c.x || fit.y !== c.y || fit.w !== c.w || fit.h !== c.h) patchCard(c.id, fit);
+    }
+  }, [bounds, cards]);
+
   const focusCard = (id: string) => {
     const list = cardsRef.current;
     const maxZ = list.reduce((m, c) => Math.max(m, c.z), 0);
