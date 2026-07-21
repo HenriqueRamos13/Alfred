@@ -14,6 +14,8 @@ import type {
 import type { BrainInfo } from '../main/core/providers.ts';
 
 const api = {
+  /** Auto-hide the top strip (command bar + toolbar). Default ON; ALFRED_AUTOHIDE_TOP=0 disables. */
+  autoHideTop: process.env.ALFRED_AUTOHIDE_TOP !== '0',
   /** Send a user command / chat turn to the orchestrator. */
   send: (text: string): Promise<void> => ipcRenderer.invoke('alfred:send', text),
   /** Kill switch — abort the running task. */

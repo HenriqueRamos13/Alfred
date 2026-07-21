@@ -104,8 +104,47 @@ body {
    in true window coordinates (0,0 = window top-left). */
 .canvas { position: absolute; inset: 0; z-index: 0; overflow: hidden; }
 
-/* Fixed header chrome paints above the canvas. */
-.topbar, .alerts, .alfred-commandbar { position: relative; z-index: 2; }
+/* ── auto-hide top strip (toolbar + command bar), macOS-menubar style ── */
+/* Overlay above the canvas; hidden by default, slides in when revealed. */
+.topstrip {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 50;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 16px;
+  transform: translateY(-100%);
+  opacity: 0;
+  pointer-events: none; /* while hidden, clicks fall through to the cards */
+  transition: transform 180ms ease, opacity 180ms ease;
+}
+.topstrip.open {
+  transform: translateY(0);
+  opacity: 1;
+  pointer-events: auto;
+}
+
+/* Thin neon handle at the absolute top edge — "bring the mouse here". */
+.top-hint {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 3px;
+  z-index: 49;
+  pointer-events: none;
+  background: linear-gradient(90deg, transparent, var(--cyan), var(--magenta), var(--cyan), transparent);
+  box-shadow: 0 0 8px rgba(53, 229, 255, 0.7), 0 0 16px rgba(53, 229, 255, 0.35);
+  opacity: 0.85;
+  transition: opacity 180ms ease;
+}
+.top-hint.hidden { opacity: 0; }
+
+/* Errors never auto-hide: fixed, anchored just below the strip, always on-screen. */
+.alfred-commandbar { position: relative; z-index: 2; }
 
 /* ── floating card ─────────────────────────────────────────────────── */
 .dcard {
@@ -228,8 +267,14 @@ body {
 .tone-dim { color: var(--dim); }
 
 /* ── error alerts (prominent, full-text, copyable) ─────────────────── */
+/* Fixed overlay: independent of the auto-hide strip so errors are always shown.
+   `top` is set inline to the strip's live height so a revealed strip never
+   covers them. */
 .alerts {
-  flex-shrink: 0;
+  position: fixed;
+  left: 16px;
+  right: 16px;
+  z-index: 45;
   display: flex;
   flex-direction: column;
   gap: 6px;

@@ -84,8 +84,62 @@ export default function App() {
 
   const logRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLDivElement>(null);
+  const stripRef = useRef<HTMLDivElement>(null);
+  const commandInputRef = useRef<HTMLTextAreaElement>(null);
   const cardsRef = useRef<CardLayout[]>([]);
   cardsRef.current = cards;
+
+  // Auto-hide top strip (macOS-menubar style). ALFRED_AUTOHIDE_TOP=0 disables it.
+  const autoHide = alfred.autoHideTop ?? true;
+  const [nearTop, setNearTop] = useState(false); // cursor at the very top edge
+  const [hoverStrip, setHoverStrip] = useState(false); // pointer over the strip
+  const [inputFocused, setInputFocused] = useState(false); // never hide while typing
+  const [stripH, setStripH] = useState(96); // measured strip height → anchors alerts below it
+  const stripOpen = !autoHide || nearTop || hoverStrip || inputFocused;
+
+  // Reveal when the cursor touches the top edge; hide after a short delay so it doesn't flicker.
+  useEffect(() => {
+    if (!autoHide) return;
+    let hideTimer: ReturnType<typeof setTimeout> | undefined;
+    const onMove = (e: MouseEvent) => {
+      if (e.clientY <= 6) {
+        clearTimeout(hideTimer);
+        setNearTop(true);
+      } else {
+        clearTimeout(hideTimer);
+        hideTimer = setTimeout(() => setNearTop(false), 400);
+      }
+    };
+    window.addEventListener('mousemove', onMove);
+    return () => {
+      window.removeEventListener('mousemove', onMove);
+      clearTimeout(hideTimer);
+    };
+  }, [autoHide]);
+
+  // ⌘/Ctrl+K reveals the strip and focuses the command input.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && (e.key === 'k' || e.key === 'K')) {
+        e.preventDefault();
+        setNearTop(true);
+        commandInputRef.current?.focus();
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
+
+  // Keep alerts anchored just below the strip's real height (grows if the toolbar wraps).
+  useEffect(() => {
+    const el = stripRef.current;
+    if (!el) return;
+    const measure = () => setStripH(el.offsetHeight);
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
 
   // Track the real canvas size: clamp cards on-screen and tell main so the AI's
   // ui_layout tool knows the live bounds.
@@ -397,40 +451,59 @@ export default function App() {
         <div />
       </div>
 
-      <div className="topbar">
-        <span className="topbar-title">◆ ALFRED</span>
-        {hidden.map((c) => (
+      {/* Always-visible hint that the strip lives at the top edge; fades out once revealed. */}
+      <div className={`top-hint${stripOpen ? ' hidden' : ''}`} aria-hidden />
+
+      <div
+        className={`topstrip${stripOpen ? ' open' : ''}`}
+        ref={stripRef}
+        onMouseEnter={() => setHoverStrip(true)}
+        onMouseLeave={() => setHoverStrip(false)}
+      >
+        <div className="topbar">
+          <span className="topbar-title">◆ ALFRED</span>
+          {hidden.map((c) => (
+            <button
+              key={c.id}
+              type="button"
+              className="topbar-btn no-drag"
+              title={`Show ${c.title}`}
+              onClick={() => patchCard(c.id, { visible: true })}
+            >
+              + {c.title}
+            </button>
+          ))}
+          <span className="topbar-spacer" />
           <button
-            key={c.id}
             type="button"
             className="topbar-btn no-drag"
-            title={`Show ${c.title}`}
-            onClick={() => patchCard(c.id, { visible: true })}
+            onClick={arrangeAll}
+            title="Organise all cards into a clean grid"
           >
-            + {c.title}
+            ⊞ ORGANIZAR
           </button>
-        ))}
-        <span className="topbar-spacer" />
-        <button
-          type="button"
-          className="topbar-btn no-drag"
-          onClick={arrangeAll}
-          title="Organise all cards into a clean grid"
-        >
-          ⊞ ORGANIZAR
-        </button>
-        <button type="button" className="topbar-btn no-drag" onClick={() => alfred.hideWindow()} title="Hide (⌘⇧A to toggle)">
-          HIDE
-        </button>
-        <button type="button" className="topbar-btn danger no-drag" onClick={() => alfred.quitWindow()} title="Quit Alfred">
-          QUIT
-        </button>
+          <button type="button" className="topbar-btn no-drag" onClick={() => alfred.hideWindow()} title="Hide (⌘⇧A to toggle)">
+            HIDE
+          </button>
+          <button type="button" className="topbar-btn danger no-drag" onClick={() => alfred.quitWindow()} title="Quit Alfred">
+            QUIT
+          </button>
+        </div>
+
+        <CommandBar
+          status={status}
+          killed={killed}
+          budget={budget}
+          onSubmit={onSubmit}
+          onKill={onKill}
+          inputRef={commandInputRef}
+          onFocus={() => setInputFocused(true)}
+          onBlur={() => setInputFocused(false)}
+        />
       </div>
 
-      <CommandBar status={status} killed={killed} budget={budget} onSubmit={onSubmit} onKill={onKill} />
-
       {alerts.length > 0 && (
-        <div className="alerts" role="alert">
+        <div className="alerts" role="alert" style={{ top: stripH }}>
           {alerts.map((a) => (
             <div className="alert" key={a.id}>
               <span className="alert-tag">ERROR</span>

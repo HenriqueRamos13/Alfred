@@ -4,7 +4,7 @@
  * renderable via render_ui). Theme tokens: see Panel.tsx.
  */
 import { useState } from 'react';
-import type { KeyboardEvent } from 'react';
+import type { KeyboardEvent, Ref } from 'react';
 import type { AgentStatus, BudgetState } from '../../main/core/types.ts';
 
 export interface CommandBarProps {
@@ -13,6 +13,11 @@ export interface CommandBarProps {
   budget: BudgetState | null;
   onSubmit: (text: string) => void;
   onKill: () => void;
+  /** Lets the parent focus the input programmatically (e.g. ⌘/Ctrl+K). */
+  inputRef?: Ref<HTMLTextAreaElement>;
+  /** Fired on input focus/blur so the parent can keep the top strip revealed while typing. */
+  onFocus?: () => void;
+  onBlur?: () => void;
 }
 
 const STATUS_COLOR: Record<AgentStatus, string> = {
@@ -24,7 +29,7 @@ const STATUS_COLOR: Record<AgentStatus, string> = {
   done: 'var(--neon-green, #34d399)',
 };
 
-export function CommandBar({ status, killed, budget, onSubmit, onKill }: CommandBarProps) {
+export function CommandBar({ status, killed, budget, onSubmit, onKill, inputRef, onFocus, onBlur }: CommandBarProps) {
   const [value, setValue] = useState('');
 
   const submit = () => {
@@ -69,9 +74,12 @@ export function CommandBar({ status, killed, budget, onSubmit, onKill }: Command
         {killed ? '×' : '›'}
       </span>
       <textarea
+        ref={inputRef}
         value={value}
         onChange={(e) => setValue(e.target.value)}
         onKeyDown={onKeyDown}
+        onFocus={onFocus}
+        onBlur={onBlur}
         rows={1}
         disabled={killed}
         placeholder={killed ? 'Kill switch engaged' : 'Ask Alfred…'}
