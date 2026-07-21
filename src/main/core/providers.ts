@@ -80,7 +80,7 @@ function apiBrains(env: Env): ApiBrain[] {
   const deepseekKey = env.DEEPSEEK_API_KEY ?? '';
   const aModel = anthropicModel(env);
   const oModel = env.OPENAI_MODEL || 'gpt-4o';
-  const dModel = env.DEEPSEEK_MODEL || 'deepseek-chat';
+  const dModel = env.DEEPSEEK_MODEL || 'deepseek-v4-flash';
 
   return [
     {
