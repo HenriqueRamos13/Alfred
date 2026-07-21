@@ -1,0 +1,19 @@
+node_modules/
+dist/
+out/
+release/
+build/
+
+# secrets & env
+.env
+.env.*
+!.env.example
+
+# runtime data (db, browser profile, tokens)
+data/
+
+# logs
+*.log
+
+# os / editor
+.DS_Store

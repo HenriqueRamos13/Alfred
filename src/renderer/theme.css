@@ -1,0 +1,201 @@
+/* Alfred — neon control-centre theme. Reconstructed clean from the design
+   canvas (no external fonts, system mono fallback; no support.js). */
+
+:root {
+  --bg: #04060c;
+  --text: #cbe4f2;
+  --muted: #7690a3;
+  --dim: #5f7d93;
+  --cyan: #35e5ff;
+  --magenta: #ff3ec9;
+  --lime: #b8ff3a;
+  --amber: #ffb020;
+  --red: #ff3b52;
+  --violet: #b98bff;
+
+  --panel-border: rgba(64, 224, 255, 0.16);
+  --glass: linear-gradient(160deg, rgba(18, 28, 46, 0.55), rgba(8, 12, 22, 0.45));
+  --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+* { box-sizing: border-box; }
+
+html, body, #root {
+  margin: 0;
+  height: 100%;
+  background: var(--bg);
+}
+
+body {
+  font-family: var(--font-mono);
+  color: var(--text);
+  -webkit-font-smoothing: antialiased;
+}
+
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-thumb { background: rgba(64, 224, 255, 0.18); border-radius: 4px; }
+::-webkit-scrollbar-track { background: transparent; }
+
+/* ── animations from the design canvas ─────────────────────────────── */
+@keyframes breathe { 0%, 100% { opacity: 0.35; } 50% { opacity: 1; } }
+@keyframes blink   { 0%, 45% { opacity: 1; } 50%, 95% { opacity: 0.15; } 100% { opacity: 1; } }
+@keyframes scan    { 0% { transform: translateY(-120%); } 100% { transform: translateY(120%); } }
+@keyframes wave    { 0%, 100% { transform: scaleY(0.14); } 50% { transform: scaleY(1); } }
+@keyframes flick   { 0%, 100% { opacity: 0.9; } 50% { opacity: 0.55; } }
+@keyframes sweep   { 0% { transform: translateX(-140%); } 100% { transform: translateX(140%); } }
+@keyframes alarm {
+  0%, 100% { box-shadow: 0 0 0 1px rgba(255, 59, 82, 0.5), 0 0 26px rgba(255, 59, 82, 0.25); }
+  50%      { box-shadow: 0 0 0 1px rgba(255, 59, 82, 0.95), 0 0 44px rgba(255, 59, 82, 0.6); }
+}
+
+/* ── app shell ─────────────────────────────────────────────────────── */
+.app {
+  position: relative;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 16px;
+  overflow: hidden;
+  background:
+    radial-gradient(1200px 700px at 70% -10%, rgba(24, 60, 96, 0.35), transparent 60%),
+    radial-gradient(900px 600px at 0% 110%, rgba(70, 20, 80, 0.28), transparent 55%),
+    linear-gradient(180deg, #05070e, #04060c);
+  -webkit-app-region: drag; /* macOS hiddenInset titlebar drag */
+}
+
+/* interactive children opt back out of the drag region */
+.app input, .app button, .app textarea, .app a, .app .no-drag { -webkit-app-region: no-drag; }
+
+.app::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background-image:
+    linear-gradient(rgba(80, 180, 220, 0.05) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(80, 180, 220, 0.05) 1px, transparent 1px);
+  background-size: 44px 44px;
+  -webkit-mask-image: radial-gradient(120% 100% at 50% 30%, #000 55%, transparent 100%);
+  mask-image: radial-gradient(120% 100% at 50% 30%, #000 55%, transparent 100%);
+}
+
+.scanline {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  overflow: hidden;
+  opacity: 0.5;
+}
+.scanline > div {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 38%;
+  background: linear-gradient(180deg, transparent, rgba(90, 220, 255, 0.06), transparent);
+  animation: scan 7s linear infinite;
+}
+
+/* ── bento grid ────────────────────────────────────────────────────── */
+.grid {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(300px, 360px) 1fr minmax(300px, 360px);
+  grid-template-rows: 1fr;
+  gap: 14px;
+}
+
+.col { display: flex; flex-direction: column; gap: 14px; min-height: 0; }
+
+/* ── glass panel ───────────────────────────────────────────────────── */
+.panel {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  padding: 14px 15px;
+  border-radius: 14px;
+  background: var(--glass);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  border: 1px solid var(--panel-border);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
+  overflow: hidden;
+}
+.panel.grow { flex: 1; }
+
+.panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.panel-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 10.5px;
+  letter-spacing: 2.5px;
+  color: #7fa6bd;
+  font-weight: 600;
+}
+.dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--cyan);
+  box-shadow: 0 0 8px var(--cyan);
+}
+.dot.live { animation: breathe 1.4s ease-in-out infinite; }
+.panel-meta { font-size: 9px; letter-spacing: 1px; color: #4d6b80; }
+
+/* ── generative surface ────────────────────────────────────────────── */
+.surface-body { flex: 1; min-height: 0; overflow: auto; }
+
+.surface-empty, .empty {
+  display: grid;
+  place-items: center;
+  height: 100%;
+  min-height: 120px;
+  text-align: center;
+  color: var(--dim);
+  font-size: 11px;
+  letter-spacing: 1.5px;
+}
+.unknown-node {
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px dashed var(--red);
+  color: var(--red);
+  font-size: 11px;
+}
+
+/* ── activity log (OBSERVABILITY) ──────────────────────────────────── */
+.log { flex: 1; min-height: 0; display: flex; flex-direction: column; justify-content: flex-end; gap: 2px; font-size: 11px; line-height: 1.5; overflow: hidden; }
+.log-row { display: flex; gap: 9px; white-space: nowrap; overflow: hidden; }
+.log-time { color: #4d6b80; flex-shrink: 0; }
+.log-tag { font-weight: 700; flex-shrink: 0; width: 88px; overflow: hidden; text-overflow: ellipsis; }
+.log-msg { color: #9fb6c6; overflow: hidden; text-overflow: ellipsis; }
+
+.tone-cyan { color: var(--cyan); }
+.tone-lime { color: var(--lime); }
+.tone-amber { color: var(--amber); }
+.tone-magenta { color: var(--magenta); }
+.tone-red { color: var(--red); }
+.tone-dim { color: var(--dim); }
+
+/* ── approval overlay ──────────────────────────────────────────────── */
+.overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 50;
+  display: grid;
+  place-items: center;
+  padding: 40px;
+  background: rgba(2, 4, 9, 0.72);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+}

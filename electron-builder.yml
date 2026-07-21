@@ -1,0 +1,13 @@
+appId: com.henriqueramos.alfred
+productName: Alfred
+directories:
+  output: release
+  buildResources: build
+files:
+  - out/**
+mac:
+  category: public.app-category.productivity
+  # Intel-only build (no Apple Silicon in the MVP target hardware).
+  target:
+    - target: dmg
+      arch: x64

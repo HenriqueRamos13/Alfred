@@ -1,0 +1,41 @@
+{
+  "name": "alfred",
+  "version": "0.1.0",
+  "description": "Alfred — a personal open-source Agent OS. A native macOS control centre where Claude drives your Mac.",
+  "author": "Henrique Ramos",
+  "license": "MIT",
+  "type": "module",
+  "main": "out/main/index.js",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "dev": "electron-vite dev",
+    "build": "electron-vite build",
+    "rebuild": "electron-builder install-app-deps || electron-rebuild",
+    "start": "electron-vite preview",
+    "test": "node --experimental-strip-types --test test/logic.test.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.65.0",
+    "better-sqlite3": "^11.10.0",
+    "googleapis": "^148.0.0",
+    "playwright": "^1.52.0"
+  },
+  "devDependencies": {
+    "@electron/rebuild": "^3.7.1",
+    "@types/better-sqlite3": "^7.6.12",
+    "@types/node": "^22.13.0",
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.3.4",
+    "electron": "^35.0.0",
+    "electron-builder": "^25.1.8",
+    "electron-vite": "^3.1.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "typescript": "^5.8.0",
+    "vite": "^6.1.0"
+  }
+}
