@@ -17,7 +17,6 @@
 
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
-import { execFile } from 'node:child_process';
 import { streamText, tool, jsonSchema, stepCountIs } from 'ai';
 import type { LanguageModel, ToolSet } from 'ai';
 import { HITL_TIERS } from './types.ts';
@@ -52,6 +51,7 @@ import { resolveProvider, listBrains, resolveActiveBrainId } from './providers.t
 import type { BrainInfo } from './providers.ts';
 import { getSetting, setSetting } from './db.ts';
 import { dayKey } from './budget.ts';
+import { spawnClaudeCli } from './claudeSpawn.ts';
 import { tools, createBrowserHandle } from '../tools/index.ts';
 
 type AlfredDb = import('better-sqlite3').Database;
@@ -373,29 +373,20 @@ interface ClaudeTurn {
   enoent?: boolean;
 }
 
-function spawnClaudeConversation(prompt: string, cwd: string, resumeId?: string): Promise<ClaudeTurn> {
+async function spawnClaudeConversation(prompt: string, cwd: string, resumeId?: string): Promise<ClaudeTurn> {
   const args = ['-p', prompt, '--output-format', 'json'];
   if (resumeId) args.push('--resume', resumeId);
-  return new Promise((resolve) => {
-    execFile(
-      'claude',
-      args,
-      { cwd, maxBuffer: 16 * 1024 * 1024, timeout: 30 * 60_000, killSignal: 'SIGKILL' },
-      (err, stdout, stderr) => {
-        const e = err as (Error & { code?: number | string }) | null;
-        if ((e as { code?: string } | null)?.code === 'ENOENT') return resolve({ enoent: true });
-        if (e && typeof e.code === 'number' && e.code !== 0) {
-          return resolve({ error: `claude -p exited ${e.code}: ${(stderr || stdout || '').trim()}` });
-        }
-        try {
-          const parsed = JSON.parse(stdout) as { session_id?: string; result?: string };
-          resolve({ sessionId: parsed.session_id, result: parsed.result ?? stdout.trim() });
-        } catch {
-          resolve({ result: (stdout || '').trim() });
-        }
-      },
-    );
-  });
+  const out = await spawnClaudeCli(args, { cwd });
+  if (out.enoent) return { enoent: true };
+  if (out.code !== 0) {
+    return { error: `claude -p exited ${out.code}: ${(out.stderr || out.stdout).trim()}` };
+  }
+  try {
+    const parsed = JSON.parse(out.stdout) as { session_id?: string; result?: string };
+    return { sessionId: parsed.session_id, result: parsed.result ?? out.stdout.trim() };
+  } catch {
+    return { result: out.stdout.trim() };
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

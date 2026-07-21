@@ -8,8 +8,8 @@
  * human approval before execute() runs. If the `claude` binary isn't on PATH we
  * return a clear error instead of crashing.
  */
-import { execFile } from 'node:child_process';
 import path from 'node:path';
+import { spawnClaudeCli } from '../core/claudeSpawn.ts';
 import type { Tool } from './types.ts';
 
 interface Args {
@@ -20,28 +20,6 @@ interface Args {
 interface ClaudeJson {
   result?: string;
   [key: string]: unknown;
-}
-
-function spawnClaude(
-  task: string,
-  cwd: string,
-): Promise<{ stdout: string; stderr: string; code: number; enoent: boolean }> {
-  return new Promise((resolve) => {
-    execFile(
-      'claude',
-      ['-p', task, '--output-format', 'json', '--permission-mode', 'acceptEdits'],
-      { cwd, maxBuffer: 16 * 1024 * 1024, timeout: 30 * 60_000, killSignal: 'SIGKILL' },
-      (err, stdout, stderr) => {
-        const e = err as (Error & { code?: number | string }) | null;
-        resolve({
-          stdout: stdout ?? '',
-          stderr: stderr ?? '',
-          code: e && typeof e.code === 'number' ? e.code : e ? 1 : 0,
-          enoent: (e as { code?: string } | null)?.code === 'ENOENT',
-        });
-      },
-    );
-  });
 }
 
 export const delegate: Tool<Args> = {
@@ -72,7 +50,10 @@ export const delegate: Tool<Args> = {
       return { ok: false, error: `cwd must be inside the workspace (${ctx.workspace})` };
     }
 
-    const out = await spawnClaude(a.task, cwd);
+    const out = await spawnClaudeCli(
+      ['-p', a.task, '--output-format', 'json', '--permission-mode', 'acceptEdits'],
+      { cwd },
+    );
     if (out.enoent) {
       return {
         ok: false,
