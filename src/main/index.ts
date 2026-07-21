@@ -11,15 +11,81 @@
  */
 import { app, BrowserWindow, globalShortcut, screen } from 'electron';
 import { join } from 'node:path';
-import { mkdirSync } from 'node:fs';
+import { mkdirSync, readFileSync, existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { openDb } from './core/db.ts';
 import { createOrchestrator } from './core/orchestrator.ts';
 import { loadPricingOverrides } from './core/pricing.ts';
+import { listBrains, selectBrainId, defaultProviderId } from './core/providers.ts';
 import { registerIpc, registerWindowIpc, type Orchestrator } from './ipc.ts';
 import type { AlfredConfig, StreamEvent } from './core/types.ts';
 
 const TOGGLE_SHORTCUT = 'CommandOrControl+Shift+A';
+
+/**
+ * Load the `.env` into process.env BEFORE config is read — without this no API
+ * key reaches the config and no brain is ever enabled. Node 22's
+ * `process.loadEnvFile` is used when present; otherwise a minimal parser runs.
+ * Looks in cwd (dev) then the app path (packaged); never throws if absent.
+ */
+function loadEnv(): void {
+  const path = [join(process.cwd(), '.env'), join(app.getAppPath(), '.env')].find(existsSync);
+  if (!path) {
+    console.warn('[alfred] no .env found (cwd or app path); using the process environment only.');
+    return;
+  }
+  const native = (process as { loadEnvFile?: (p: string) => void }).loadEnvFile;
+  if (native) {
+    try {
+      native.call(process, path);
+      return;
+    } catch (err) {
+      console.warn(`[alfred] process.loadEnvFile failed for ${path}; using fallback parser.`, err);
+    }
+  }
+  parseEnvInto(readFileSync(path, 'utf8'), process.env);
+}
+
+/** Minimal .env parser: skips blanks/comments, splits on first '='; existing env wins. */
+function parseEnvInto(text: string, env: NodeJS.ProcessEnv): void {
+  for (const line of text.split('\n')) {
+    const s = line.trim();
+    if (!s || s.startsWith('#')) continue;
+    const eq = s.indexOf('=');
+    if (eq === -1) continue;
+    const key = s.slice(0, eq).trim();
+    if (!key || key in env) continue; // env already set → it takes priority
+    let val = s.slice(eq + 1).trim();
+    if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
+      val = val.slice(1, -1);
+    }
+    env[key] = val;
+  }
+}
+
+/** One secret-free diagnostic line at boot so the terminal shows what's connected. */
+function logBrainStatus(): void {
+  const brains = listBrains();
+  const enabled = brains.filter((b) => b.enabled).map((b) => b.id);
+  // claude-code is a delegation tool, not a chat brain — exclude it from "active".
+  const chat = brains.filter((b) => b.id !== 'claude-code');
+  const { id: activeId } = selectBrainId(defaultProviderId(process.env), chat);
+  if (!activeId) {
+    console.warn(
+      '\n  ================================================================\n' +
+        '  ⚠  ALFRED: no chat brain is connected — Alfred cannot answer.\n' +
+        '     Put an API key in .env (ANTHROPIC_API_KEY / OPENAI_API_KEY /\n' +
+        '     DEEPSEEK_API_KEY) and restart.' +
+        (enabled.length ? `\n     (available for delegation: ${enabled.join(', ')})` : '') +
+        '\n  ================================================================\n',
+    );
+    return;
+  }
+  const active = brains.find((b) => b.id === activeId)!;
+  console.log(
+    `Alfred: brains enabled = [${enabled.join(', ') || 'none'}]; active = ${active.id} (${active.model})`,
+  );
+}
 
 function windowMode(): 'overlay' | 'windowed' {
   return (process.env.ALFRED_WINDOW_MODE || 'overlay').trim().toLowerCase() === 'windowed'
@@ -109,7 +175,9 @@ function createOverlayWindow(): BrowserWindow {
 }
 
 function boot(): BrowserWindow {
+  loadEnv();
   const config = loadConfig();
+  logBrainStatus();
   const data = dataDir();
   loadPricingOverrides(process.env, data);
   const db = openDb(join(data, 'alfred.db'));
@@ -120,7 +188,7 @@ function boot(): BrowserWindow {
   };
 
   const core = createOrchestrator({ config, db, emit, dataDir: data }) as Orchestrator;
-  registerIpc(core);
+  registerIpc(core, emit);
   registerWindowIpc(win);
   return win;
 }

@@ -27,6 +27,7 @@ import type {
   StreamEvent,
   UiNode,
 } from '../main/core/types.ts';
+import type { BrainInfo } from '../main/core/providers.ts';
 
 type Tone = 'cyan' | 'lime' | 'amber' | 'magenta' | 'red' | 'dim';
 interface LogRow {
@@ -38,7 +39,9 @@ interface LogRow {
 }
 
 const MAX_LOG = 80;
+const MAX_ALERTS = 12;
 let logSeq = 0;
+let alertSeq = 0;
 
 function now(): string {
   const d = new Date();
@@ -68,8 +71,20 @@ export default function App() {
   const [projects, setProjects] = useState<ProjectRecord[]>([]);
   const [cost, setCost] = useState<CostSnapshot | null>(null);
   const [killed, setKilled] = useState(false);
+  const [alerts, setAlerts] = useState<{ id: number; msg: string }[]>([]);
+  const [brains, setBrains] = useState<BrainInfo[]>([]);
 
   const logRef = useRef<HTMLDivElement>(null);
+
+  const pushAlert = (msg: string) =>
+    setAlerts((prev) => {
+      const next = [...prev, { id: alertSeq++, msg }];
+      return next.length > MAX_ALERTS ? next.slice(next.length - MAX_ALERTS) : next;
+    });
+
+  const refreshBrains = () => {
+    alfred.listBrains().then(setBrains).catch(() => {});
+  };
 
   const pushLog = (row: Omit<LogRow, 'id' | 'time'>) =>
     setLogs((prev) => {
@@ -83,6 +98,7 @@ export default function App() {
 
   useEffect(() => {
     refreshProjects();
+    refreshBrains();
     const off = alfred.onStream((e: StreamEvent) => {
       switch (e.kind) {
         case 'chat.delta':
@@ -119,7 +135,10 @@ export default function App() {
           break;
         case 'agent.status':
           setStatus(e.status);
-          if (e.status === 'done' || e.status === 'idle') refreshProjects();
+          if (e.status === 'done' || e.status === 'idle') {
+            refreshProjects();
+            refreshBrains();
+          }
           break;
         case 'budget':
           setBudget(e.state);
@@ -129,6 +148,7 @@ export default function App() {
           break;
         case 'error':
           pushLog({ tag: 'ERROR', tone: 'red', msg: e.message });
+          pushAlert(e.message);
           break;
       }
     });
@@ -150,7 +170,11 @@ export default function App() {
       ts: Date.now(),
     };
     setMessages((m) => [...m, msg]);
-    alfred.send(trimmed).catch((err) => pushLog({ tag: 'ERROR', tone: 'red', msg: String(err) }));
+    alfred.send(trimmed).catch((err) => {
+      const msg = err instanceof Error ? err.message : String(err);
+      pushLog({ tag: 'ERROR', tone: 'red', msg });
+      pushAlert(msg);
+    });
   };
 
   const onKill = () => {
@@ -185,6 +209,33 @@ export default function App() {
 
       <CommandBar status={status} killed={killed} budget={budget} onSubmit={onSubmit} onKill={onKill} />
 
+      {alerts.length > 0 && (
+        <div className="alerts" role="alert">
+          {alerts.map((a) => (
+            <div className="alert" key={a.id}>
+              <span className="alert-tag">ERROR</span>
+              <span className="alert-msg">{a.msg}</span>
+              <button
+                type="button"
+                className="alert-btn no-drag"
+                title="Copy"
+                onClick={() => navigator.clipboard?.writeText(a.msg).catch(() => {})}
+              >
+                COPY
+              </button>
+              <button
+                type="button"
+                className="alert-btn no-drag"
+                title="Dismiss"
+                onClick={() => setAlerts((prev) => prev.filter((x) => x.id !== a.id))}
+              >
+                ✕
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+
       <div className="grid">
         <div className="col">
           <section className="panel grow">
@@ -214,6 +265,35 @@ export default function App() {
         </div>
 
         <div className="col">
+          <section className="panel">
+            <div className="panel-head">
+              <div className="panel-title">
+                <span className="dot live" style={{ background: 'var(--cyan)', boxShadow: '0 0 8px var(--cyan)' }} />
+                BRAINS
+              </div>
+              <span className="panel-meta">{brains.filter((b) => b.enabled).length}/{brains.length} CONNECTED</span>
+            </div>
+            {brains.length ? (
+              <div className="brains">
+                {brains.map((b) => {
+                  const active = (cost?.activeBrain ?? brains.find((x) => x.enabled && x.id !== 'claude-code')?.id) === b.id;
+                  return (
+                    <div className={`brain${b.enabled ? ' on' : ''}${active ? ' active' : ''}`} key={b.id}>
+                      <span className={`brain-dot${b.enabled ? ' on' : ''}`} />
+                      <span className="brain-label">{b.label}</span>
+                      <span className="brain-model">{b.model}</span>
+                      <span className="brain-state">
+                        {active && b.enabled ? 'ACTIVE' : b.enabled ? 'CONNECTED' : 'offline'}
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+            ) : (
+              <div className="empty">NO BRAINS</div>
+            )}
+          </section>
+
           <section className="panel">
             <div className="panel-head">
               <div className="panel-title">

@@ -191,6 +191,93 @@ body {
 .tone-red { color: var(--red); }
 .tone-dim { color: var(--dim); }
 
+/* ── error alerts (prominent, full-text, copyable) ─────────────────── */
+.alerts {
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 30vh;
+  overflow-y: auto;
+}
+.alert {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 9px 12px;
+  border-radius: 8px;
+  background: rgba(255, 59, 82, 0.1);
+  border: 1px solid rgba(255, 59, 82, 0.55);
+  animation: alarm 1.6s ease-in-out infinite;
+}
+.alert-tag {
+  flex-shrink: 0;
+  font-weight: 700;
+  font-size: 10px;
+  letter-spacing: 1px;
+  color: var(--red);
+  padding-top: 1px;
+}
+.alert-msg {
+  flex: 1;
+  min-width: 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: #ffd7dd;
+  white-space: pre-wrap;
+  word-break: break-word;
+  user-select: text;
+  cursor: text;
+}
+.alert-btn {
+  flex-shrink: 0;
+  background: transparent;
+  border: 1px solid rgba(255, 59, 82, 0.5);
+  color: var(--red);
+  border-radius: 5px;
+  font: inherit;
+  font-size: 10px;
+  letter-spacing: 1px;
+  padding: 2px 7px;
+  cursor: pointer;
+}
+.alert-btn:hover { background: rgba(255, 59, 82, 0.2); }
+
+/* ── brains panel (connected AIs) ──────────────────────────────────── */
+.brains { display: flex; flex-direction: column; gap: 5px; }
+.brain {
+  display: grid;
+  grid-template-columns: 8px 1fr auto;
+  grid-template-areas: 'dot label state' 'dot model state';
+  align-items: center;
+  column-gap: 8px;
+  padding: 6px 9px;
+  border-radius: 7px;
+  border: 1px solid var(--panel-border);
+  opacity: 0.55;
+}
+.brain.on { opacity: 1; }
+.brain.active { border-color: var(--cyan); box-shadow: 0 0 10px rgba(53, 229, 255, 0.25); }
+.brain-dot {
+  grid-area: dot;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--dim);
+}
+.brain-dot.on { background: var(--lime); box-shadow: 0 0 8px var(--lime); }
+.brain-label { grid-area: label; font-size: 11px; color: var(--text); }
+.brain-model { grid-area: model; font-size: 9px; color: var(--dim); }
+.brain-state {
+  grid-area: state;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 1px;
+  color: var(--dim);
+}
+.brain.on .brain-state { color: var(--lime); }
+.brain.active .brain-state { color: var(--cyan); }
+
 /* ── top-bar (drag + HIDE/QUIT for the frameless overlay) ──────────── */
 .topbar {
   display: flex;

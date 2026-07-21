@@ -79,8 +79,11 @@ Keys are read only from `process.env`, never logged, and masked in the audit log
 git clone <your-fork-url> alfred && cd alfred
 ./setup.sh          # installs Xcode CLT, Homebrew, Node 22, deps, native rebuild
 cp .env.example .env  # then fill in your keys (setup.sh does this for you)
-npm run dev
+./start.sh          # day-to-day: this is all you need to launch Alfred
 ```
+
+After the initial setup, day-to-day launching is just `./start.sh` — it loads
+`.env` and runs the dev app in one command.
 
 Then grant the app the macOS permissions it needs to control the Mac:
 **System Settings → Privacy & Security → Accessibility** and **Screen Recording**

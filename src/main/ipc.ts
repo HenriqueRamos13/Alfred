@@ -13,6 +13,7 @@ import type {
   ApprovalDecision,
   ProjectRecord,
   AccountRecord,
+  StreamEvent,
 } from './core/types.ts';
 import type { BrainInfo } from './core/providers.ts';
 
@@ -30,12 +31,35 @@ export interface Orchestrator {
   connectGmail(): Promise<AccountRecord | null>;
 }
 
-export function registerIpc(core: Orchestrator): void {
-  ipcMain.handle('alfred:send', (_e, text: unknown) => core.send(String(text ?? '')));
-  ipcMain.handle('alfred:listProjects', () => core.listProjects());
-  ipcMain.handle('alfred:listAccounts', () => core.listAccounts());
-  ipcMain.handle('alfred:listBrains', () => core.listBrains());
-  ipcMain.handle('alfred:connectGmail', () => core.connectGmail());
+export function registerIpc(core: Orchestrator, emit: (e: StreamEvent) => void): void {
+  // Never let a raw rejection reach the renderer as the truncated, unreadable
+  // "Error invoking remote method 'alfred:...'". Catch, log to the terminal, and
+  // surface the FULL message to the UI as an 'error' stream event.
+  const fail = (label: string, err: unknown): void => {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error(`[alfred] ${label} failed:`, message);
+    emit({ kind: 'error', sessionId: '', message: `${label} failed: ${message}` });
+  };
+  const guard = <T>(label: string, fn: () => T | Promise<T>, fallback: T) => async (): Promise<T> => {
+    try {
+      return await fn();
+    } catch (err) {
+      fail(label, err);
+      return fallback;
+    }
+  };
+
+  ipcMain.handle('alfred:send', async (_e, text: unknown) => {
+    try {
+      await core.send(String(text ?? ''));
+    } catch (err) {
+      fail('send', err);
+    }
+  });
+  ipcMain.handle('alfred:listProjects', guard('list projects', () => core.listProjects(), [] as ProjectRecord[]));
+  ipcMain.handle('alfred:listAccounts', guard('list accounts', () => core.listAccounts(), [] as AccountRecord[]));
+  ipcMain.handle('alfred:listBrains', guard('list brains', () => core.listBrains(), [] as BrainInfo[]));
+  ipcMain.handle('alfred:connectGmail', guard('connect Gmail', () => core.connectGmail(), null as AccountRecord | null));
 
   ipcMain.on('alfred:stop', () => core.stop());
   ipcMain.on('alfred:resolveApproval', (_e, id: unknown, decision: unknown) => {

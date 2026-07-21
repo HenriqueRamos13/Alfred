@@ -409,7 +409,22 @@ export function createOrchestrator(opts: CreateOrchestratorOpts): OrchestratorHa
   return {
     async send(text) {
       gov.resetTrifecta();
-      const provider = resolveProvider(config.provider);
+      let provider: ReturnType<typeof resolveProvider>;
+      try {
+        provider = resolveProvider(config.provider);
+      } catch (err) {
+        // Zero brains enabled (or the requested one is unusable): don't let this
+        // reject the IPC call — surface a clear, actionable error to the UI.
+        const detail = err instanceof Error ? err.message : String(err);
+        console.error('[alfred] cannot start turn:', detail);
+        emit({
+          kind: 'error',
+          sessionId,
+          message: `No brain connected: set an API key in .env (ANTHROPIC_API_KEY / OPENAI_API_KEY / DEEPSEEK_API_KEY) and restart. (${detail})`,
+        });
+        emit({ kind: 'agent.status', sessionId, status: 'error' });
+        return;
+      }
       active = new Orchestrator({
         config,
         ctx,
