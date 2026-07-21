@@ -17,27 +17,28 @@ if ! xcode-select -p >/dev/null 2>&1; then
   exit 0
 fi
 
-# 2. Homebrew.
-if ! command -v brew >/dev/null 2>&1; then
-  say "Installing Homebrew"
-  /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+# 2. Node 22 LTS via nvm.
+export NVM_DIR="$HOME/.nvm"
+if [[ ! -s "$NVM_DIR/nvm.sh" ]]; then
+  say "Installing nvm"
+  curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | bash
 fi
-# Load brew into this shell (Intel Homebrew lives in /usr/local).
-eval "$(/usr/local/bin/brew shellenv 2>/dev/null || /opt/homebrew/bin/brew shellenv)"
+# shellcheck source=/dev/null
+[ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
 
-# 3. Node 22 LTS.
-if ! command -v node >/dev/null 2>&1 || [[ "$(node -p 'process.versions.node.split(".")[0]')" -lt 22 ]]; then
-  say "Installing Node 22 (LTS)"
-  brew install node@22
-  brew link --overwrite --force node@22
-fi
+say "Installing Node 22 (LTS) via nvm"
+nvm install 22 && nvm use 22 && nvm alias default 22
 
-# 4. Dependencies + native module rebuild for Electron.
+# 3. Dependencies + native module rebuild for Electron.
 say "Installing npm dependencies"
 npm install
 
 say "Rebuilding native modules for Electron"
 npm run rebuild
+
+# 4. Playwright Chromium (the browser tool uses it).
+say "Installing Playwright Chromium"
+npx playwright install chromium
 
 # 5. Environment file.
 if [[ ! -f .env ]]; then
@@ -53,6 +54,6 @@ Next:
   1. Edit .env and add ANTHROPIC_API_KEY (and Gmail OAuth if you want mail).
   2. Grant the terminal (and later the Alfred app) permission under
      System Settings → Privacy & Security → Accessibility AND Screen Recording.
-  3. Start it:  npm run dev
+  3. Start it:  ./start.sh
 
 EOF
