@@ -41,10 +41,35 @@ say "Installing Playwright Chromium"
 npx playwright install chromium
 
 # 4b. Compile the on-device speech-to-text helper (Swift → native binary).
-#     Uses SFSpeechRecognizer + AVAudioEngine; only builds on macOS (swiftc ships
-#     with the Xcode CLT installed above). Source is committed; binary is gitignored.
+#     Uses SFSpeechRecognizer + AVAudioEngine; only builds on macOS. VOICE INPUT
+#     IS OPTIONAL — Alfred runs fine without this binary (stt.ts handles it being
+#     absent), so a compile failure here must NOT abort the rest of setup.
+#     xcrun pins the correct macOS SDK/toolchain; a bare `swiftc` can fail to
+#     resolve CoreFoundation on a half-configured Command Line Tools install.
+#     Source is committed; binary is gitignored.
 say "Compiling the voice-input helper (native/alfred-stt)"
-swiftc native/alfred-stt.swift -o native/alfred-stt
+stt_voice_warning() {
+  cat >&2 <<'WARN'
+
+⚠  Warning: failed to compile the voice-input helper (STT).
+   Alfred runs fine anyway; text input and voice output (TTS) still work.
+   If you want voice INPUT, check the macOS toolchain:
+     xcode-select -p            # where are the tools?
+     sudo xcode-select --reset  # reset to the default toolchain
+     xcode-select --install     # (re)install the Command Line Tools
+   Then recompile manually:
+     xcrun --sdk macosx swiftc native/alfred-stt.swift -o native/alfred-stt \
+       -framework Foundation -framework AVFoundation -framework Speech
+WARN
+}
+if ! command -v xcrun >/dev/null 2>&1 || ! xcode-select -p >/dev/null 2>&1; then
+  # Missing toolchain — skip, don't abort (xcrun resolves the SDK for swiftc).
+  stt_voice_warning
+elif ! xcrun --sdk macosx swiftc native/alfred-stt.swift -o native/alfred-stt \
+       -framework Foundation -framework AVFoundation -framework Speech; then
+  # swiftc already printed its full error above (we don't silence it).
+  stt_voice_warning
+fi
 
 # 5. Environment file.
 if [[ ! -f .env ]]; then

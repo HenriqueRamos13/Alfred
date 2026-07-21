@@ -113,9 +113,26 @@ prolonged silence, or via the kill switch. Language defaults to `en-US`; overrid
 with `ALFRED_STT_LOCALE` (e.g. `pt-PT`) or the `--locale` helper flag.
 
 A small Swift helper does the listening (`native/alfred-stt`). `./setup.sh`
-compiles it (`swiftc native/alfred-stt.swift -o native/alfred-stt`); the source
-is committed, the binary is gitignored. If you see *"voice input helper not
+compiles it via `xcrun` (which pins the correct macOS SDK/toolchain); the source
+is committed, the binary is gitignored. Voice input is **optional** — if the
+helper fails to build, `setup.sh` warns and continues, and Alfred still runs
+(text input and voice output keep working). If you see *"voice input helper not
 found"*, re-run `./setup.sh`.
+
+### Troubleshooting: CoreFoundation / Swift build
+
+If the Swift compile fails (e.g. *"failed to load module CoreFoundation"*), the
+macOS toolchain is usually mis-pointed. Repair it, then recompile manually:
+
+```sh
+xcode-select -p            # show the active developer dir
+sudo xcode-select --reset  # reset to the default toolchain
+xcode-select --install     # (re)install the Command Line Tools
+
+# recompile the helper (xcrun resolves the SDK + frameworks):
+xcrun --sdk macosx swiftc native/alfred-stt.swift -o native/alfred-stt \
+  -framework Foundation -framework AVFoundation -framework Speech
+```
 
 **Permissions (dev-mode caveat):** on first use macOS prompts for **Microphone**
 and **Speech Recognition**. In `npm run dev` those permissions attach to the
