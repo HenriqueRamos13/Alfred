@@ -19,7 +19,7 @@ import { ApprovalPrompt } from './components/ApprovalPrompt.tsx';
 import { DraggableCard } from './components/DraggableCard.tsx';
 import { clampBox, tileLayout, cardOnDisplay, nextDisplayId, type Bounds } from '../main/core/layout.ts';
 import { initialDictation, dictationReduce } from '../main/core/dictation.ts';
-import { confirmMatches } from '../main/core/reset.ts';
+import { confirmMatches } from '../main/core/reset-pure.ts';
 import type { FactoryResetInfo } from '../main/core/orchestrator.ts';
 import type {
   AgentStatus,

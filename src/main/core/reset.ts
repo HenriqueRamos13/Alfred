@@ -12,20 +12,9 @@
 
 import { join } from 'node:path';
 
-/**
- * Factory-reset confirmation gate: the user must type "confirmar". Case- and
- * accent-insensitive (so "Confirmar" / "CONFIRMÁR" also pass), surrounding
- * whitespace ignored. Anything else keeps the destructive button disabled.
- */
-export function confirmMatches(input: string): boolean {
-  return (
-    input
-      .normalize('NFD')
-      .replace(/[̀-ͯ]/g, '')
-      .trim()
-      .toLowerCase() === 'confirmar'
-  );
-}
+// confirmMatches is renderer-safe (no node deps) so it lives in reset-pure.ts;
+// re-exported here so main + tests keep importing it from reset.ts.
+export { confirmMatches } from './reset-pure.ts';
 
 /**
  * The ONLY filesystem directories a factory reset removes — every path is
