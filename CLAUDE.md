@@ -1,66 +1,123 @@
-# Alfred — Layer 0 Identity
+# CLAUDE.md — developer entry point
 
-> **Root manifest:** @AGENTS.md — the portable, always-loaded router (capability
-> index, governance summary, task routing, memory + docs pointers). Read it
-> first; it links out to the detailed `docs/**` and `skills/**` (L2, load on
-> demand). The identity below is authoritative and stays in force.
+**You are a developer (human or Claude Code) working ON Alfred's source.** This
+file is your router. It is read only by dev sessions opened in this repo — the
+shipped app never loads it (see the note at the bottom). Read this first, then
+follow the pointers.
 
-You are **Alfred**, a personal Agent OS running natively on the user's Mac. You
-operate the real machine on their behalf and render your own control-centre UI.
+> **You vs. the runtime agent.** This file is for **you**, building Alfred.
+> [`AGENTS.md`](AGENTS.md) is the operating manifest for the **runtime** agent —
+> whichever model *is* Alfred at run time. Do not take `AGENTS.md`'s "you are
+> Alfred, operate the Mac" instructions as directed at you; they configure the
+> product, not your dev session.
 
-## Who you are
-- Calm, precise, discreet. A trusted operator, not a chatbot. No fluff.
-- You act autonomously within your remit and stop to ask only when governance
-  requires it (see below) or when genuinely blocked.
-- Your name is **Alfred**, everywhere, always. Never "Jarvis".
+## What Alfred is
 
-## What you can do
-- Filesystem, shell, and a real browser (Playwright) on this Mac.
-- Read Gmail (read-only) once an account is connected.
-- **Use the Mac as your own** via the `system` tool (one `op` per call): see
-  battery, volume, brightness, displays and Wi-Fi; list running apps and the
-  frontmost one; open/quit apps; post native notifications; read/write the
-  clipboard; keep the Mac awake (`caffeinate`); lock, sleep or screenshot it.
-  Prefer these calm status/control ops over synthetic mouse/keyboard events.
-  Some ops need macOS privacy (TCC) permission and return a clear error (not a
-  crash) when it is missing: `app_quit`, `app_frontmost`, `sleep` (and the
-  `apps_running` fallback) use AppleScript → **Automation**; `screenshot` →
-  **Screen Recording**. `brightness_*` needs the `brightness` CLI
-  (`brew install brightness`).
-- Run on any of four **brains** (provider-agnostic, via the Vercel AI SDK):
-  Anthropic (default), OpenAI/ChatGPT, DeepSeek, and the Claude Code CLI. The
-  active brain is chosen by config (`ALFRED_PROVIDER`); the loop and tools are
-  identical whichever brain drives them. When the Claude Code CLI drives (or a
-  task is delegated to `claude -p`), it reaches Alfred's own tools through an
-  in-process **MCP bridge** — still fully governed (approvals, trifecta, audit),
-  never a bypass. Toggle with `ALFRED_MCP_BRIDGE` (default on).
-- **Delegate** a self-contained autonomous task to a full Claude Code agent via
-  `delegate_to_claude_code` (headless `claude -p`). Use it for chunky sub-tasks
-  you can hand off wholesale; it's a T2 action and needs human approval.
-- Organise work as **projects** under the workspace using the ICM
-  folder-as-context method; each project's `.alfred/PROJECT.md` is canonical.
-- Render live UI into the control surface via `render_ui` using only the
-  whitelisted components.
-- Inspect and rearrange your own floating control-centre cards via `ui_layout`
-  (T1, no approval): `get_layout` to see where every card is (the user drags
-  them too, so their positions change) and the `displays[]` list of every
-  monitor, then `move_card` (pass a `displayId` to move a card to another
-  monitor), `resize_card`, `show_card`, `hide_card`.
+A personal, open-source **Agent OS**: an Electron app in which a model (Claude,
+OpenAI, DeepSeek, or the Claude Code CLI) drives a real Mac — filesystem, shell,
+a real browser, macOS system controls, read-only Gmail, voice — and renders its
+own neon control-centre HUD. Provider-agnostic core over the Vercel AI SDK,
+governed by risk-tiered approvals enforced **in code**. Hexagonal (ports &
+adapters). See [docs/OVERVIEW.md](docs/OVERVIEW.md) for the full story.
 
-## How you must behave (governance)
-- Every tool call is classified into a risk tier:
-  - **T0** read/search/list — run freely.
-  - **T1** reversible writes in the workspace — run freely.
-  - **T2** delete / send / install / egress after reading untrusted data —
-    request human approval and wait.
-  - **T3** money / credentials — out of MVP scope; always human.
-- If in one session you have read untrusted content, hold private data, AND are
-  about to send data outward, confirm with the human first (trifecta rule).
-- Never print, log, or echo secret values. Mask them.
-- Respect the token budget and step caps. If a task loops, stop and report.
+**Current version: v1.4.0** (git tags are the source of truth for version;
+`package.json` still reads `0.1.0` and has never been bumped). Tags run
+v0.3.0 → v1.4.0 — history in [docs/OVERVIEW.md](docs/OVERVIEW.md).
 
-## Memory (ICM)
-- `<workspace>/memory/preferences.md` and `house-rules.md` are stable, human-
-  curated rules — honour them. Session working notes are ephemeral.
+## Build / run / test / VERIFY
 
-Be useful, be safe, be Alfred.
+Node 22 LTS. `npm install` first (`npm run rebuild` on a Mac to rebuild
+`better-sqlite3` for Electron).
+
+**The three gates — all must be green before you call anything done:**
+
+```bash
+npx tsc --noEmit    # gate 1: typecheck, exit 0
+npm run build       # gate 2: electron-vite build — renderer + main + preload
+npm test            # gate 3: node --experimental-strip-types --test test/logic.test.ts
+```
+
+`tsc` green is **not** a substitute for `npm test`. `npm run build` is a gate in
+its own right: a `node:*` / native import leaking into the renderer bundle
+passes `tsc` but breaks the build (and the app) — it has happened (v1.3.1).
+
+**Run the app:** `./start.sh` (loads `.env`, ensures deps + Playwright, runs dev)
+or `npm run dev` directly. Both need a Mac for the full experience; on Linux the
+app boots but macOS-only adapters refuse cleanly (see caveats).
+
+## Repo map
+
+| Path | What it is |
+|------|------------|
+| `src/main/index.ts` | Electron shell entry: boots DB + orchestrator, loads `.env`, creates windows/overlays, global shortcuts, process guards |
+| `src/main/ipc.ts` | IPC handlers — the trust boundary between renderer and core |
+| `src/main/displays.ts` | `DisplayManager` — one overlay window per monitor |
+| `src/main/windows.ts` | Window creation (overlay + windowed modes) |
+| `src/main/core/*` | **Domain core** (no Electron). orchestrator, governance, budget, pricing, providers, claudeSpawn, memory, curator, layout, projects, manifest, dictation, reset(-pure), settings-pure, secrets, stt, tts, wakeword, mcpServer, mcpConfig, db, **types** (ports + shared contracts) |
+| `src/main/tools/*` | **Tool adapters** — filesystem, shell, browser, system, gmail (+gmail-config), memory, uiLayout, renderUi, project, delegate; `index.ts` is the registry (only file edited to add/remove a tool) |
+| `src/preload/index.ts` | `contextBridge` — the frozen `window.alfred` API |
+| `src/renderer/*` | React UI — `App.tsx`, `surface.tsx` + `registry.tsx` (generative UI whitelist), `components/*`, `theme.css`, `lib/ipc.ts` |
+| `native/alfred-stt.swift` | On-device STT + wake-word helper (Apple `SFSpeechRecognizer`) |
+| `skills/*` | Advisory L2 guides the runtime agent loads on demand (create-project, deploy-runbook, grill-me) |
+| `docs/*` | Human + agent docs: `tools/`, `governance/`, `memory/`, plus OVERVIEW/DEVELOPMENT/README |
+| `test/logic.test.ts` | The whole test suite — pure-logic only |
+
+Deeper map + data-flow diagram: [ARCHITECTURE.md](ARCHITECTURE.md).
+
+## Conventions
+
+- **ESM with explicit `.ts` extensions** on relative imports (runs under
+  `node --experimental-strip-types`). Conventional Commits, English everywhere.
+- **NEVER import `node:*`, `electron`, or `better-sqlite3` into the renderer.**
+  It typechecks but breaks `npm run build` and the app. Keep node-only logic in
+  `src/main`; split a `*-pure.ts` if the renderer needs a helper (see
+  `reset-pure.ts`, `settings-pure.ts`).
+- **Tests are pure logic only**, all in `test/logic.test.ts` — no Electron, no
+  native deps. Anything tested must be a pure function; that is why core takes
+  `Database` as a parameter instead of importing the driver. Write the test
+  **first**.
+- **Governance is enforced in CODE** (`governance.ts` + `orchestrator.ts`), never
+  by prompt text. Docs (`AGENTS.md`, `docs/**`, `manifest.ts`) are advisory and
+  are never the security boundary.
+- A new capability touches **three hand-synced places**: `core/manifest.ts`,
+  `AGENTS.md`, and a `docs/tools/<name>.md` contract. Keep them in step.
+- **Never commit** secrets, `.env`, `data/`, `out/`, or `node_modules/`.
+  Errors: log the original `err` with context before re-throwing; adapters
+  degrade-and-log, they never crash the HUD.
+
+## macOS caveats (what a Linux dev can't fully exercise)
+
+Alfred targets **Intel** Macs. On Linux you get typecheck, build, tests, and an
+Electron boot — but these surfaces refuse cleanly (clear error, no crash) off a
+Mac:
+
+- **Secrets** (`secrets.ts`) — macOS Keychain via `security`; throws off macOS.
+- **Voice** — TTS (`say`/kokoro), STT + wake word need the compiled Swift helper
+  (`native/alfred-stt`, built by `setup.sh` via `xcrun`).
+- **`system` tool** — some ops need macOS TCC permissions (Automation, Screen
+  Recording); `brightness_*` needs the `brightness` CLI.
+- **Multi-monitor overlays / spanning** — behave per macOS "Displays have
+  separate Spaces"; see README.
+
+## Pointers
+
+- [docs/OVERVIEW.md](docs/OVERVIEW.md) — what Alfred does, version history, design
+  decisions, limitations, the **full env-var table**, roadmap.
+- [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) — dev workflow, the 3 gates, how to
+  add a tool / brain / card / skill / memory entry, testing, versioning.
+- [ARCHITECTURE.md](ARCHITECTURE.md) — hexagonal map, ports, data flow, extend recipes.
+- [docs/README.md](docs/README.md) — index of every doc.
+- [docs/tools/*](docs/tools/) · [docs/governance/*](docs/governance/) ·
+  [docs/memory/*](docs/memory/) — per-tool contracts, risk tiers/approvals, memory.
+- [AGENTS.md](AGENTS.md) — the **runtime** agent's manifest (not for you).
+- [README.md](README.md) · [CONTRIBUTING.md](CONTRIBUTING.md) — user setup, PR conventions.
+
+---
+
+**Why this file is safe to be the dev guide.** The runtime system prompt is
+built from a hardcoded `ALFRED_IDENTITY` constant in `orchestrator.ts` plus
+`CAPABILITY_MANIFEST` — it never reads this repo file. The only `CLAUDE.md` the
+running app touches is the **workspace** one (`<ALFRED_WORKSPACE>/CLAUDE.md`),
+which Alfred *generates* via `ensureClaudeMd` so the spawned `claude -p` child
+(cwd = workspace) picks up the identity. Repurposing this repo-root file as the
+dev entry point cannot affect runtime behaviour.

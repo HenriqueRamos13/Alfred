@@ -180,6 +180,7 @@ audit.
 | `ALFRED_TTS_VOICE` | `Luciana` / `af_heart` | Voice name (per engine). |
 | `ALFRED_TTS_RATE` | — | `say` speaking rate (words/min). |
 | `ALFRED_TTS_DTYPE` | `fp32` | `kokoro` precision: `q8` \| `q4` \| `fp16` \| `fp32`. |
+| `ALFRED_TTS_TAIL_MS` | `700` | How long the mic stays muted after TTS stops (half-duplex tail). |
 | `ALFRED_PREWARM_TTS` | `0` | `setup.sh`: `1` pre-downloads the Kokoro weights. |
 | `ALFRED_STT_LOCALE` | `pt-BR` | Speech-recognition language (e.g. `en-US`, `pt-PT`). |
 | `ALFRED_STT_SILENCE` | `2.0` | Silence (seconds) that ends a push-to-talk session. |
@@ -377,8 +378,12 @@ npm test           # pure-logic tests (node --test, no native deps)
 npm run typecheck  # tsc --noEmit
 ```
 
-Contributing (how to run, test, and the repo layout):
-[CONTRIBUTING.md](CONTRIBUTING.md).
+More for developers:
+- [CLAUDE.md](CLAUDE.md) — dev entry point (repo map, the 3 gates, caveats).
+- [docs/OVERVIEW.md](docs/OVERVIEW.md) — features, version history, design decisions, full env table.
+- [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) — dev workflow, extend recipes, testing.
+- [docs/README.md](docs/README.md) — index of every doc.
+- [CONTRIBUTING.md](CONTRIBUTING.md) — run/test and PR conventions.
 
 ## License
 

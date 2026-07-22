@@ -1,7 +1,7 @@
 {
   "name": "alfred",
-  "version": "0.1.0",
-  "description": "Alfred — a personal open-source Agent OS. A native macOS control centre where Claude drives your Mac.",
+  "version": "1.4.1",
+  "description": "Alfred \u2014 a personal open-source Agent OS. A native macOS control centre where Claude drives your Mac.",
   "author": "Henrique Ramos",
   "license": "MIT",
   "type": "module",

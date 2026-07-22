@@ -27,9 +27,17 @@ ops over synthetic mouse/keyboard events. Source: `src/main/tools/system.ts`.
 | `window_hide` | — | `{ visible: false }` | T1 |
 | `window_show` | — | `{ visible: true }` | T1 |
 | `window_toggle` | — | `{ visible }` (new state) | T1 |
+| `grill_me_on` | — | `{ grillMe: true }` | T1 |
+| `grill_me_off` | — | `{ grillMe: false }` | T1 |
+| `grill_me_toggle` | — | `{ grillMe }` (new state) | T1 |
 
 `window_*` hide/show/toggle **all** of Alfred's overlay windows at once (same
 path as the `⌘⇧A` shortcut and the "Alfred, esconder/mostrar" voice commands).
+
+`grill_me_*` set/toggle the persisted `grill_me_enabled` setting (default on) —
+call these when the user asks to turn the plan-clarity interview on/off ("ativa/
+desativa o grill me"). Behaviour is documented in
+[../governance/grill-me.md](../governance/grill-me.md).
 
 `value` is clamped: volume 0-100, brightness 0-1. `caffeinate` holds **one**
 keep-awake at a time (module-global); `stop:true` releases it. `screenshot`
