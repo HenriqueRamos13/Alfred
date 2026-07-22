@@ -9,8 +9,9 @@
  *   semantic — durable facts: memory/facts.md
  */
 
-import { readFile, appendFile, mkdir, writeFile, access, readdir } from 'node:fs/promises';
+import { readFile, appendFile, mkdir, writeFile, access, readdir, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
+import { slugify } from './projects.ts';
 
 function paths(workspace: string) {
   const dir = join(workspace, 'memory');
@@ -23,6 +24,14 @@ function paths(workspace: string) {
     journalDir: join(dir, 'journal'),
     journal: (day: string) => join(dir, 'journal', `${day}.md`),
     facts: join(dir, 'facts.md'),
+    index: join(dir, 'index.md'),
+    notesDir: join(dir, 'notes'),
+    note: (slug: string) => join(dir, 'notes', `${slug}.md`),
+    mapsDir: join(dir, 'maps'),
+    map: (name: string) => join(dir, 'maps', `${name}.md`),
+    inboxDir: join(dir, 'inbox'),
+    cacheDir: join(dir, '.index'),
+    backlinks: join(dir, '.index', 'backlinks.json'),
   };
 }
 
@@ -80,12 +89,25 @@ export async function ensureClaudeMd(workspace: string, identity: string): Promi
 export async function ensureScaffold(workspace: string): Promise<void> {
   const p = paths(workspace);
   await mkdir(p.workingDir, { recursive: true });
+  // Obsidian-style knowledge vault dirs (notes/maps/inbox + curator cache).
+  await Promise.all([
+    mkdir(p.notesDir, { recursive: true }),
+    mkdir(p.mapsDir, { recursive: true }),
+    mkdir(p.inboxDir, { recursive: true }),
+    mkdir(p.cacheDir, { recursive: true }),
+  ]);
   if (!(await exists(p.preferences))) {
     await writeFile(p.preferences, '# Preferences\n\n_Stable, human-curated. Alfred honours but does not edit this._\n', 'utf8');
   }
   if (!(await exists(p.houseRules))) {
     await writeFile(p.houseRules, '# House rules\n\n_Stable, human-curated. Alfred honours but does not edit this._\n', 'utf8');
   }
+  if (!(await exists(p.index))) {
+    await writeFile(p.index, buildIndex([]), 'utf8');
+  }
+  // .index/ is a rebuildable curator cache — keep it out of any workspace git repo.
+  const gitignore = join(p.dir, '.gitignore');
+  if (!(await exists(gitignore))) await writeFile(gitignore, '.index/\n', 'utf8');
 }
 
 /** Combined Layer-3 text (preferences + house rules), for the system prompt. */
@@ -241,4 +263,331 @@ export async function recentMemoryText(
   const facts = truncateHead((await readOptional(p.facts)).trim(), Math.floor(maxChars * 0.4));
   const journal = truncateHead(blocks.join('\n\n'), Math.floor(maxChars * 0.6));
   return [facts && `## Facts\n${facts}`, journal && `## Journal\n${journal}`].filter(Boolean).join('\n\n');
+}
+
+// ── Zettelkasten notes + inbox handoffs (Obsidian-style vault) ───────────────
+//
+// A note is one atomic idea: frontmatter + "## Observations" (typed one-liners)
+// + "## Relations" (typed [[wikilinks]] — the graph). Parsers/serializers below
+// are PURE and unit-tested; the IO functions compose them.
+
+/** Observation categories the note format allows. */
+export type ObsCategory = 'decision' | 'requirement' | 'risk' | 'gotcha' | 'fact' | 'tip';
+
+export interface Observation {
+  category: string;
+  text: string;
+  tags: string[];
+}
+export interface Relation {
+  /** e.g. part_of, uses, relates_to. */
+  type: string;
+  /** wikilink target (note title). */
+  target: string;
+}
+export interface Note {
+  title: string;
+  type: string;
+  created?: string;
+  updated?: string;
+  tags: string[];
+  observations: Observation[];
+  relations: Relation[];
+}
+
+/** All `#hashtag` tokens in a string (deduped, order-preserving). */
+export function parseHashtags(text: string): string[] {
+  const out: string[] = [];
+  const re = /#([A-Za-z0-9_-]+)/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text))) if (!out.includes(m[1])) out.push(m[1]);
+  return out;
+}
+
+/** Every `[[wikilink]]` target in text (trimmed, deduped, order-preserving). */
+export function extractWikilinks(text: string): string[] {
+  const out: string[] = [];
+  const re = /\[\[([^\]]+)\]\]/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text))) {
+    const t = m[1].trim();
+    if (t && !out.includes(t)) out.push(t);
+  }
+  return out;
+}
+
+/** Parse "- [category] text #tag" observation lines from a note body. */
+export function parseObservations(body: string): Observation[] {
+  const out: Observation[] = [];
+  for (const raw of body.split('\n')) {
+    const m = raw.match(/^\s*-\s*\[([a-z]+)\]\s+(.+?)\s*$/);
+    if (!m) continue;
+    const text = m[2].trim();
+    out.push({ category: m[1], text, tags: parseHashtags(text) });
+  }
+  return out;
+}
+
+/** Parse "- rel_type [[Target]]" relation lines from a note body. */
+export function parseRelations(body: string): Relation[] {
+  const out: Relation[] = [];
+  for (const raw of body.split('\n')) {
+    const m = raw.match(/^\s*-\s*([A-Za-z_][A-Za-z0-9_]*)\s+\[\[([^\]]+)\]\]/);
+    if (!m) continue;
+    out.push({ type: m[1], target: m[2].trim() });
+  }
+  return out;
+}
+
+/** Split leading `---` YAML frontmatter (title/type/created/updated/tags[]) from the body. */
+export function parseFrontmatter(md: string): { data: Record<string, string | string[]>; body: string } {
+  const m = md.match(/^---\n([\s\S]*?)\n---\n?([\s\S]*)$/);
+  if (!m) return { data: {}, body: md };
+  const data: Record<string, string | string[]> = {};
+  for (const line of m[1].split('\n')) {
+    const mm = line.match(/^([A-Za-z_]+):\s*(.*)$/);
+    if (!mm) continue;
+    const val = mm[2].trim();
+    data[mm[1]] =
+      val.startsWith('[') && val.endsWith(']')
+        ? val.slice(1, -1).split(',').map((s) => s.trim()).filter(Boolean)
+        : val;
+  }
+  return { data, body: m[2] };
+}
+
+/** Parse a full note markdown into the structured Note. */
+export function parseNote(md: string): Note {
+  const { data, body } = parseFrontmatter(md);
+  const tags = Array.isArray(data.tags) ? data.tags : typeof data.tags === 'string' && data.tags ? [data.tags] : [];
+  const str = (k: string): string | undefined => (typeof data[k] === 'string' ? (data[k] as string) : undefined);
+  return {
+    title: str('title') ?? '',
+    type: str('type') || 'note',
+    created: str('created'),
+    updated: str('updated'),
+    tags,
+    observations: parseObservations(body),
+    relations: parseRelations(body),
+  };
+}
+
+/** Render a Note to canonical markdown (frontmatter + Observations + Relations). */
+export function serializeNote(n: Note): string {
+  const fm = [
+    '---',
+    `title: ${n.title}`,
+    `type: ${n.type || 'note'}`,
+    n.created ? `created: ${n.created}` : null,
+    n.updated ? `updated: ${n.updated}` : null,
+    `tags: [${(n.tags ?? []).join(', ')}]`,
+    '---',
+  ]
+    .filter((v): v is string => v !== null)
+    .join('\n');
+  const obs =
+    '## Observations' +
+    (n.observations.length ? '\n' + n.observations.map((o) => `- [${o.category}] ${o.text}`).join('\n') : '');
+  const rel =
+    '## Relations' + (n.relations.length ? '\n' + n.relations.map((r) => `- ${r.type} [[${r.target}]]`).join('\n') : '');
+  return `${fm}\n\n${obs}\n\n${rel}\n`;
+}
+
+/** Union-merge `incoming` into `base` (dedup observations/relations/tags). Idempotent. */
+export function mergeNotes(base: Note, incoming: Note): Note {
+  const observations = [...base.observations];
+  for (const o of incoming.observations)
+    if (!observations.some((x) => x.text === o.text && x.category === o.category)) observations.push(o);
+  const relations = [...base.relations];
+  for (const r of incoming.relations)
+    if (!relations.some((x) => x.type === r.type && x.target === r.target)) relations.push(r);
+  const tags = [...base.tags];
+  for (const t of incoming.tags) if (!tags.includes(t)) tags.push(t);
+  return {
+    title: incoming.title || base.title,
+    type: incoming.type || base.type,
+    created: base.created || incoming.created,
+    updated: incoming.updated || base.updated,
+    tags,
+    observations,
+    relations,
+  };
+}
+
+const cap = (s: string): string => (s ? s[0].toUpperCase() + s.slice(1) : s);
+/** maps/ filename for a note type (people is the one irregular plural). */
+export function mapNameForType(type: string): string {
+  const t = (type || 'note').toLowerCase();
+  return t === 'person' ? 'people' : `${t}s`;
+}
+
+/** target-title → source-slugs backlink graph, built from relations + observation wikilinks. */
+export function buildBacklinks(notes: { slug: string; note: Note }[]): Record<string, string[]> {
+  const out: Record<string, string[]> = {};
+  for (const { slug, note } of notes) {
+    const targets = new Set<string>();
+    for (const r of note.relations) targets.add(r.target);
+    for (const o of note.observations) for (const w of extractWikilinks(o.text)) targets.add(w);
+    for (const t of targets) (out[t] ??= []).push(slug);
+  }
+  return out;
+}
+
+/** Root Map-of-Content (index.md): every note as a [[wikilink]], grouped by type. */
+export function buildIndex(notes: { slug: string; note: Note }[]): string {
+  const byType = new Map<string, string[]>();
+  for (const { note } of notes) {
+    const list = byType.get(note.type) ?? [];
+    list.push(note.title);
+    byType.set(note.type, list);
+  }
+  const lines = [
+    '# Index — Alfred memory map (L1)',
+    '',
+    '_Root Map of Content: the router to all durable knowledge. Follow the [[wikilinks]] to reach notes; maps/ holds per-type MOCs._',
+    '',
+  ];
+  if (byType.size === 0) lines.push('_No notes yet._', '');
+  for (const type of [...byType.keys()].sort()) {
+    lines.push(`## ${cap(mapNameForType(type))}`, `See [[${cap(mapNameForType(type))}]]`);
+    for (const title of byType.get(type)!.slice().sort()) lines.push(`- [[${title}]]`);
+    lines.push('');
+  }
+  return lines.join('\n');
+}
+
+/** A per-type MOC (maps/<type>s.md): the notes of one type. */
+export function buildMap(type: string, notes: { slug: string; note: Note }[]): string {
+  const titles = notes
+    .filter((n) => n.note.type === type)
+    .map((n) => n.note.title)
+    .sort();
+  const lines = [`# ${cap(mapNameForType(type))} — MOC`, '', `_Maintained by the curator. Notes of type \`${type}\`._`, ''];
+  for (const t of titles) lines.push(`- [[${t}]]`);
+  return lines.join('\n') + '\n';
+}
+
+// ── notes / handoffs / index IO ──────────────────────────────────────────────
+
+/** Load one note by slug, or null when it doesn't exist. */
+export async function readNote(workspace: string, slug: string): Promise<Note | null> {
+  const md = await readOptional(paths(workspace).note(slug));
+  return md.trim() ? parseNote(md) : null;
+}
+
+/** All notes in notes/ as {slug, note}, sorted by slug. */
+export async function listNotes(workspace: string): Promise<{ slug: string; note: Note }[]> {
+  const p = paths(workspace);
+  let files: string[];
+  try {
+    files = (await readdir(p.notesDir)).filter((f) => f.endsWith('.md'));
+  } catch {
+    return [];
+  }
+  const out: { slug: string; note: Note }[] = [];
+  for (const f of files.sort()) {
+    const md = await readOptional(join(p.notesDir, f));
+    if (md.trim()) out.push({ slug: f.slice(0, -3), note: parseNote(md) });
+  }
+  return out;
+}
+
+/**
+ * Create or update (union-merge) an atomic note in notes/<slug>.md. Slug is
+ * derived from the title, so writing the same title again merges into it.
+ */
+export async function writeNote(
+  workspace: string,
+  input: { title: string; type?: string; tags?: string[]; observations?: Observation[]; relations?: Relation[] },
+  now: Date = new Date(),
+): Promise<{ slug: string; file: string }> {
+  const p = paths(workspace);
+  const slug = slugify(input.title);
+  if (!slug) throw new Error(`Cannot derive a slug from note title: ${JSON.stringify(input.title)}`);
+  const today = journalDay(now);
+  const incoming: Note = {
+    title: input.title.trim(),
+    type: (input.type || 'note').trim(),
+    created: today,
+    updated: today,
+    tags: input.tags ?? [],
+    observations: (input.observations ?? []).map((o) => ({
+      category: o.category,
+      text: o.text,
+      tags: o.tags ?? parseHashtags(o.text),
+    })),
+    relations: input.relations ?? [],
+  };
+  const existing = await readNote(workspace, slug);
+  const note = existing ? mergeNotes(existing, { ...incoming, updated: today }) : incoming;
+  await mkdir(p.notesDir, { recursive: true });
+  await writeFile(p.note(slug), serializeNote(note), 'utf8');
+  return { slug, file: p.note(slug) };
+}
+
+/** Drop a short handoff into inbox/ for the curator to organise later. */
+export async function writeHandoff(
+  workspace: string,
+  input: { summary: string; notePath?: string; tags?: string[] },
+  now: Date = new Date(),
+): Promise<{ file: string }> {
+  const p = paths(workspace);
+  await mkdir(p.inboxDir, { recursive: true });
+  const stamp = now.toISOString().replace(/[:.]/g, '-');
+  const file = join(p.inboxDir, `${stamp}-${Math.random().toString(36).slice(2, 8)}.md`);
+  const body = [
+    `- created: ${now.toISOString()}`,
+    input.notePath ? `- note: ${input.notePath}` : null,
+    input.tags?.length ? `- tags: ${input.tags.map((t) => `#${t}`).join(' ')}` : null,
+    '',
+    input.summary.trim(),
+    '',
+  ]
+    .filter((v): v is string => v !== null)
+    .join('\n');
+  await writeFile(file, body, 'utf8');
+  return { file };
+}
+
+/** Absolute paths of pending inbox handoffs (oldest first). */
+export async function listInbox(workspace: string): Promise<string[]> {
+  const p = paths(workspace);
+  try {
+    return (await readdir(p.inboxDir))
+      .filter((f) => f.endsWith('.md'))
+      .sort()
+      .map((f) => join(p.inboxDir, f));
+  } catch {
+    return [];
+  }
+}
+
+export function readInbox(file: string): Promise<string> {
+  return readOptional(file);
+}
+
+/** Delete processed inbox files; per-file errors are swallowed (best-effort drain). */
+export async function drainInbox(files: string[]): Promise<void> {
+  await Promise.all(files.map((f) => unlink(f).catch(() => {})));
+}
+
+/** L1 router (index.md) for the system prompt / new agents. */
+export function readIndex(workspace: string): Promise<string> {
+  return readOptional(paths(workspace).index);
+}
+
+/**
+ * Regenerate the derived artifacts from the notes on disk: index.md (root MOC),
+ * maps/<type>s.md (per-type MOCs) and .index/backlinks.json. Pure-derivable and
+ * idempotent — safe to call any time.
+ */
+export async function rebuildIndexes(workspace: string): Promise<void> {
+  const p = paths(workspace);
+  const notes = await listNotes(workspace);
+  await mkdir(p.cacheDir, { recursive: true });
+  await mkdir(p.mapsDir, { recursive: true });
+  await writeFile(p.index, buildIndex(notes), 'utf8');
+  await writeFile(p.backlinks, JSON.stringify(buildBacklinks(notes), null, 2), 'utf8');
+  const types = [...new Set(notes.map((n) => n.note.type))];
+  await Promise.all(types.map((t) => writeFile(p.map(mapNameForType(t)), buildMap(t, notes), 'utf8')));
 }

@@ -34,6 +34,8 @@ const api = {
   setDangerousMode: (on: boolean): Promise<boolean> => ipcRenderer.invoke('alfred:setDangerousMode', on),
   /** Clear all persisted auto-approve rules. */
   resetApprovals: (): void => ipcRenderer.send('alfred:resetApprovals'),
+  /** Manually run the memory curator (drain inbox → notes, rebuild MOCs/backlinks). */
+  runCurator: (): Promise<unknown> => ipcRenderer.invoke('alfred:runCurator'),
   listProjects: (): Promise<ProjectRecord[]> => ipcRenderer.invoke('alfred:listProjects'),
   listAccounts: (): Promise<AccountRecord[]> => ipcRenderer.invoke('alfred:listAccounts'),
   /** Brain availability (enabled/disabled) for the UI. */

@@ -45,7 +45,9 @@ import {
   recordAudit,
   trifectaImpact,
 } from './governance.ts';
-import { ensureClaudeMd, ensureScaffold, readStable, recentMemoryText, formatTranscript } from './memory.ts';
+import { ensureClaudeMd, ensureScaffold, readStable, recentMemoryText, formatTranscript, readIndex, listInbox } from './memory.ts';
+import { CAPABILITY_MANIFEST } from './manifest.ts';
+import { runCurator } from './curator.ts';
 import { createSecrets } from './secrets.ts';
 import { getProject, listProjects } from './projects.ts';
 import { resolveProvider, listBrains, resolveActiveBrainId } from './providers.ts';
@@ -95,6 +97,14 @@ world with kind:"semantic", and noteworthy events with kind:"episodic" (a dated
 journal). When the user refers to the past ("what did we discuss last week", "do
 you remember X"), 'recall' (optionally with a query / sinceDays) or 'list' your
 memory BEFORE answering. Never invent memories: if recall finds nothing, say so.
+The "Knowledge map" below (index.md) is your L1 router to durable notes; reach
+the rest lazily via recall and the [[wikilinks]] it lists.
+
+When you COMPLETE a relevant task, persist its durable knowledge: (a) call memory
+op:"note" to write an atomic note (one idea — observations + typed [[wikilink]]
+relations), then (b) call memory op:"handoff" with a short summary of what you did
+and the note/file path. A dedicated curator later files those handoffs into the
+vault — you just capture; you don't organise.
 
 You can inspect and reorganise your own floating control-centre cards with the
 ui_layout tool (T1, no approval): get_layout (also returns the canvas viewport
@@ -279,7 +289,10 @@ export class Orchestrator {
 
   private async buildSystem(): Promise<string> {
     const { ctx } = this.deps;
-    let sys = ALFRED_IDENTITY;
+    // L1 always-loaded layer: identity + the thin capability manifest (index of
+    // everything Alfred can do + routing + pointers). The detailed docs it names
+    // (docs/**, skills/**) are L2 — referenced, never loaded by default.
+    let sys = `${ALFRED_IDENTITY}\n\n${CAPABILITY_MANIFEST}`;
     // Read per-turn so toggling the button takes effect on the next turn.
     if (getSetting(ctx.db, 'dangerous_mode') === '1') {
       sys +=
@@ -287,6 +300,9 @@ export class Orchestrator {
     }
     const mem = await readStable(ctx.workspace).catch(() => '');
     if (mem.trim()) sys += `\n\n# Stable memory (honour these)\n${mem}`;
+    // L1: the index.md Map of Content — the router to every durable note.
+    const index = await readIndex(ctx.workspace).catch(() => '');
+    if (index.trim()) sys += `\n\n# Knowledge map (index — L1 router)\n${index}`;
     const recent = await recentMemoryText(ctx.workspace).catch(() => '');
     if (recent.trim()) sys += `\n\n# Recent memory (last 7 days)\n${recent}`;
     // The just-sent user turn is persisted before run() and is passed as the
@@ -459,6 +475,8 @@ export interface OrchestratorHandle {
   setDangerousMode(on: boolean): boolean;
   /** Clear all persisted auto-approve rules ("ask again next time"). */
   resetApprovals(): void;
+  /** Manually run the memory curator (drain inbox → notes, rebuild MOCs/backlinks). */
+  runCurator(): Promise<unknown>;
   listProjects(): ProjectRecord[];
   listAccounts(): AccountRecord[];
   /** Brain availability (enabled/disabled) for the UI. */
@@ -567,6 +585,45 @@ export function createOrchestrator(opts: CreateOrchestratorOpts): OrchestratorHa
 
   let active: Orchestrator | null = null;
 
+  // ── Curator (memory organiser) — runs on IDLE after a task, debounced ───────
+  // Never mid-task: send() awaits the turn, then schedules; a new turn clears the
+  // pending timer. `curating` guards against overlap; the run itself is a no-op
+  // when the inbox is empty and respects the daily token kill-switch.
+  let curating = false;
+  let curatorTimer: ReturnType<typeof setTimeout> | null = null;
+  const curatorDeps = () => ({
+    db,
+    workspace: config.workspace,
+    sessionId,
+    dailyTokenBudget: config.dailyTokenBudget,
+    stepCap: config.stepCap,
+    dailyUsdBudget: config.dailyUsdBudget,
+    env: process.env,
+  });
+  async function runCuratorNow(): Promise<ReturnType<typeof runCurator> | void> {
+    if (curating) return;
+    curating = true;
+    try {
+      return await runCurator(curatorDeps());
+    } catch (err) {
+      console.error('[alfred] curator run failed:', err instanceof Error ? err.message : err);
+    } finally {
+      curating = false;
+    }
+  }
+  function scheduleCurator(): void {
+    if (curatorTimer) clearTimeout(curatorTimer);
+    curatorTimer = setTimeout(() => {
+      curatorTimer = null;
+      // Only spend a model call when there is something queued.
+      void listInbox(config.workspace)
+        .then((items) => {
+          if (items.length && !active) void runCuratorNow();
+        })
+        .catch(() => {});
+    }, 4000);
+  }
+
   // Read-only budget view for the startup cost snapshot (turn accounting lives
   // in each turn's own tracker; this only READS the shared SQLite tables).
   const costTracker = new BudgetTracker(
@@ -613,7 +670,9 @@ export function createOrchestrator(opts: CreateOrchestratorOpts): OrchestratorHa
     emit({ kind: 'agent.status', sessionId, status: 'thinking' });
     // claude -p reads the CLAUDE.md of its cwd (the workspace) automatically —
     // seed it with Alfred's identity so the vanilla CLI knows it's Alfred.
-    await ensureClaudeMd(config.workspace, ALFRED_IDENTITY).catch((err) => {
+    // Seed the workspace CLAUDE.md with identity + the capability manifest, so the
+    // vanilla CLI (whose cwd is the workspace) gets the same L1 layer Alfred does.
+    await ensureClaudeMd(config.workspace, `${ALFRED_IDENTITY}\n\n${CAPABILITY_MANIFEST}`).catch((err) => {
       console.error('[alfred] ensure workspace CLAUDE.md failed:', err instanceof Error ? err.message : err);
     });
     // Stable per-workspace key (not the per-boot sessionId) so --resume picks up
@@ -678,6 +737,11 @@ export function createOrchestrator(opts: CreateOrchestratorOpts): OrchestratorHa
   return {
     async send(text) {
       gov.resetTrifecta();
+      // A new turn cancels a pending curator sweep — never organise mid-task.
+      if (curatorTimer) {
+        clearTimeout(curatorTimer);
+        curatorTimer = null;
+      }
       // Persist the user turn before routing so it survives restarts and feeds
       // the continuity transcript. The renderer shows it optimistically, so it
       // is stored (not re-emitted) to avoid a duplicate bubble in-session.
@@ -688,49 +752,58 @@ export function createOrchestrator(opts: CreateOrchestratorOpts): OrchestratorHa
           console.error('[alfred] persist user message failed:', err instanceof Error ? err.message : err);
         }
       }
-      const brainId = activeBrainId();
-      if (!brainId) {
-        emit({
-          kind: 'error',
-          sessionId,
-          message:
-            'No brain connected: set an API key in .env (ANTHROPIC_API_KEY / OPENAI_API_KEY / DEEPSEEK_API_KEY) or install the Claude Code CLI, then restart.',
-        });
-        emit({ kind: 'agent.status', sessionId, status: 'error' });
-        return;
-      }
-
-      if (brainId === 'claude-code') {
-        await runClaudeTurn(text);
-        return;
-      }
-
-      let provider: ReturnType<typeof resolveProvider>;
       try {
-        // brainId is already resolved to an enabled API brain → no noisy fallback.
-        provider = resolveProvider(brainId);
-      } catch (err) {
-        const detail = err instanceof Error ? err.message : String(err);
-        console.error('[alfred] cannot start turn:', detail);
-        emit({
-          kind: 'error',
-          sessionId,
-          message: `No brain connected: set an API key in .env (ANTHROPIC_API_KEY / OPENAI_API_KEY / DEEPSEEK_API_KEY) and restart. (${detail})`,
+        const brainId = activeBrainId();
+        if (!brainId) {
+          emit({
+            kind: 'error',
+            sessionId,
+            message:
+              'No brain connected: set an API key in .env (ANTHROPIC_API_KEY / OPENAI_API_KEY / DEEPSEEK_API_KEY) or install the Claude Code CLI, then restart.',
+          });
+          emit({ kind: 'agent.status', sessionId, status: 'error' });
+          return;
+        }
+
+        if (brainId === 'claude-code') {
+          await runClaudeTurn(text);
+          return;
+        }
+
+        let provider: ReturnType<typeof resolveProvider>;
+        try {
+          // brainId is already resolved to an enabled API brain → no noisy fallback.
+          provider = resolveProvider(brainId);
+        } catch (err) {
+          const detail = err instanceof Error ? err.message : String(err);
+          console.error('[alfred] cannot start turn:', detail);
+          emit({
+            kind: 'error',
+            sessionId,
+            message: `No brain connected: set an API key in .env (ANTHROPIC_API_KEY / OPENAI_API_KEY / DEEPSEEK_API_KEY) and restart. (${detail})`,
+          });
+          emit({ kind: 'agent.status', sessionId, status: 'error' });
+          return;
+        }
+        active = new Orchestrator({
+          config,
+          ctx,
+          tools,
+          model: provider.languageModel,
+          brainId: provider.id,
+          modelId: provider.model,
+          brainLabel: `${provider.id}:${provider.model}`,
+          projectContext: await projectContext(text),
         });
-        emit({ kind: 'agent.status', sessionId, status: 'error' });
-        return;
+        await active.run(text);
+      } finally {
+        // Turn over → free the busy flag and schedule an idle curator sweep.
+        active = null;
+        scheduleCurator();
       }
-      active = new Orchestrator({
-        config,
-        ctx,
-        tools,
-        model: provider.languageModel,
-        brainId: provider.id,
-        modelId: provider.model,
-        brainLabel: `${provider.id}:${provider.model}`,
-        projectContext: await projectContext(text),
-      });
-      await active.run(text);
+    },
+    async runCurator() {
+      return runCuratorNow();
     },
     getHistory(limit) {
       return getRecentMessages(db, limit ?? 100) as ChatMessage[];

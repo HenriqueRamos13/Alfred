@@ -35,6 +35,8 @@ export interface Orchestrator {
   setDangerousMode(on: boolean): boolean | Promise<boolean>;
   /** Clear all persisted auto-approve rules. */
   resetApprovals(): void;
+  /** Manually run the memory curator (drain inbox → notes, rebuild MOCs/backlinks). */
+  runCurator(): Promise<unknown>;
   listProjects(): ProjectRecord[] | Promise<ProjectRecord[]>;
   listAccounts(): AccountRecord[] | Promise<AccountRecord[]>;
   /** Brain availability for the UI. */
@@ -199,6 +201,7 @@ export function registerIpc(core: Orchestrator, emit: (e: StreamEvent) => void):
       fail('reset approvals', err);
     }
   });
+  ipcMain.handle('alfred:runCurator', guard('run curator', () => core.runCurator(), null as unknown));
 }
 
 /**

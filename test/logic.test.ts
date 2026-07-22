@@ -45,7 +45,21 @@ import {
   filterLines,
   truncateHead,
   formatTranscript,
+  parseHashtags,
+  extractWikilinks,
+  parseObservations,
+  parseRelations,
+  parseFrontmatter,
+  parseNote,
+  serializeNote,
+  mergeNotes,
+  buildBacklinks,
+  buildIndex,
+  buildMap,
+  mapNameForType,
 } from '../src/main/core/memory.ts';
+import type { Note } from '../src/main/core/memory.ts';
+import { pickCuratorSpec } from '../src/main/core/curator.ts';
 import {
   parseBattery,
   parseVolume,
@@ -361,6 +375,131 @@ test('resolveActiveBrainId — persisted → env → first enabled (claude-code 
   assert.equal(resolveActiveBrainId(undefined, {}, onlyCc), 'claude-code');
   // nothing enabled → null
   assert.equal(resolveActiveBrainId('openai', {}, brains.map((b) => ({ ...b, enabled: false }))), null);
+});
+
+// ── vault notes: parse / serialize / merge / MOC + backlinks ─────────────────
+
+test('parseHashtags + extractWikilinks — deduped, order-preserving', () => {
+  assert.deepEqual(parseHashtags('fix #bug in #Auth, again #bug'), ['bug', 'Auth']);
+  assert.deepEqual(parseHashtags('nothing here'), []);
+  assert.deepEqual(extractWikilinks('see [[Foo Bar]] and [[Baz]] and [[Foo Bar]]'), ['Foo Bar', 'Baz']);
+});
+
+test('parseObservations — typed one-liners with tags', () => {
+  const body = '## Observations\n- [decision] chose X over Y #arch\n- [gotcha] Z breaks on empty #bug\n\n## Relations\n- uses [[T]]';
+  assert.deepEqual(parseObservations(body), [
+    { category: 'decision', text: 'chose X over Y #arch', tags: ['arch'] },
+    { category: 'gotcha', text: 'Z breaks on empty #bug', tags: ['bug'] },
+  ]);
+  // relation lines are not observations
+  assert.equal(parseObservations('- uses [[T]]').length, 0);
+});
+
+test('parseRelations — typed wikilinks only', () => {
+  const body = '- part_of [[Projects — X]]\n- uses [[Tool — Y]]\n- [fact] not a relation';
+  assert.deepEqual(parseRelations(body), [
+    { type: 'part_of', target: 'Projects — X' },
+    { type: 'uses', target: 'Tool — Y' },
+  ]);
+});
+
+test('parseFrontmatter — scalars + tags array + body', () => {
+  const md = '---\ntitle: Foo\ntype: tool\ntags: [a, b, c]\n---\n\nbody line';
+  const { data, body } = parseFrontmatter(md);
+  assert.equal(data.title, 'Foo');
+  assert.equal(data.type, 'tool');
+  assert.deepEqual(data.tags, ['a', 'b', 'c']);
+  assert.equal(body.trim(), 'body line');
+  // no frontmatter → whole string is the body
+  assert.deepEqual(parseFrontmatter('just text'), { data: {}, body: 'just text' });
+});
+
+test('serializeNote → parseNote roundtrips', () => {
+  const note: Note = {
+    title: 'Alfred Memory',
+    type: 'note',
+    created: '2026-07-21',
+    updated: '2026-07-22',
+    tags: ['memory', 'icm'],
+    observations: [{ category: 'decision', text: 'file-first, no vector DB', tags: [] }],
+    relations: [{ type: 'part_of', target: 'Projects — Alfred' }],
+  };
+  const round = parseNote(serializeNote(note));
+  assert.equal(round.title, 'Alfred Memory');
+  assert.equal(round.type, 'note');
+  assert.deepEqual(round.tags, ['memory', 'icm']);
+  assert.equal(round.observations[0].category, 'decision');
+  assert.equal(round.observations[0].text, 'file-first, no vector DB');
+  assert.deepEqual(round.relations, [{ type: 'part_of', target: 'Projects — Alfred' }]);
+});
+
+test('mergeNotes — union observations/relations/tags, keep created, bump updated', () => {
+  const base: Note = {
+    title: 'X', type: 'note', created: '2026-07-01', updated: '2026-07-01', tags: ['a'],
+    observations: [{ category: 'fact', text: 'one', tags: [] }],
+    relations: [{ type: 'uses', target: 'T' }],
+  };
+  const incoming: Note = {
+    title: 'X', type: 'note', created: '2026-07-22', updated: '2026-07-22', tags: ['a', 'b'],
+    observations: [{ category: 'fact', text: 'one', tags: [] }, { category: 'tip', text: 'two', tags: [] }],
+    relations: [{ type: 'uses', target: 'T' }, { type: 'part_of', target: 'P' }],
+  };
+  const m = mergeNotes(base, incoming);
+  assert.equal(m.created, '2026-07-01'); // original preserved
+  assert.equal(m.updated, '2026-07-22'); // bumped
+  assert.deepEqual(m.tags, ['a', 'b']); // union, deduped
+  assert.equal(m.observations.length, 2); // 'one' not duplicated
+  assert.equal(m.relations.length, 2);
+});
+
+test('mapNameForType — pluralise, people is irregular', () => {
+  assert.equal(mapNameForType('project'), 'projects');
+  assert.equal(mapNameForType('tool'), 'tools');
+  assert.equal(mapNameForType('person'), 'people');
+  assert.equal(mapNameForType('decision'), 'decisions');
+});
+
+test('buildBacklinks — target title → source slugs (relations + observation links)', () => {
+  const notes = [
+    { slug: 'a', note: { title: 'A', type: 'note', tags: [], observations: [{ category: 'fact', text: 'see [[C]]', tags: [] }], relations: [{ type: 'uses', target: 'B' }] } as Note },
+    { slug: 'b', note: { title: 'B', type: 'note', tags: [], observations: [], relations: [{ type: 'uses', target: 'C' }] } as Note },
+  ];
+  const bl = buildBacklinks(notes);
+  assert.deepEqual(bl['C'].sort(), ['a', 'b']);
+  assert.deepEqual(bl['B'], ['a']);
+});
+
+test('buildIndex / buildMap — group by type, wikilink every note', () => {
+  const notes = [
+    { slug: 'x', note: { title: 'X', type: 'tool', tags: [], observations: [], relations: [] } as Note },
+    { slug: 'y', note: { title: 'Y', type: 'project', tags: [], observations: [], relations: [] } as Note },
+  ];
+  const idx = buildIndex(notes);
+  assert.match(idx, /\[\[X\]\]/);
+  assert.match(idx, /\[\[Y\]\]/);
+  assert.match(buildIndex([]), /No notes yet/);
+  const map = buildMap('tool', notes);
+  assert.match(map, /Tools — MOC/);
+  assert.match(map, /\[\[X\]\]/);
+  assert.ok(!map.includes('[[Y]]')); // only the tool type
+});
+
+test('pickCuratorSpec — explicit env wins, else cheapest enabled API brain', () => {
+  const brains = [
+    { id: 'anthropic', label: 'A', enabled: true, model: 'claude-sonnet-5' },
+    { id: 'openai', label: 'O', enabled: true, model: 'gpt-4o' },
+    { id: 'deepseek', label: 'D', enabled: true, model: 'deepseek-v4-flash' },
+    { id: 'claude-code', label: 'CC', enabled: true, model: 'claude -p' },
+  ];
+  assert.equal(pickCuratorSpec({ ALFRED_CURATOR_MODEL: 'openai:gpt-4o' }, brains), 'openai:gpt-4o');
+  // cheapest = deepseek-v4-flash ($0.14/$0.28)
+  assert.equal(pickCuratorSpec({}, brains), 'deepseek');
+  // deepseek disabled → next cheapest enabled (gpt-4o < claude-sonnet-5 on output? gpt 2.5/10 vs 2/10 → anthropic cheaper input; ranked by 1:1 sum: anthropic 12, gpt 12.5) → anthropic
+  const noDeep = brains.map((b) => (b.id === 'deepseek' ? { ...b, enabled: false } : b));
+  assert.equal(pickCuratorSpec({}, noDeep), 'anthropic');
+  // nothing enabled (except claude-code, excluded) → null
+  const none = brains.map((b) => ({ ...b, enabled: b.id === 'claude-code' }));
+  assert.equal(pickCuratorSpec({}, none), null);
 });
 
 // ── system tool: pure parsers ────────────────────────────────────────────────
