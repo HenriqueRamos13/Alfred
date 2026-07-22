@@ -920,26 +920,28 @@ test('parseVoiceIntent — anything else is dictation, preserving the full text'
 
 // ── wakeword: fatal-exit / respawn-backoff classifier ────────────────────────
 
-test('classifyWakeExit — non-zero exit is fatal (no respawn), any elapsed', () => {
-  assert.deepEqual(classifyWakeExit(2, 10, 0), { failed: true, fastFailCount: 0 });
-  assert.deepEqual(classifyWakeExit(2, 999_999, 0), { failed: true, fastFailCount: 0 });
-  // signal death (code null) is fatal too
-  assert.deepEqual(classifyWakeExit(null, 50, 0), { failed: true, fastFailCount: 0 });
+test('classifyWakeExit — a single exit is recoverable, never fatal on its own (code ignored)', () => {
+  // Non-zero exit, first fast crash → counted but NOT fatal yet.
+  assert.deepEqual(classifyWakeExit(2, 10, 0), { failed: false, fastFailCount: 1 });
+  // Non-zero but long-lived → not a crash loop: reset, stay armed.
+  assert.deepEqual(classifyWakeExit(2, 999_999, 0), { failed: false, fastFailCount: 0 });
+  // Signal death (code null) is treated the same — cadence, not code, decides.
+  assert.deepEqual(classifyWakeExit(null, 50, 0), { failed: false, fastFailCount: 1 });
 });
 
-test('classifyWakeExit — clean but repeatedly fast exit trips failed after the limit', () => {
+test('classifyWakeExit — only a repeated fast-crash loop trips failed (any code)', () => {
   let count = 0;
   let failed = false;
   for (let i = 0; i < WAKE_MAX_FAST_FAILS; i++) {
-    const r = classifyWakeExit(0, 100, count);
+    const r = classifyWakeExit(2, 100, count);
     count = r.fastFailCount;
     failed = r.failed;
   }
   assert.equal(count, WAKE_MAX_FAST_FAILS);
-  assert.equal(failed, true, 'stops respawning after too many fast clean exits');
+  assert.equal(failed, true, 'stops respawning only after a genuine fast-crash loop');
 });
 
-test('classifyWakeExit — a clean long-lived exit resets the fast-fail counter, no fail', () => {
+test('classifyWakeExit — a long-lived exit resets the fast-fail counter, no fail', () => {
   assert.deepEqual(classifyWakeExit(0, 60_000, 2), { failed: false, fastFailCount: 0 });
 });
 

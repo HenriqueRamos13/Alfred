@@ -22,35 +22,35 @@ import type { StreamEvent } from './types.ts';
 import { findSttBinary, readJsonLines } from './stt.ts';
 
 let proc: ChildProcess | null = null;
-// A FATAL helper exit (missing locale assets, unsupported locale, auth denied,
-// or a crash) puts wake into a "failed" state: startWakeword() becomes a no-op
-// so we never respawn-loop and spam. stopWakeword() (user toggling WAKE off, or
-// the manual mic path) clears it — that is the explicit re-arm.
+// The "failed" state is RECOVERABLE: only a rapid, repeated crash loop (the
+// helper dying within WAKE_FAST_FAIL_MS, WAKE_MAX_FAST_FAILS times in a row)
+// latches it, making startWakeword() a no-op so we don't respawn-spam. A single
+// exit — even non-zero, e.g. a benign asset error is no longer fatal in the
+// helper — is not fatal on its own. stopWakeword() (WAKE toggle off, manual mic
+// path) and an app restart clear it — the explicit re-arm points.
 let failed = false;
 let fastFailCount = 0;
 
-/** How quickly a clean exit counts as a "fast fail", and how many trip `failed`. */
+/** How quickly an exit counts as a "fast fail", and how many in a row trip `failed`. */
 export const WAKE_FAST_FAIL_MS = 3000;
 export const WAKE_MAX_FAST_FAILS = 3;
 
 /**
  * Decide, from how a helper process exited, whether wake should stop respawning.
- * Pure so it is unit-testable without spawning anything.
- *   - non-zero / signal exit → FATAL (assets/locale/auth/crash): never respawn.
- *   - clean exit but repeatedly too fast → also stop (something is wrong).
- *   - a clean, long-lived exit resets the fast-fail counter.
+ * Pure so it is unit-testable without spawning anything. The exit CODE is
+ * intentionally ignored: the helper no longer exits non-zero for benign/recover-
+ * able reasons (asset errors, transients), so only crash CADENCE matters.
+ *   - any exit after living long enough (>= WAKE_FAST_FAIL_MS) → reset, stay armed.
+ *   - a fast exit repeated WAKE_MAX_FAST_FAILS times in a row → stop (real crash loop).
  */
 export function classifyWakeExit(
-  code: number | null,
+  _code: number | null,
   elapsedMs: number,
   count: number,
 ): { failed: boolean; fastFailCount: number } {
-  if (code !== 0) return { failed: true, fastFailCount: count };
-  if (elapsedMs < WAKE_FAST_FAIL_MS) {
-    const n = count + 1;
-    return { failed: n >= WAKE_MAX_FAST_FAILS, fastFailCount: n };
-  }
-  return { failed: false, fastFailCount: 0 };
+  if (elapsedMs >= WAKE_FAST_FAIL_MS) return { failed: false, fastFailCount: 0 };
+  const n = count + 1;
+  return { failed: n >= WAKE_MAX_FAST_FAILS, fastFailCount: n };
 }
 
 /** Whether the native STT helper exists (wake needs it — no binary → no wake). */

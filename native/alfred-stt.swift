@@ -56,17 +56,16 @@ func fail(_ message: String) -> Never {
     exit(2)
 }
 
-/// True when a recognition error means the on-device model cannot run for this
-/// locale (assets not installed) — a FATAL condition for on-device, not a
-/// transient glitch. Retrying on-device just spams the "required assets are not
-/// available" error many times a second.
+/// True when a recognition error means the on-device model is not installed for
+/// this locale ("required assets are not available"). This is BENIGN and
+/// RECOVERABLE — it fires even while server recognition keeps producing results.
+/// The fix is to switch that request to the server path (requiresOnDeviceRecognition
+/// = false) and keep listening; it is NEVER fatal and NEVER causes an exit.
 ///
 /// Matches ONLY SFSpeech's documented assets-missing message. We deliberately do
-/// NOT classify kAFAssistantErrorDomain numeric codes: several routine/transient
-/// ones (1110 "no speech detected", 1107 "connection interrupted") would then be
-/// treated as fatal and permanently kill voice on ordinary silence. A missed
-/// asset error is safe — the caller's consecutive-failure limit still stops any
-/// real spam loop.
+/// NOT classify kAFAssistantErrorDomain numeric codes: routine/transient ones
+/// (1110 "no speech detected", 1107 "connection interrupted") are handled the
+/// same benign way (recycle the task) but are not asset errors.
 func isAssetError(_ error: Error) -> Bool {
     return (error as NSError).localizedDescription.lowercased().contains("assets are not available")
 }
@@ -179,22 +178,22 @@ final class Recognizer {
         }
     }
 
-    /// Missing on-device assets → try server once, else fail with a clear,
-    /// one-time message (never emit a bogus empty final for an assets error).
+    /// Missing on-device assets is BENIGN — switch this request to server mode and
+    /// keep going (never fatal). Once already in server mode, settle with whatever
+    /// we have (exit 0), never a fatal exit for a benign assets error.
     private func handleError(_ error: Error) {
         if isAssetError(error) {
-            if !triedServer && recognizer.supportsOnDeviceRecognition {
+            if !triedServer {
                 triedServer = true
+                note("on-device model unavailable for \(localeId); using server recognition")
                 task?.cancel()
                 request?.endAudio()
                 beginTask(forceServer: true)
+                resetSilence()
                 return
             }
-            finished = true
-            silenceTimer?.cancel()
-            engine.inputNode.removeTap(onBus: 0)
-            engine.stop()
-            fail(localeUnavailableMessage(localeId))
+            finish()
+            return
         }
         finish()
     }
@@ -234,8 +233,8 @@ final class WakeRecognizer {
     private let wakeWords: [String]
     private let silenceSeconds: TimeInterval
     private let segmentSeconds: TimeInterval = 50
-    private let errorBackoff: TimeInterval = 1.5     // never recycle a failed task in a tight loop
-    private let maxConsecutiveFailures = 5           // give up (fatal) rather than spam forever
+    private let errorBackoff: TimeInterval = 1.0     // never recycle a failed task in a tight loop
+    private let serverNoteInterval: TimeInterval = 30  // rate-limit the "using server" note
 
     private var request: SFSpeechAudioBufferRecognitionRequest?
     private var task: SFSpeechRecognitionTask?
@@ -248,8 +247,7 @@ final class WakeRecognizer {
     private var restarting = false
     private var stopped = false
     private var forceServer = false        // set after an on-device asset error
-    private var triedServer = false
-    private var consecutiveFailures = 0    // reset on any successful result
+    private var lastServerNote: Date?      // last time we logged the server-fallback note
 
     init(localeId: String, wakeWords: [String], silenceSeconds: TimeInterval) {
         guard let r = SFSpeechRecognizer(locale: Locale(identifier: localeId)) else {
@@ -293,7 +291,6 @@ final class WakeRecognizer {
         task = recognizer.recognitionTask(with: req) { [weak self] result, error in
             guard let self = self, !self.stopped else { return }
             if let result = result {
-                self.consecutiveFailures = 0
                 self.handle(text: result.bestTranscription.formattedString)
                 if result.isFinal { self.segmentEnded() }
             }
@@ -302,40 +299,28 @@ final class WakeRecognizer {
         scheduleSegmentTimer()
     }
 
-    /// Recognition-task error. Missing on-device assets → fall back to server
-    /// once; if that is not possible / also unavailable, emit ONE fatal error and
-    /// exit (no restart loop). Transient errors recycle after a backoff, and after
-    /// too many consecutive failures we give up fatally rather than spam.
+    /// Recognition-task error — NEVER fatal, the wake helper stays alive. Missing
+    /// on-device assets is benign (server recognition still works): flip to the
+    /// server path and recycle the task, logging the note at most every ~30s so
+    /// the console isn't spammed. Any other transient error (1110 "no speech",
+    /// 1107 "connection interrupted", etc.) just recycles after the same small
+    /// backoff. Genuinely fatal conditions (auth/mic denied, engine won't start,
+    /// recognizer == nil) are caught at startup via fail(), not here.
     private func handleError(_ error: Error) {
         if restarting || stopped { return }
         if isAssetError(error) {
-            if !triedServer && recognizer.supportsOnDeviceRecognition {
-                triedServer = true
-                forceServer = true
-                note("on-device model missing for \(recognizer.locale.identifier); falling back to server recognition")
-                restartSegment(after: errorBackoff)
-                return
-            }
-            emitFatal(localeUnavailableMessage(localeId))
-        }
-        consecutiveFailures += 1
-        if consecutiveFailures >= maxConsecutiveFailures {
-            emitFatal("speech recognition kept failing for \(localeId) (\(error.localizedDescription)) — check the microphone and network, or set ALFRED_STT_LOCALE=en-US")
+            forceServer = true
+            noteServerFallbackRateLimited()
         }
         restartSegment(after: errorBackoff)
     }
 
-    /// Clean up and emit a single {"error"} before exiting non-zero. The parent
-    /// (wakeword.ts) sees the non-zero exit and stops respawning.
-    private func emitFatal(_ message: String) -> Never {
-        stopped = true
-        silenceTimer?.cancel()
-        segmentTimer?.cancel()
-        if tapInstalled { engine.inputNode.removeTap(onBus: 0) }
-        engine.stop()
-        request?.endAudio()
-        task?.cancel()
-        fail(message)
+    /// Log the on-device-unavailable / server-fallback note at most every ~30s.
+    private func noteServerFallbackRateLimited() {
+        let now = Date()
+        if let last = lastServerNote, now.timeIntervalSince(last) < serverNoteInterval { return }
+        lastServerNote = now
+        note("on-device model unavailable for \(recognizer.locale.identifier); using server recognition (needs network)")
     }
 
     // ponytail: recycle before the ~1min SFSpeechRecognitionRequest cap; if we're
