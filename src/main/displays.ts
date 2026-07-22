@@ -104,7 +104,7 @@ export class DisplayManager {
     // Overlay flags only stick after the page has loaded.
     win.webContents.once('did-finish-load', () => {
       if (win.isDestroyed()) return;
-      win.setAlwaysOnTop(true, 'floating');
+      win.setAlwaysOnTop(true, 'screen-saver');
       win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
       win.setIgnoreMouseEvents(true, { forward: true }); // click-through until a card is hovered
     });
