@@ -109,8 +109,9 @@ via Apple's `SFSpeechRecognizer` (on Intel the engine is the classic
 `SFSpeechRecognizer`, **not** the newer `SpeechAnalyzer` — that's Apple-Silicon /
 newer-OS only). The transcript is dropped into the input; you still press Enter
 to send, so nothing is dispatched by accident. It stops when you click again, on
-prolonged silence, or via the kill switch. Language defaults to `en-US`; override
-with `ALFRED_STT_LOCALE` (e.g. `pt-PT`) or the `--locale` helper flag.
+prolonged silence, or via the kill switch. Language defaults to `pt-BR`
+(Brazilian Portuguese); override with `ALFRED_STT_LOCALE` (e.g. `en-US`, `pt-PT`)
+or the `--locale` helper flag.
 
 A small Swift helper does the listening (`native/alfred-stt`). `./setup.sh`
 compiles it via `xcrun` (which pins the correct macOS SDK/toolchain); the source
@@ -146,13 +147,28 @@ with an authorization error.
 
 ## Voice output (text-to-speech)
 
-Alfred can speak his replies — toggle it in the top bar (OFF by default). Pick
-the engine with `ALFRED_TTS_ENGINE`:
+Alfred can speak his replies — toggle it in the top bar (OFF by default). **The
+voice defaults to Brazilian Portuguese (pt-BR)** via the `say` engine and the
+`Luciana` voice. Pick the engine with `ALFRED_TTS_ENGINE`:
 
 | Engine | Languages | Config |
 |--------|-----------|--------|
-| **kokoro** (default) | English (US/UK) only | `ALFRED_TTS_VOICE`, `ALFRED_TTS_DTYPE` |
-| **say** (macOS built-in) | pt-BR + many others | `ALFRED_TTS_VOICE`, `ALFRED_TTS_RATE` |
+| **say** (default, macOS built-in) | pt-BR + many others | `ALFRED_TTS_VOICE`, `ALFRED_TTS_RATE` |
+| **kokoro** | English (US/UK) only | `ALFRED_TTS_VOICE`, `ALFRED_TTS_DTYPE` |
+
+**Brazilian Portuguese (pt-BR) → `say` (default).** Uses the macOS `say`
+command, which plays the audio itself (nothing to download).
+
+- `ALFRED_TTS_VOICE` — `Luciana` (♀, default) or `Felipe` (♂) for pt-BR. If the
+  named voice isn't installed, Alfred retries once with the system default voice
+  so it never goes silent. Run `say -v '?'` to list the voices installed on the
+  Mac.
+- `ALFRED_TTS_RATE` — speaking rate in words/min (optional, e.g. `180`).
+- **For far more natural output — and to guarantee the voice is present**,
+  download an *enhanced* / *premium* pt-BR voice in **System Settings →
+  Accessibility → Spoken Content → Manage Voices**. The compact `Luciana` may not
+  be installed (the retry then falls back to the system voice); installing the
+  enhanced voice fixes both quality *and* availability.
 
 **Natural English → `kokoro`.** Runs in Node via
 [kokoro-js](https://github.com/hexgrad/kokoro) (no Python); the weights download
@@ -165,21 +181,11 @@ lazily on the first spoken reply (or pre-warm at setup with
   `fp32`). **`fp32` sounds noticeably less robotic**; `q8` is smaller and
   faster on CPU.
 
-**Brazilian Portuguese (pt-BR) → `say`.** kokoro has no pt-BR, so use the macOS
-`say` command, which plays the audio itself (nothing to download).
-
-- `ALFRED_TTS_VOICE` — `Luciana` (♀) or `Felipe` (♂) for pt-BR. An unknown voice
-  falls back to the system default (never errors). Run `say -v '?'` to list the
-  voices installed on the Mac.
-- `ALFRED_TTS_RATE` — speaking rate in words/min (optional, e.g. `180`).
-- **For far more natural output**, download the *enhanced* / *premium* voices in
-  **System Settings → Accessibility → Spoken Content → Manage Voices** — the
-  default system voices are the robotic ones.
-
 ```bash
-# pt-BR, natural female voice
-ALFRED_TTS_ENGINE=say
-ALFRED_TTS_VOICE=Luciana
+# back to English
+ALFRED_TTS_ENGINE=kokoro
+ALFRED_TTS_VOICE=af_heart
+ALFRED_STT_LOCALE=en-US
 ```
 
 Both engines share one serialised queue and the same kill switch, so replies

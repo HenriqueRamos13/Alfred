@@ -2,16 +2,18 @@
  * Text-to-speech — Alfred speaks his replies. Two interchangeable engines,
  * picked with ALFRED_TTS_ENGINE (both share the same queue, epoch and stop()):
  *
- * - 'kokoro' (default): kokoro-js, an ONNX/JS port that runs in Node (no
- *   Python), ENGLISH voices only. Synthesises to a temp WAV and plays it on
- *   macOS with `afplay`. The model is lazy-loaded and cached; the weights
- *   download on the FIRST speak() (or an optional pre-warm — see setup.sh).
- *   Voice via ALFRED_TTS_VOICE (default 'af_heart'); quality/robotic-ness via
- *   ALFRED_TTS_DTYPE (default 'fp32' — larger but less robotic than 'q8').
- * - 'say' (macOS built-in `say`): has pt-BR voices (Luciana, Felipe) and
- *   natural enhanced/premium voices. `say` plays the audio itself — no WAV, no
- *   afplay. Voice via ALFRED_TTS_VOICE, rate (words/min) via ALFRED_TTS_RATE;
- *   an unknown voice silently falls back to the system default.
+ * - 'say' (default, macOS built-in `say`): has pt-BR voices (Luciana, Felipe)
+ *   and natural enhanced/premium voices. `say` plays the audio itself — no WAV,
+ *   no afplay. Voice via ALFRED_TTS_VOICE (default 'Luciana', pt-BR ♀), rate
+ *   (words/min) via ALFRED_TTS_RATE. If the named voice isn't installed and
+ *   `say -v` exits non-zero, we retry once WITHOUT -v (system default voice) so
+ *   Alfred never goes silent.
+ * - 'kokoro': kokoro-js, an ONNX/JS port that runs in Node (no Python), ENGLISH
+ *   voices only. Synthesises to a temp WAV and plays it on macOS with `afplay`.
+ *   The model is lazy-loaded and cached; the weights download on the FIRST
+ *   speak() (or an optional pre-warm — see setup.sh). Voice via ALFRED_TTS_VOICE
+ *   (default 'af_heart'); quality/robotic-ness via ALFRED_TTS_DTYPE (default
+ *   'fp32' — larger but less robotic than 'q8').
  *
  * - Calls are serialised (a queue) so replies never talk over each other.
  * - stop() kills the current player (afplay OR say) and skips anything still
@@ -29,14 +31,16 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 const MODEL_ID = 'onnx-community/Kokoro-82M-v1.0-ONNX';
-const DEFAULT_VOICE = 'af_heart';
+const DEFAULT_KOKORO_VOICE = 'af_heart';
+const DEFAULT_SAY_VOICE = 'Luciana'; // pt-BR female
 
 type Dtype = 'q8' | 'q4' | 'fp16' | 'fp32';
 const DEFAULT_DTYPE: Dtype = 'fp32';
 
-/** Selected engine — 'say' only works on macOS; 'kokoro' is cross-platform. */
+/** Selected engine — 'say' (default) only works on macOS; 'kokoro' is
+ * cross-platform. pt-BR is the default voice, so 'say' is the default engine. */
 function getEngine(): 'kokoro' | 'say' {
-  return process.env.ALFRED_TTS_ENGINE?.trim() === 'say' ? 'say' : 'kokoro';
+  return process.env.ALFRED_TTS_ENGINE?.trim() === 'kokoro' ? 'kokoro' : 'say';
 }
 
 /** Kokoro precision. Unknown/unset → fp32 (least robotic). */
@@ -104,7 +108,7 @@ async function synthAndPlay(text: string, live: () => boolean): Promise<void> {
 
   const model = await getModel();
   if (!live()) return;
-  const voice = process.env.ALFRED_TTS_VOICE?.trim() || DEFAULT_VOICE;
+  const voice = process.env.ALFRED_TTS_VOICE?.trim() || DEFAULT_KOKORO_VOICE;
   const audio = await model.generate(text, { voice });
   if (!live()) return;
   const wav = join(tmpdir(), `alfred-tts-${randomUUID()}.wav`);
@@ -116,35 +120,39 @@ async function synthAndPlay(text: string, live: () => boolean): Promise<void> {
   }
 }
 
-/** macOS `say` synthesises AND plays in one process — no WAV, no afplay. An
- * unknown ALFRED_TTS_VOICE makes `say` fall back to the system default, never
- * error, so we pass -v as-is. */
-function sayPlay(text: string, live: () => boolean): Promise<void> {
-  const voice = process.env.ALFRED_TTS_VOICE?.trim();
+/** macOS `say` synthesises AND plays in one process — no WAV, no afplay.
+ * Defaults to the pt-BR voice Luciana. If that voice isn't installed on the Mac
+ * `say -v` exits non-zero — we retry ONCE without -v (system default voice) so
+ * Alfred never goes silent. A deliberate stop() shows up as a null exit code
+ * (killed), so it doesn't trigger the retry. */
+async function sayPlay(text: string, live: () => boolean): Promise<void> {
+  const voice = process.env.ALFRED_TTS_VOICE?.trim() || DEFAULT_SAY_VOICE;
   const rate = process.env.ALFRED_TTS_RATE?.trim();
-  const args: string[] = [];
-  if (voice) args.push('-v', voice);
-  if (rate) args.push('-r', rate);
-  args.push(text);
-  return runPlayer('say', args, live);
+  const rateArgs = rate ? ['-r', rate] : [];
+  const code = await runPlayer('say', ['-v', voice, ...rateArgs, text], live);
+  if (live() && code !== 0 && code !== null) {
+    console.warn(`[alfred] tts: voice "${voice}" unavailable (say exit ${code}); retrying with the system default voice`);
+    await runPlayer('say', [...rateArgs, text], live);
+  }
 }
 
 /** Spawn a player process, track it as `current` (so stop() can kill it) and
- * resolve when it closes. Shared by afplay (kokoro) and say. Spawn/ENOENT
- * failures (missing binary on non-macOS / broken PATH) are logged, not thrown. */
-function runPlayer(cmd: string, args: string[], live: () => boolean): Promise<void> {
+ * resolve with the exit code when it closes. Shared by afplay (kokoro) and say.
+ * A null code means killed (stop()) or a spawn/ENOENT failure (missing binary on
+ * non-macOS / broken PATH) — logged, not thrown. */
+function runPlayer(cmd: string, args: string[], live: () => boolean): Promise<number | null> {
   return new Promise((resolve) => {
-    if (!live()) return resolve();
+    if (!live()) return resolve(null);
     const proc = spawn(cmd, args);
     current = proc;
-    const done = () => {
+    const done = (code: number | null) => {
       if (current === proc) current = null;
-      resolve();
+      resolve(code);
     };
     proc.on('error', (err) => {
       console.error(`[alfred] ${cmd} failed:`, err instanceof Error ? err.message : err);
-      done();
+      done(null);
     });
-    proc.on('close', done);
+    proc.on('close', (code) => done(code));
   });
 }

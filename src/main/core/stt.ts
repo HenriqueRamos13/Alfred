@@ -48,8 +48,8 @@ export function startListening(emit: (e: StreamEvent) => void, sessionId: string
     return;
   }
 
-  const locale = process.env.ALFRED_STT_LOCALE?.trim();
-  const args = locale ? ['--locale', locale] : [];
+  const locale = process.env.ALFRED_STT_LOCALE?.trim() || 'pt-BR';
+  const args = ['--locale', locale];
   const child = spawn(bin, args, { stdio: ['pipe', 'pipe', 'pipe'] });
   proc = child;
 

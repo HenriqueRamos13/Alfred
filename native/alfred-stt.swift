@@ -16,7 +16,7 @@
 // Recognition is ON-DEVICE when the OS/locale supports it
 // (requiresOnDeviceRecognition = true); otherwise it falls back to the normal
 // (server) path and notes that on stderr. Locale comes from `--locale xx-YY`
-// or ALFRED_STT_LOCALE (default en-US).
+// or ALFRED_STT_LOCALE (default pt-BR).
 //
 // Build (on the Mac — Swift does not compile on the Linux build box):
 //   swiftc native/alfred-stt.swift -o native/alfred-stt
@@ -50,7 +50,7 @@ func resolveLocaleId() -> String {
     if let i = args.firstIndex(of: "--locale"), i + 1 < args.count {
         return args[i + 1]
     }
-    return ProcessInfo.processInfo.environment["ALFRED_STT_LOCALE"] ?? "en-US"
+    return ProcessInfo.processInfo.environment["ALFRED_STT_LOCALE"] ?? "pt-BR"
 }
 
 func resolveSilenceSeconds() -> TimeInterval {
