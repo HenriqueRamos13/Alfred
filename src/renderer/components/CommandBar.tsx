@@ -20,6 +20,8 @@ export interface CommandBarProps {
   onBlur?: () => void;
   /** Voice input (push-to-talk): true while the mic is recording. */
   listening?: boolean;
+  /** Alfred is speaking (TTS): the wake mic is silenced (half-duplex); clicking the mic barges in. */
+  speaking?: boolean;
   /** Live partial transcript to preview while listening. */
   partial?: string;
   /** Toggle the mic (start/stop listening). */
@@ -49,6 +51,7 @@ export function CommandBar({
   onFocus,
   onBlur,
   listening,
+  speaking,
   partial,
   onMic,
   dictation,
@@ -162,7 +165,13 @@ export function CommandBar({
           type="button"
           onClick={onMic}
           disabled={killed}
-          title={listening ? 'Listening — click to stop' : 'Voice input — click to dictate'}
+          title={
+            listening
+              ? 'Listening — click to stop'
+              : speaking
+                ? 'Alfred is speaking — mic silenced. Click to interrupt and talk (barge-in).'
+                : 'Voice input — click to dictate'
+          }
           aria-label={listening ? 'Stop voice input' : 'Start voice input'}
           aria-pressed={listening}
           style={{
@@ -178,7 +187,7 @@ export function CommandBar({
             animation: listening ? 'alfred-pulse 1.2s ease-in-out infinite' : undefined,
           }}
         >
-          {listening ? '● REC' : '🎙'}
+          {listening ? '● REC' : speaking ? '🔇' : '🎙'}
         </button>
       )}
       <button
@@ -217,7 +226,7 @@ export function CommandBar({
         Kill
       </button>
     </div>
-    {listening && (
+    {(listening || speaking) && (
       <div
         aria-live="polite"
         style={{
@@ -231,7 +240,7 @@ export function CommandBar({
           textOverflow: 'ellipsis',
         }}
       >
-        {partial ? partial : 'Listening…'}
+        {listening ? (partial ? partial : 'Listening…') : '🔇 Alfred a falar — mic em silêncio'}
       </div>
     )}
     </div>

@@ -20,7 +20,8 @@ import {
   denialError,
 } from '../src/main/core/governance.ts';
 import { readJsonLines } from '../src/main/core/stt.ts';
-import { classifyWakeExit, WAKE_MAX_FAST_FAILS, wakeStreamEvent, parseVoiceIntent } from '../src/main/core/wakeword.ts';
+import { classifyWakeExit, WAKE_MAX_FAST_FAILS, wakeStreamEvent, parseVoiceIntent, suppressWhileSpeaking } from '../src/main/core/wakeword.ts';
+import { initialDictation, dictationReduce } from '../src/main/core/dictation.ts';
 import { shell } from '../src/main/tools/shell.ts';
 import { filesystem } from '../src/main/tools/filesystem.ts';
 import { browser } from '../src/main/tools/browser.ts';
@@ -872,6 +873,27 @@ test('wakeStreamEvent — wake enters listening, command reuses the mic path', (
   assert.equal(wakeStreamEvent({}, 's'), null);
 });
 
+// ── wakeword: half-duplex mute while Alfred speaks ───────────────────────────
+
+test('suppressWhileSpeaking — drops wake-path audio events only while speaking', () => {
+  const s = 's';
+  const wake = { kind: 'wake.detected', sessionId: s } as const;
+  const partial = { kind: 'stt.partial', sessionId: s, text: 'alfred' } as const;
+  const final = { kind: 'stt.final', sessionId: s, text: 'esconder' } as const;
+  const err = { kind: 'error', sessionId: s, message: 'boom' } as const;
+
+  // speaking → wake / partial / final are dropped (self-voice never self-activates)
+  assert.equal(suppressWhileSpeaking(wake, true), true);
+  assert.equal(suppressWhileSpeaking(partial, true), true);
+  assert.equal(suppressWhileSpeaking(final, true), true);
+  // errors always pass through, even while speaking
+  assert.equal(suppressWhileSpeaking(err, true), false);
+  // not speaking → nothing is suppressed
+  assert.equal(suppressWhileSpeaking(wake, false), false);
+  assert.equal(suppressWhileSpeaking(partial, false), false);
+  assert.equal(suppressWhileSpeaking(final, false), false);
+});
+
 // ── wakeword: voice-command intent parser ────────────────────────────────────
 
 test('parseVoiceIntent — hide keyword (pt + en), first word, accent/case-insensitive', () => {
@@ -916,6 +938,48 @@ test('parseVoiceIntent — anything else is dictation, preserving the full text'
   // empty / whitespace → dictation with empty text (wake with no command)
   assert.deepEqual(parseVoiceIntent(''), { kind: 'dictate', text: '' });
   assert.deepEqual(parseVoiceIntent('   '), { kind: 'dictate', text: '' });
+});
+
+// ── dictation: voice→input state machine (preview vs commit, user control) ────
+
+test('dictationReduce — partial is preview-only while armed; commit only on final', () => {
+  let s = dictationReduce(initialDictation(), { kind: 'activate' });
+  assert.equal(s.armed, true);
+  s = dictationReduce(s, { kind: 'partial', text: 'abre o' });
+  assert.equal(s.preview, 'abre o');
+  assert.equal(s.commit.seq, 0); // partials NEVER write to the input
+  s = dictationReduce(s, { kind: 'final', text: 'abre o safari' });
+  assert.deepEqual(s, { armed: false, preview: '', commit: { text: 'abre o safari', seq: 1 } });
+});
+
+test('dictationReduce — after commit, a late/duplicate final is ignored (no re-fill)', () => {
+  let s = dictationReduce(initialDictation(), { kind: 'activate' });
+  s = dictationReduce(s, { kind: 'final', text: 'olá' });
+  const committed = s.commit;
+  // A trailing/duplicate final arrives while DISARMED → must not touch the input.
+  s = dictationReduce(s, { kind: 'final', text: 'olá' });
+  assert.deepEqual(s.commit, committed); // seq unchanged → CommandBar won't re-append
+  // A stray partial while disarmed doesn't flicker the (cleared) preview either.
+  s = dictationReduce(s, { kind: 'partial', text: 'ruído' });
+  assert.equal(s.preview, '');
+});
+
+test('dictationReduce — empty final disarms + clears preview, writes nothing', () => {
+  let s = dictationReduce(initialDictation(), { kind: 'activate' });
+  s = dictationReduce(s, { kind: 'partial', text: 'meio…' });
+  s = dictationReduce(s, { kind: 'final', text: '   ' });
+  assert.equal(s.armed, false);
+  assert.equal(s.preview, '');
+  assert.equal(s.commit.seq, 0); // no write
+});
+
+test('dictationReduce — each fresh activation commits again (independent utterances)', () => {
+  let s = dictationReduce(initialDictation(), { kind: 'activate' });
+  s = dictationReduce(s, { kind: 'final', text: 'um' });
+  assert.equal(s.commit.seq, 1);
+  s = dictationReduce(s, { kind: 'activate' });
+  s = dictationReduce(s, { kind: 'final', text: 'dois' });
+  assert.equal(s.commit.seq, 2); // new activation → new commit
 });
 
 // ── wakeword: fatal-exit / respawn-backoff classifier ────────────────────────

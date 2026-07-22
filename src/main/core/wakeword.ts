@@ -77,6 +77,18 @@ export function wakeStreamEvent(msg: Record<string, unknown>, sessionId: string)
 }
 
 /**
+ * PURE — half-duplex gate. While Alfred is speaking (incl. the TTS tail, which
+ * `speaking` already encodes) the mic hears his own voice, so DROP the wake-path
+ * events that carry that captured audio — wake.detected, stt.partial, stt.final —
+ * so he never self-activates or transcribes himself. Everything else (errors)
+ * passes through.
+ */
+export function suppressWhileSpeaking(ev: StreamEvent, speaking: boolean): boolean {
+  if (!speaking) return false;
+  return ev.kind === 'wake.detected' || ev.kind === 'stt.partial' || ev.kind === 'stt.final';
+}
+
+/**
  * A voice command's intent, parsed from a wake command transcript. `hide`/`show`
  * act on Alfred's windows; `send` submits (with the trailing text, or the current
  * input when empty); `dictate` is the default — fill the input, user confirms.

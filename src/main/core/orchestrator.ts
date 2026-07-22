@@ -472,6 +472,10 @@ export function createOrchestrator(opts: CreateOrchestratorOpts): OrchestratorHa
     opts.emit(event);
   };
 
+  // Mirror the TTS speaking state to the UI (mic-silenced indicator). The wake
+  // path is muted in main while this is true (see wakeEmit).
+  tts.onSpeaking((isSpeaking) => emit({ kind: 'speaking', sessionId, speaking: isSpeaking }));
+
   // Persisted approval controls (Phase B): DANGEROUS mode + auto-approve rules.
   const readRules = (): string[] => {
     const raw = getSetting(db, 'auto_approve');
@@ -544,6 +548,9 @@ export function createOrchestrator(opts: CreateOrchestratorOpts): OrchestratorHa
   // intent (esconder/mostrar/enviar). Only 'dictate' falls through to fill the
   // input (the existing behaviour); everything else is consumed here.
   const wakeEmit = (e: StreamEvent): void => {
+    // Half-duplex: while Alfred speaks, the mic hears him — drop the wake-path
+    // audio events so he never self-activates or transcribes his own voice.
+    if (wakeword.suppressWhileSpeaking(e, tts.isSpeaking())) return;
     if (e.kind === 'stt.final' && handleVoiceIntent(e.text)) return;
     emit(e);
   };
@@ -865,6 +872,9 @@ export function createOrchestrator(opts: CreateOrchestratorOpts): OrchestratorHa
       return on;
     },
     startListening() {
+      // Barge-in: pressing the mic while Alfred speaks is a deliberate interrupt —
+      // silence him and listen (tts.stop() is a no-op when he isn't speaking).
+      tts.stop();
       // Single mic owner: free the wake listener, run the manual session, then
       // restart wake when that session ends (its own stt.final flows through the
       // wrapped emit below — the wake helper's finals do not, so no double-start).

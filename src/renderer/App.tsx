@@ -18,6 +18,7 @@ import { ProjectList } from './components/ProjectList.tsx';
 import { ApprovalPrompt } from './components/ApprovalPrompt.tsx';
 import { DraggableCard } from './components/DraggableCard.tsx';
 import { clampBox, tileLayout, cardOnDisplay, nextDisplayId, type Bounds } from '../main/core/layout.ts';
+import { initialDictation, dictationReduce } from '../main/core/dictation.ts';
 import type {
   AgentStatus,
   ApprovalDecision,
@@ -87,8 +88,13 @@ export default function App() {
   const [tts, setTts] = useState(false);
   const [wake, setWake] = useState(false);
   const [listening, setListening] = useState(false);
-  const [partial, setPartial] = useState('');
-  const [dictation, setDictation] = useState<{ text: string; seq: number }>({ text: '', seq: 0 });
+  const [speaking, setSpeaking] = useState(false); // Alfred is talking → mic muted (half-duplex)
+  // Voice→input state machine: partials preview, a final commits ONCE per
+  // activation, then it stops touching the input (see dictation.ts). partial =
+  // transient preview; commit = the settled text the CommandBar appends off seq.
+  const [dict, setDict] = useState(initialDictation);
+  const partial = dict.preview;
+  const dictation = dict.commit;
   // Bumped by a bare "Alfred, enviar" voice command → CommandBar submits its input.
   const [submitSeq, setSubmitSeq] = useState(0);
 
@@ -324,29 +330,45 @@ export default function App() {
           if (e.message.role === 'assistant') setStreaming('');
           break;
         case 'stt.partial':
-          setPartial(e.text);
+          setDict((d) => dictationReduce(d, { kind: 'partial', text: e.text }));
           break;
         case 'stt.final':
           setListening(false);
-          setPartial('');
-          if (e.text.trim()) setDictation((d) => ({ text: e.text, seq: d.seq + 1 }));
+          // Commits once per activation; a late/duplicate or empty final writes
+          // nothing (see dictation.ts) so the user keeps control of the input.
+          setDict((d) => dictationReduce(d, { kind: 'final', text: e.text }));
           break;
         case 'wake.detected':
           // Show the same "listening" feedback as the mic button; the command's
           // stt.partial/stt.final that follow reuse the mic path (fill the input).
           setListening(true);
-          setPartial('');
+          setDict((d) => dictationReduce(d, { kind: 'activate' }));
           pushLog({ tag: 'WAKE', tone: 'cyan', msg: 'ouvi “Alfred” — a captar comando' });
+          break;
+        case 'speaking':
+          // While Alfred speaks the wake mic is silenced (half-duplex); reflect it.
+          setSpeaking(e.speaking);
           break;
         case 'voice.command': {
           // An action command (hide/show already applied in main). Leave the
-          // "listening" state and log what was recognised.
+          // "listening" state, clear the preview and disarm — the action isn't
+          // dictation, so nothing is written to the input.
           setListening(false);
-          setPartial('');
+          setDict((d) => dictationReduce(d, { kind: 'final', text: '' }));
           const label = e.action === 'hide' ? 'esconder' : e.action === 'show' ? 'mostrar' : 'enviar';
           pushLog({ tag: 'WAKE', tone: 'lime', msg: `comando de voz: ${label}${e.text ? ` — “${e.text}”` : ''}` });
           // Bare "enviar" → submit whatever the input already holds.
           if (e.action === 'send' && !e.text) setSubmitSeq((n) => n + 1);
+          // "enviar <texto>" → main already ran the turn (send() persists but
+          // doesn't re-emit the user turn); show the bubble optimistically, like
+          // onSubmit does, so voice-sent commands appear in the chat immediately.
+          else if (e.action === 'send' && e.text) {
+            const spoken = e.text;
+            setMessages((m) => [
+              ...m,
+              { id: `u-${Date.now()}`, sessionId: 'local', role: 'user', content: spoken, ts: Date.now() },
+            ]);
+          }
           break;
         }
         case 'tool.start':
@@ -482,10 +504,10 @@ export default function App() {
     if (killed) return;
     if (listening) {
       alfred.stopListening();
-      setListening(false); // stt.final will also confirm
+      setListening(false); // the flushed stt.final still commits (armed until then)
       return;
     }
-    setPartial('');
+    setDict((d) => dictationReduce(d, { kind: 'activate' }));
     setListening(true);
     alfred.startListening();
     pushLog({ tag: 'VOICE', tone: 'cyan', msg: 'listening…' });
@@ -699,9 +721,15 @@ export default function App() {
             type="button"
             className={`topbar-btn no-drag${tts ? ' on' : ''}`}
             onClick={toggleTts}
-            title={tts ? 'Voice output on — click to mute Alfred' : 'Voice output off — click to let Alfred speak'}
+            title={
+              speaking
+                ? 'Alfred is speaking — mic silenced (half-duplex). Click to mute voice output.'
+                : tts
+                  ? 'Voice output on — click to mute Alfred'
+                  : 'Voice output off — click to let Alfred speak'
+            }
           >
-            {tts ? '🔊 VOICE ON' : '🔈 VOICE OFF'}
+            {speaking ? '🗣 SPEAKING' : tts ? '🔊 VOICE ON' : '🔈 VOICE OFF'}
           </button>
           <button
             type="button"
@@ -757,6 +785,7 @@ export default function App() {
           onFocus={() => setInputFocused(true)}
           onBlur={() => setInputFocused(false)}
           listening={listening}
+          speaking={speaking}
           partial={partial}
           onMic={toggleMic}
           dictation={dictation}

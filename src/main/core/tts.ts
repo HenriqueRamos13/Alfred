@@ -74,27 +74,87 @@ let queue: Promise<void> = Promise.resolve();
 let current: ChildProcess | null = null;
 let epoch = 0;
 
+// ── Half-duplex SPEAKING state ──────────────────────────────────────────────
+// While Alfred speaks the mic hears his own voice, so the wake path is muted
+// (see orchestrator). `speaking` is true from the moment a player starts until
+// the queue drains AND a tail elapses — the tail keeps the mute on long enough
+// that the final echo isn't captured as a self-command.
+let speaking = false;
+let pending = 0; // enqueued utterances not yet finished
+let tailTimer: ReturnType<typeof setTimeout> | null = null;
+let onChange: ((speaking: boolean) => void) | null = null;
+
+/** Tail (ms) the mute lingers after the last player closes. ALFRED_TTS_TAIL_MS, default 700. */
+function tailMs(): number {
+  const n = Number(process.env.ALFRED_TTS_TAIL_MS);
+  return Number.isFinite(n) && n >= 0 ? n : 700;
+}
+
+/** True while Alfred is speaking (incl. the trailing tail). */
+export function isSpeaking(): boolean {
+  return speaking;
+}
+
+/** Register the (single) listener notified whenever the speaking state flips. */
+export function onSpeaking(cb: (speaking: boolean) => void): void {
+  onChange = cb;
+}
+
+function setSpeaking(v: boolean): void {
+  if (v === speaking) return;
+  speaking = v;
+  onChange?.(v);
+}
+
+/** A player just started → speaking, and cancel any pending end-of-speech tail. */
+function beginPlayback(): void {
+  if (tailTimer) {
+    clearTimeout(tailTimer);
+    tailTimer = null;
+  }
+  setSpeaking(true);
+}
+
+/** An utterance finished → if nothing is left queued, drop speaking after the tail. */
+function maybeEndPlayback(): void {
+  if (pending > 0 || tailTimer) return;
+  tailTimer = setTimeout(() => {
+    tailTimer = null;
+    setSpeaking(false);
+  }, tailMs());
+}
+
 /** Queue one utterance. Fire-and-forget; failures are logged, never thrown. */
 export function speak(text: string): void {
   const clean = text.trim();
   if (!clean) return;
   const myEpoch = epoch;
+  pending++;
   queue = queue.then(async () => {
     const live = () => myEpoch === epoch;
-    if (!live()) return;
     try {
+      if (!live()) return;
       await synthAndPlay(clean, live);
     } catch (err) {
       console.error('[alfred] tts speak failed:', err instanceof Error ? err.message : err);
+    } finally {
+      pending--;
+      maybeEndPlayback();
     }
   });
 }
 
-/** Cancel current + pending playback (kill-switch / voice toggled off). */
+/** Cancel current + pending playback (kill-switch / voice toggled off / barge-in). */
 export function stop(): void {
   epoch++;
   current?.kill();
   current = null;
+  // Deliberate stop → unmute immediately, no tail (draining tasks settle harmlessly).
+  if (tailTimer) {
+    clearTimeout(tailTimer);
+    tailTimer = null;
+  }
+  setSpeaking(false);
 }
 
 /** Optional: trigger the model download ahead of the first speak(). No-op for
@@ -145,6 +205,7 @@ function runPlayer(cmd: string, args: string[], live: () => boolean): Promise<nu
     if (!live()) return resolve(null);
     const proc = spawn(cmd, args);
     current = proc;
+    beginPlayback(); // a player is now audible → mute the mic (half-duplex)
     const done = (code: number | null) => {
       if (current === proc) current = null;
       resolve(code);

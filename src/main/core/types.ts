@@ -258,6 +258,9 @@ export type StreamEvent =
   // already applied in main; 'send' with no text asks the renderer to submit the
   // current input; text (when present) is what was sent, for the log.
   | { kind: 'voice.command'; sessionId: string; action: 'hide' | 'show' | 'send'; text?: string }
+  // Alfred started/stopped speaking (TTS). While true the wake path is muted
+  // (half-duplex) so the UI shows the mic as silenced.
+  | { kind: 'speaking'; sessionId: string; speaking: boolean }
   | { kind: 'tool.start'; sessionId: string; toolName: string; args: unknown; tier: RiskTier }
   | { kind: 'tool.end'; sessionId: string; toolName: string; status: AuditStatus; error?: string }
   | { kind: 'approval.request'; request: ApprovalRequest }
