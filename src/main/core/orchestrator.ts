@@ -19,32 +19,23 @@ import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { streamText, tool, jsonSchema, stepCountIs } from 'ai';
 import type { LanguageModel, ToolSet } from 'ai';
-import { HITL_TIERS } from './types.ts';
 import type {
   AccountRecord,
   AlfredConfig,
   ApprovalDecision,
-  AuditEntry,
   CardLayout,
   CardPatch,
   ChatMessage,
   CostSnapshot,
   ProjectRecord,
-  RiskTier,
   StreamEvent,
   Tool,
   ToolCtx,
 } from './types.ts';
 import { getLayout as readLayout, updateCard as writeCard } from './layout.ts';
 import { BudgetTracker, callSignature, isLoop, isOverDailyBudget } from './budget.ts';
-import {
-  classifyAction,
-  createGovernance,
-  isEgressTool,
-  maskSecrets,
-  recordAudit,
-  trifectaImpact,
-} from './governance.ts';
+import { createGovernance, runGovernedTool } from './governance.ts';
+import { startMcpBridge, type McpBridgeHandle } from './mcpServer.ts';
 import { ensureClaudeMd, ensureScaffold, readStable, recentMemoryText, formatTranscript, readIndex, listInbox } from './memory.ts';
 import { CAPABILITY_MANIFEST } from './manifest.ts';
 import { runCurator } from './curator.ts';
@@ -324,96 +315,16 @@ export class Orchestrator {
    * except a detected loop which hard-stops the whole task.
    */
   private async runTool(t: Tool, args: unknown): Promise<unknown> {
-    const { ctx } = this.deps;
-
-    // Loop detection — hard-stop the whole task, not just this call.
+    // Loop detection — hard-stop the whole task, not just this call. Everything
+    // after (risk, trifecta, approval, execute, audit) is the shared governance
+    // path in runGovernedTool, reused by the MCP bridge.
     const sig = callSignature(t.name, args);
     if (isLoop(this.history, sig)) {
       this.hardStop({ kind: 'loop', message: `Loop detected: "${t.name}" called with identical args >3 times.` });
       return { error: 'Loop detected — task halted.' };
     }
     this.history.push(sig);
-
-    const tier: RiskTier = t.risk?.(args) ?? classifyAction(t.name, args);
-
-    // Trifecta-lite: reading web/email marks untrusted/private; an egress tool
-    // that would complete the trifecta is escalated to a mandatory approval.
-    ctx.governance.markTrifecta(trifectaImpact(t.name));
-    let needApproval = HITL_TIERS.includes(tier);
-    let reason = `Risk tier ${tier}`;
-    if (isEgressTool(t.name)) {
-      const tf = ctx.governance.trifecta();
-      if (tf.readUntrusted && tf.hasPrivate) {
-        ctx.governance.markTrifecta({ canEgress: true });
-        needApproval = true;
-        reason = 'Trifecta: untrusted read + private data + egress in one session';
-      }
-    }
-
-    ctx.emit({ kind: 'tool.start', sessionId: ctx.sessionId, toolName: t.name, args: maskSecrets(args), tier });
-
-    // Provenance persisted in the audit when the call ran without a human prompt
-    // (auto-approve rule or DANGEROUS mode) — so the forensic trail shows the bypass.
-    let approvalNote: string | undefined;
-    if (needApproval) {
-      ctx.emit({ kind: 'agent.status', sessionId: ctx.sessionId, status: 'awaiting-approval' });
-      const resolution = await ctx.governance.requestApproval({
-        sessionId: ctx.sessionId,
-        toolName: t.name,
-        args: maskSecrets(args),
-        tier,
-        reason,
-      });
-      approvalNote = resolution.note;
-      if (resolution.decision === 'deny') {
-        this.audit({
-          toolName: t.name,
-          args,
-          tier,
-          status: 'denied',
-          error: resolution.timedOut ? 'approval timed out' : 'denied by user',
-        });
-        ctx.emit({ kind: 'tool.end', sessionId: ctx.sessionId, toolName: t.name, status: 'denied' });
-        ctx.emit({ kind: 'agent.status', sessionId: ctx.sessionId, status: 'thinking' });
-        return { error: resolution.timedOut ? 'Approval timed out (treated as deny).' : 'Denied by the human.' };
-      }
-    }
-    ctx.emit({ kind: 'agent.status', sessionId: ctx.sessionId, status: 'tool' });
-
-    const started = Date.now();
-    try {
-      const out = await t.execute(args, ctx);
-      const status = out.ok ? 'ok' : 'error';
-      this.audit({
-        toolName: t.name,
-        args,
-        tier,
-        status,
-        result: out.ok ? out.result : undefined,
-        error: out.error,
-        durationMs: Date.now() - started,
-        note: approvalNote,
-      });
-      ctx.emit({ kind: 'tool.end', sessionId: ctx.sessionId, toolName: t.name, status, error: out.error });
-      return out.ok ? out.result ?? {} : { error: out.error };
-    } catch (err) {
-      const error = err instanceof Error ? err.message : String(err);
-      // Log the ORIGINAL error (stack) with context — the audit/UI keep only the
-      // message string, so without this the root cause is lost.
-      console.error(`[alfred] tool "${t.name}" threw (session ${ctx.sessionId}):`, err);
-      this.audit({ toolName: t.name, args, tier, status: 'error', error, durationMs: Date.now() - started, note: approvalNote });
-      ctx.emit({ kind: 'tool.end', sessionId: ctx.sessionId, toolName: t.name, status: 'error', error });
-      return { error };
-    }
-  }
-
-  private audit(e: Omit<AuditEntry, 'sessionId' | 'ts'>): void {
-    // Never let an audit write failure crash a turn — log and continue.
-    try {
-      recordAudit(this.deps.ctx.db, { ...e, sessionId: this.deps.ctx.sessionId, ts: Date.now() });
-    } catch (err) {
-      console.error('[alfred] audit write failed:', err instanceof Error ? err.message : err);
-    }
+    return runGovernedTool(t, args, this.deps.ctx);
   }
 }
 
@@ -526,6 +437,10 @@ export interface OrchestratorHandle {
   /** Wake word ("Alfred", always-on): read/toggle, persisted. Default: on if the STT binary exists. */
   getWakeword(): boolean;
   setWakeword(on: boolean): boolean;
+  /** Live MCP bridge endpoint for the claude-code brain, or null (not started / disabled). */
+  getMcpEndpoint(): { url: string; token: string } | null;
+  /** Tear down the MCP bridge (release the port). */
+  shutdownMcp(): Promise<void>;
 }
 
 export function createOrchestrator(opts: CreateOrchestratorOpts): OrchestratorHandle {
@@ -590,6 +505,19 @@ export function createOrchestrator(opts: CreateOrchestratorOpts): OrchestratorHa
   };
 
   void ensureScaffold(config.workspace).catch(() => {});
+
+  // MCP bridge: expose Alfred's tools to the claude-code brain (`claude -p`) with
+  // full governance. Starts async (fire-and-forget); claudeSpawn reads the live
+  // endpoint when it spawns. Never throws — null just means "no bridge", the
+  // fallback. Gated by ALFRED_MCP_BRIDGE (default on).
+  let mcpBridge: McpBridgeHandle | null = null;
+  void startMcpBridge(tools, ctx)
+    .then((h) => {
+      mcpBridge = h;
+    })
+    .catch((err) => {
+      console.error('[alfred] MCP bridge start rejected:', err instanceof Error ? err.message : err);
+    });
 
   // ── Wake word ("Alfred", always-on) ────────────────────────────────────────
   // Default: enabled when the native STT binary exists (needs no account). The
@@ -918,6 +846,13 @@ export function createOrchestrator(opts: CreateOrchestratorOpts): OrchestratorHa
         wakeword.stopWakeword();
       }
       return wakeEnabled();
+    },
+    getMcpEndpoint() {
+      return mcpBridge?.endpoint ?? null;
+    },
+    async shutdownMcp() {
+      await mcpBridge?.shutdown();
+      mcpBridge = null;
     },
   };
 }

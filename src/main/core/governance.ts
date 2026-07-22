@@ -8,6 +8,7 @@
  */
 
 import { randomUUID } from 'node:crypto';
+import { HITL_TIERS } from './types.ts';
 import type {
   ApprovalRequest,
   ApprovalResolution,
@@ -15,6 +16,8 @@ import type {
   Governance,
   RiskTier,
   StreamEvent,
+  Tool,
+  ToolCtx,
   TrifectaFlags,
 } from './types.ts';
 
@@ -130,6 +133,99 @@ export function maskSecrets(value: unknown): unknown {
     return out;
   }
   return value;
+}
+
+/**
+ * Run one tool through the FULL governance pipeline: risk classification,
+ * trifecta-lite escalation, HITL approval, execution, audit, and the UI stream
+ * events. Returns the tool's result value, or `{ error }` — it never throws, so
+ * the caller (model) can react. Shared by the orchestrator's agent loop AND the
+ * MCP bridge, so `claude -p` calling an Alfred tool gets identical guardrails.
+ *
+ * Loop detection is the caller's concern (only the streaming loop tracks a call
+ * history); everything else lives here so there is a single governance path.
+ */
+export async function runGovernedTool(t: Tool, args: unknown, ctx: ToolCtx): Promise<unknown> {
+  const tier: RiskTier = t.risk?.(args) ?? classifyAction(t.name, args);
+
+  // Trifecta-lite: reading web/email marks untrusted/private; an egress tool that
+  // would complete the trifecta is escalated to a mandatory approval.
+  ctx.governance.markTrifecta(trifectaImpact(t.name));
+  let needApproval = HITL_TIERS.includes(tier);
+  let reason = `Risk tier ${tier}`;
+  if (isEgressTool(t.name)) {
+    const tf = ctx.governance.trifecta();
+    if (tf.readUntrusted && tf.hasPrivate) {
+      ctx.governance.markTrifecta({ canEgress: true });
+      needApproval = true;
+      reason = 'Trifecta: untrusted read + private data + egress in one session';
+    }
+  }
+
+  ctx.emit({ kind: 'tool.start', sessionId: ctx.sessionId, toolName: t.name, args: maskSecrets(args), tier });
+
+  // Never let an audit write failure crash a turn — log and continue.
+  const audit = (e: Omit<AuditEntry, 'sessionId' | 'ts'>): void => {
+    try {
+      recordAudit(ctx.db, { ...e, sessionId: ctx.sessionId, ts: Date.now() });
+    } catch (err) {
+      console.error('[alfred] audit write failed:', err instanceof Error ? err.message : err);
+    }
+  };
+
+  // Provenance persisted in the audit when the call ran without a human prompt
+  // (auto-approve rule or DANGEROUS mode) — so the forensic trail shows the bypass.
+  let approvalNote: string | undefined;
+  if (needApproval) {
+    ctx.emit({ kind: 'agent.status', sessionId: ctx.sessionId, status: 'awaiting-approval' });
+    const resolution = await ctx.governance.requestApproval({
+      sessionId: ctx.sessionId,
+      toolName: t.name,
+      args: maskSecrets(args),
+      tier,
+      reason,
+    });
+    approvalNote = resolution.note;
+    if (resolution.decision === 'deny') {
+      audit({
+        toolName: t.name,
+        args,
+        tier,
+        status: 'denied',
+        error: resolution.timedOut ? 'approval timed out' : 'denied by user',
+      });
+      ctx.emit({ kind: 'tool.end', sessionId: ctx.sessionId, toolName: t.name, status: 'denied' });
+      ctx.emit({ kind: 'agent.status', sessionId: ctx.sessionId, status: 'thinking' });
+      return { error: resolution.timedOut ? 'Approval timed out (treated as deny).' : 'Denied by the human.' };
+    }
+  }
+  ctx.emit({ kind: 'agent.status', sessionId: ctx.sessionId, status: 'tool' });
+
+  const started = Date.now();
+  try {
+    const out = await t.execute(args, ctx);
+    const status = out.ok ? 'ok' : 'error';
+    audit({
+      toolName: t.name,
+      args,
+      tier,
+      status,
+      result: out.ok ? out.result : undefined,
+      error: out.error,
+      durationMs: Date.now() - started,
+      note: approvalNote,
+    });
+    ctx.emit({ kind: 'tool.end', sessionId: ctx.sessionId, toolName: t.name, status, error: out.error });
+    return out.ok ? out.result ?? {} : { error: out.error };
+  } catch (err) {
+    const error = err instanceof Error ? err.message : String(err);
+    // Log the ORIGINAL error (stack) with context — the audit/UI keep only the
+    // message string, so without this the root cause is lost.
+    console.error(`[alfred] tool "${t.name}" threw (session ${ctx.sessionId}):`, err);
+    audit({ toolName: t.name, args, tier, status: 'error', error, durationMs: Date.now() - started, note: approvalNote });
+    ctx.emit({ kind: 'tool.end', sessionId: ctx.sessionId, toolName: t.name, status: 'error', error });
+    return { error };
+  }
 }
 
 export function recordAudit(db: DB, entry: AuditEntry): void {

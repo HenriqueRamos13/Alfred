@@ -87,6 +87,14 @@ import {
   parseDisplays,
   system,
 } from '../src/main/tools/system.ts';
+import {
+  mcpToolName,
+  toMcpTools,
+  buildMcpConfig,
+  buildAllowedTools,
+  bridgeEnabled,
+  mcpCliArgs,
+} from '../src/main/core/mcpConfig.ts';
 
 test('classifyAction — read/list/search are T0 autopilot', () => {
   assert.equal(classifyAction('fs_read', { path: '/a' }), 'T0');
@@ -867,4 +875,70 @@ test('isLoop — honours a custom limit', () => {
 
 test('costOf — zero usage costs nothing even for a known model', () => {
   assert.equal(costOf('claude-sonnet-5', { inputTokens: 0, outputTokens: 0 }), 0);
+});
+
+// ── MCP bridge: pure config/mapping (mcpConfig.ts) ───────────────────────────
+
+test('mcpToolName — Claude Code namespacing mcp__<server>__<tool>', () => {
+  assert.equal(mcpToolName('ui_layout'), 'mcp__alfred__ui_layout');
+  assert.equal(mcpToolName('system', 'other'), 'mcp__other__system');
+});
+
+test('toMcpTools — maps registry tools to name/description/inputSchema only', () => {
+  const tools = [
+    { name: 'a', description: 'da', inputSchema: { type: 'object', properties: {} }, execute: async () => ({ ok: true }) },
+    { name: 'b', description: 'db', inputSchema: { type: 'object' }, execute: async () => ({ ok: true }) },
+  ] as any;
+  const mapped = toMcpTools(tools);
+  assert.deepEqual(mapped, [
+    { name: 'a', description: 'da', inputSchema: { type: 'object', properties: {} } },
+    { name: 'b', description: 'db', inputSchema: { type: 'object' } },
+  ]);
+});
+
+test('buildMcpConfig — Streamable HTTP server with bearer header', () => {
+  const cfg = buildMcpConfig({ url: 'http://127.0.0.1:5051/mcp', token: 'tok123' });
+  assert.deepEqual(cfg, {
+    mcpServers: {
+      alfred: {
+        type: 'http',
+        url: 'http://127.0.0.1:5051/mcp',
+        headers: { Authorization: 'Bearer tok123' },
+      },
+    },
+  });
+});
+
+test('buildAllowedTools — one mcp__alfred__ entry per tool', () => {
+  assert.deepEqual(buildAllowedTools(['ui_layout', 'system']), [
+    'mcp__alfred__ui_layout',
+    'mcp__alfred__system',
+  ]);
+});
+
+test('bridgeEnabled — default on, explicit off values disable', () => {
+  assert.equal(bridgeEnabled({}), true);
+  assert.equal(bridgeEnabled({ ALFRED_MCP_BRIDGE: '' }), true);
+  assert.equal(bridgeEnabled({ ALFRED_MCP_BRIDGE: '1' }), true);
+  assert.equal(bridgeEnabled({ ALFRED_MCP_BRIDGE: 'on' }), true);
+  for (const v of ['0', 'false', 'off', 'no', 'OFF']) {
+    assert.equal(bridgeEnabled({ ALFRED_MCP_BRIDGE: v }), false, v);
+  }
+});
+
+test('mcpCliArgs — attaches --mcp-config + --allowedTools when a bridge is live', () => {
+  const bridge = { url: 'http://127.0.0.1:9/mcp', token: 't', tools: ['ui_layout', 'system'] };
+  const args = mcpCliArgs({}, bridge);
+  assert.equal(args[0], '--mcp-config');
+  assert.deepEqual(JSON.parse(args[1]), buildMcpConfig(bridge));
+  // strict: the child ignores the user's own MCP servers, sees only Alfred's.
+  assert.equal(args[2], '--strict-mcp-config');
+  assert.equal(args[3], '--allowedTools');
+  assert.equal(args[4], 'mcp__alfred__ui_layout,mcp__alfred__system');
+});
+
+test('mcpCliArgs — empty (fallback) when no bridge or disabled by env', () => {
+  assert.deepEqual(mcpCliArgs({}, null), []);
+  const bridge = { url: 'http://127.0.0.1:9/mcp', token: 't', tools: ['system'] };
+  assert.deepEqual(mcpCliArgs({ ALFRED_MCP_BRIDGE: 'off' }, bridge), []);
 });

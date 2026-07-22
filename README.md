@@ -98,7 +98,22 @@ set `ALFRED_PROVIDER` to change it.
 
   If `claude` isn't found, the tool returns a clear error instead of crashing.
 
+- **MCP bridge (`claude -p` gets Alfred's tools):** whenever Alfred spawns
+  `claude -p` — both the Claude Code brain and the `delegate_to_claude_code`
+  tool — it also starts an **in-process MCP server** (Streamable HTTP, bound to a
+  random `127.0.0.1` port, bearer-token authenticated) and points the CLI at it
+  with `--mcp-config` + `--allowedTools`. That exposes Alfred's whole tool
+  registry (`ui_layout`, `system`, `memory`, `filesystem`, `browser`, `render_ui`,
+  …) to Claude Code as `mcp__alfred__<tool>` tools. Every such call runs the real
+  `Tool.execute` with Alfred's real context, so **governance is not bypassed**:
+  T2/T3 still prompt for approval (in the Alfred UI), DANGEROUS mode auto-approves,
+  the trifecta rule applies, and every call is audited. This is how Claude Code can
+  rearrange your cards with `ui_layout` or read memory. It's on by default;
+  disable with `ALFRED_MCP_BRIDGE=0`. If the bridge can't start (or the CLI can't
+  reach it), `claude -p` just runs with its own tools — no crash.
+
 Keys are read only from `process.env`, never logged, and masked in the audit log.
+The MCP bridge token is likewise never logged and never leaves `127.0.0.1`.
 
 ## Setup (from a factory Intel Mac)
 
@@ -156,6 +171,7 @@ audit.
 | `ALFRED_DAILY_TOKEN_BUDGET` | `2000000` | **Hard** daily token kill-switch across all sessions. |
 | `ALFRED_DAILY_USD_BUDGET` | unset | **Soft** daily USD warning (estimated); warns, never blocks. |
 | `ALFRED_STEP_CAP` | `40` | Max tool/model steps per task. |
+| `ALFRED_MCP_BRIDGE` | on | `0`/`false`/`off`/`no` disables the in-process MCP bridge that gives `claude -p` Alfred's governed tools. |
 | `ALFRED_PRICING_JSON` | — | Path to a pricing-override JSON (`{ "model": { inputPerM, outputPerM } }`); else `data/pricing.json`. |
 | `ALFRED_WINDOW_MODE` | `overlay` | `overlay` (frameless click-through HUD) or `windowed` (classic window). |
 | `ALFRED_SPAN_DISPLAYS` | `0` | `1`/`true` → one overlay spans the whole virtual desktop (see multi-monitor note). |

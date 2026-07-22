@@ -29,11 +29,11 @@ One card per domain — *what it does · when to use · hard limit · full contr
 - **browser** — drive a real Chromium that keeps cookies/sessions · web tasks, reading pages, filling forms · never types passwords; login walls pause for the human; readText marks the session untrusted · [docs/tools/browser.md](docs/tools/browser.md)
 - **system** — battery, volume, brightness, displays, Wi-Fi, apps, notify, clipboard, caffeinate, lock/sleep/screenshot · Mac status & control · one op per call; app_quit/lock/sleep are T2; some ops need macOS TCC permission · [docs/tools/system.md](docs/tools/system.md)
 - **voice** — text-to-speech + speech-to-text + wake word · host-driven speech I/O — NOT a tool you call · pt-BR default; speech output OFF unless the user turns it on · [docs/tools/voice.md](docs/tools/voice.md)
-- **models** — four brains via the AI SDK (anthropic/openai/deepseek/claude-code) · you ARE the active brain · brain chosen by config, not by you; identity stays Alfred · [docs/tools/models.md](docs/tools/models.md)
+- **models** — four brains via the AI SDK (anthropic/openai/deepseek/claude-code) · you ARE the active brain · brain chosen by config, not by you; identity stays Alfred · the claude-code brain reaches Alfred's own tools through the in-process **MCP bridge** (still governed) · [docs/tools/models.md](docs/tools/models.md)
 - **memory** — read/append/remember/recall/list/note/handoff · persist facts+events, recall the past, capture notes when a task ends · never invent memories; never edit the stable layer · [docs/tools/memory.md](docs/tools/memory.md)
 - **ui_layout** — get_layout/move/resize/show/hide/arrange/reset your floating cards · tidy the control centre · T1, no approval; call get_layout first (the user drags cards too) · [docs/tools/ui_layout.md](docs/tools/ui_layout.md)
 - **gmail** — read-only Gmail: connect/list/search/read · triage & read mail · read-only (cannot send); connect is T2; reading marks the session private + untrusted · [docs/tools/gmail.md](docs/tools/gmail.md)
-- **delegate_to_claude_code** — hand a self-contained task to a headless `claude -p` agent · chunky autonomous sub-tasks (refactors, scaffolding) · T2 approval; cwd confined to the workspace · [docs/tools/models.md](docs/tools/models.md)
+- **delegate_to_claude_code** — hand a self-contained task to a headless `claude -p` agent · chunky autonomous sub-tasks (refactors, scaffolding) · T2 approval; cwd confined to the workspace; the delegated agent also gets Alfred's governed tools via the MCP bridge · [docs/tools/models.md](docs/tools/models.md)
 
 Also available: **project** (ICM folder-as-context projects) and **render_ui**
 (whitelisted generative UI onto the surface). See the routing table.

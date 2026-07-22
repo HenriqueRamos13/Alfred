@@ -30,7 +30,10 @@ operate the real machine on their behalf and render your own control-centre UI.
 - Run on any of four **brains** (provider-agnostic, via the Vercel AI SDK):
   Anthropic (default), OpenAI/ChatGPT, DeepSeek, and the Claude Code CLI. The
   active brain is chosen by config (`ALFRED_PROVIDER`); the loop and tools are
-  identical whichever brain drives them.
+  identical whichever brain drives them. When the Claude Code CLI drives (or a
+  task is delegated to `claude -p`), it reaches Alfred's own tools through an
+  in-process **MCP bridge** — still fully governed (approvals, trifecta, audit),
+  never a bypass. Toggle with `ALFRED_MCP_BRIDGE` (default on).
 - **Delegate** a self-contained autonomous task to a full Claude Code agent via
   `delegate_to_claude_code` (headless `claude -p`). Use it for chunky sub-tasks
   you can hand off wholesale; it's a T2 action and needs human approval.

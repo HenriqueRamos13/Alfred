@@ -19,6 +19,7 @@
  * and ENOENT surfaced as a flag so callers can print a clear "binary missing" error.
  */
 import { spawn } from 'node:child_process';
+import { mcpCliArgs } from './mcpConfig.ts';
 
 const TIMEOUT_MS = 30 * 60_000;
 const MAX_STDOUT = 16 * 1024 * 1024;
@@ -42,7 +43,10 @@ function subscriptionEnv(): NodeJS.ProcessEnv {
 
 export function spawnClaudeCli(args: string[], opts: { cwd: string }): Promise<ClaudeCliResult> {
   return new Promise((resolve) => {
-    const child = spawn('claude', args, {
+    // Attach the in-process Alfred MCP bridge (both spawn paths — the claude-code
+    // brain and the delegate tool — route through here, so both gain Alfred's
+    // tools). Empty when no bridge is live or ALFRED_MCP_BRIDGE disabled it.
+    const child = spawn('claude', [...args, ...mcpCliArgs(process.env)], {
       cwd: opts.cwd,
       env: subscriptionEnv(),
       stdio: ['ignore', 'pipe', 'pipe'], // stdin=EOF immediately (== < /dev/null)
