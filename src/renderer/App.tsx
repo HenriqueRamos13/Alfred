@@ -17,7 +17,7 @@ import { ChatLog } from './components/ChatLog.tsx';
 import { ProjectList } from './components/ProjectList.tsx';
 import { ApprovalPrompt } from './components/ApprovalPrompt.tsx';
 import { DraggableCard } from './components/DraggableCard.tsx';
-import { clampBox, tileLayout, cardOnDisplay, DISPLAY_MAIN, type Bounds } from '../main/core/layout.ts';
+import { clampBox, tileLayout, cardOnDisplay, nextDisplayId, type Bounds } from '../main/core/layout.ts';
 import type {
   AgentStatus,
   ApprovalDecision,
@@ -204,11 +204,9 @@ export default function App() {
 
   /** Send a card to the next physical display (cycles). displayId sentinels resolve to the primary. */
   const moveToNextDisplay = (card: CardLayout) => {
-    if (displays.length < 2) return;
-    const primaryId = displays.find((d) => d.primary)?.id;
-    const current = card.displayId === DISPLAY_MAIN ? primaryId : card.displayId;
-    const i = Math.max(0, displays.findIndex((d) => d.id === current));
-    patchCard(card.id, { displayId: displays[(i + 1) % displays.length].id });
+    const target = nextDisplayId(card.displayId, displays);
+    // The target window's clamp-rescue effect repositions it into that display's bounds on arrival.
+    if (target) patchCard(card.id, { displayId: target });
   };
 
   /** Recoloca todos os cards (incl. escondidos) numa grelha limpa ajustada à janela. */

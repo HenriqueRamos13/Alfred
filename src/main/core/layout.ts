@@ -46,6 +46,23 @@ export function resolveCardDisplay(cardDisplayId: string, presentIds: readonly s
   return presentIds.includes(cardDisplayId) ? cardDisplayId : DISPLAY_MAIN;
 }
 
+/**
+ * The next physical display to cycle a card onto, wrapping around. `current`
+ * may be a concrete display id or a sentinel — the primary display's id stands
+ * in for 'main'. Returns undefined when there is nowhere to move (< 2 displays)
+ * or an unknown current id lands at the start. Pure so the header ⇄ control and
+ * the tests share one definition of "next monitor".
+ */
+export function nextDisplayId(
+  current: string,
+  displays: readonly { id: string; primary: boolean }[],
+): string | undefined {
+  if (displays.length < 2) return undefined;
+  const resolved = current === DISPLAY_MAIN ? displays.find((d) => d.primary)?.id : current;
+  const i = displays.findIndex((d) => d.id === resolved);
+  return displays[(Math.max(0, i) + 1) % displays.length].id;
+}
+
 /** Keep at least this much of a card on-screen when clamping. */
 const MIN_VISIBLE = 60;
 /** Keep at least the header row reachable when clamping vertically. */

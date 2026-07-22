@@ -56,6 +56,27 @@ func fail(_ message: String) -> Never {
     exit(2)
 }
 
+/// True when a recognition error means the on-device model cannot run for this
+/// locale (assets not installed) — a FATAL condition for on-device, not a
+/// transient glitch. Retrying on-device just spams the "required assets are not
+/// available" error many times a second.
+///
+/// Matches ONLY SFSpeech's documented assets-missing message. We deliberately do
+/// NOT classify kAFAssistantErrorDomain numeric codes: several routine/transient
+/// ones (1110 "no speech detected", 1107 "connection interrupted") would then be
+/// treated as fatal and permanently kill voice on ordinary silence. A missed
+/// asset error is safe — the caller's consecutive-failure limit still stops any
+/// real spam loop.
+func isAssetError(_ error: Error) -> Bool {
+    return (error as NSError).localizedDescription.lowercased().contains("assets are not available")
+}
+
+/// One-time, actionable message emitted when a locale cannot run at all
+/// (on-device assets missing AND server recognition also unavailable/failed).
+func localeUnavailableMessage(_ localeId: String) -> String {
+    return "locale \(localeId) unavailable on-device: enable it in System Settings > Keyboard > Dictation, or set ALFRED_STT_LOCALE=en-US, or connect to the internet for server recognition"
+}
+
 // MARK: - Config
 
 func resolveLocaleId() -> String {
@@ -90,32 +111,26 @@ func resolveWakeWords() -> [String] {
 final class Recognizer {
     private let engine = AVAudioEngine()
     private let recognizer: SFSpeechRecognizer
+    private let localeId: String
     private var request: SFSpeechAudioBufferRecognitionRequest?
     private var task: SFSpeechRecognitionTask?
     private var lastText = ""
     private var silenceTimer: DispatchSourceTimer?
     private let silenceSeconds: TimeInterval
     private var finished = false
+    private var triedServer = false
 
     init(localeId: String, silenceSeconds: TimeInterval) {
         guard let r = SFSpeechRecognizer(locale: Locale(identifier: localeId)) else {
-            fail("no speech recognizer for locale \(localeId)")
+            fail(localeUnavailableMessage(localeId))
         }
         self.recognizer = r
+        self.localeId = localeId
         self.silenceSeconds = silenceSeconds
     }
 
     func start() {
         guard recognizer.isAvailable else { fail("speech recognizer is unavailable right now") }
-
-        let req = SFSpeechAudioBufferRecognitionRequest()
-        req.shouldReportPartialResults = true
-        if recognizer.supportsOnDeviceRecognition {
-            req.requiresOnDeviceRecognition = true
-        } else {
-            note("on-device recognition unavailable for \(recognizer.locale.identifier); using server mode")
-        }
-        request = req
 
         let input = engine.inputNode
         let format = input.outputFormat(forBus: 0)
@@ -129,8 +144,28 @@ final class Recognizer {
             fail("audio engine failed to start: \(error.localizedDescription)")
         }
 
+        beginTask(forceServer: false)
+        resetSilence()
+    }
+
+    /// Start one recognition request. On-device only when the OS supports it for
+    /// this locale (never force it — that is what triggers the assets spam);
+    /// `forceServer` is the fallback path after an on-device asset error.
+    private func beginTask(forceServer: Bool) {
+        let req = SFSpeechAudioBufferRecognitionRequest()
+        req.shouldReportPartialResults = true
+        if forceServer {
+            req.requiresOnDeviceRecognition = false
+            note("retrying \(localeId) with server recognition (needs network)")
+        } else if recognizer.supportsOnDeviceRecognition {
+            req.requiresOnDeviceRecognition = true
+        } else {
+            note("on-device recognition unavailable for \(recognizer.locale.identifier); using server mode")
+        }
+        request = req
+
         task = recognizer.recognitionTask(with: req) { [weak self] result, error in
-            guard let self = self else { return }
+            guard let self = self, !self.finished else { return }
             if let result = result {
                 self.lastText = result.bestTranscription.formattedString
                 if result.isFinal {
@@ -140,11 +175,28 @@ final class Recognizer {
                 emit(["partial": self.lastText])
                 self.resetSilence()
             }
-            if error != nil {
-                self.finish()
-            }
+            if let error = error { self.handleError(error) }
         }
-        resetSilence()
+    }
+
+    /// Missing on-device assets → try server once, else fail with a clear,
+    /// one-time message (never emit a bogus empty final for an assets error).
+    private func handleError(_ error: Error) {
+        if isAssetError(error) {
+            if !triedServer && recognizer.supportsOnDeviceRecognition {
+                triedServer = true
+                task?.cancel()
+                request?.endAudio()
+                beginTask(forceServer: true)
+                return
+            }
+            finished = true
+            silenceTimer?.cancel()
+            engine.inputNode.removeTap(onBus: 0)
+            engine.stop()
+            fail(localeUnavailableMessage(localeId))
+        }
+        finish()
     }
 
     private func resetSilence() {
@@ -178,9 +230,12 @@ final class Recognizer {
 final class WakeRecognizer {
     private let engine = AVAudioEngine()
     private let recognizer: SFSpeechRecognizer
+    private let localeId: String
     private let wakeWords: [String]
     private let silenceSeconds: TimeInterval
     private let segmentSeconds: TimeInterval = 50
+    private let errorBackoff: TimeInterval = 1.5     // never recycle a failed task in a tight loop
+    private let maxConsecutiveFailures = 5           // give up (fatal) rather than spam forever
 
     private var request: SFSpeechAudioBufferRecognitionRequest?
     private var task: SFSpeechRecognitionTask?
@@ -192,12 +247,16 @@ final class WakeRecognizer {
     private var tapInstalled = false
     private var restarting = false
     private var stopped = false
+    private var forceServer = false        // set after an on-device asset error
+    private var triedServer = false
+    private var consecutiveFailures = 0    // reset on any successful result
 
     init(localeId: String, wakeWords: [String], silenceSeconds: TimeInterval) {
         guard let r = SFSpeechRecognizer(locale: Locale(identifier: localeId)) else {
-            fail("no speech recognizer for locale \(localeId)")
+            fail(localeUnavailableMessage(localeId))
         }
         self.recognizer = r
+        self.localeId = localeId
         self.wakeWords = wakeWords
         self.silenceSeconds = silenceSeconds
     }
@@ -222,22 +281,61 @@ final class WakeRecognizer {
         startSegment()
     }
 
-    /// Begin one recognition task on the (already running) audio engine.
+    /// Begin one recognition task on the (already running) audio engine. On-device
+    /// only when the OS supports it (never forced — forcing is what spams the
+    /// assets error); `forceServer` is the post-asset-error fallback.
     private func startSegment() {
         restarting = false
         let req = SFSpeechAudioBufferRecognitionRequest()
         req.shouldReportPartialResults = true
-        if recognizer.supportsOnDeviceRecognition { req.requiresOnDeviceRecognition = true }
+        if !forceServer && recognizer.supportsOnDeviceRecognition { req.requiresOnDeviceRecognition = true }
         request = req
         task = recognizer.recognitionTask(with: req) { [weak self] result, error in
             guard let self = self, !self.stopped else { return }
             if let result = result {
+                self.consecutiveFailures = 0
                 self.handle(text: result.bestTranscription.formattedString)
                 if result.isFinal { self.segmentEnded() }
             }
-            if error != nil { self.segmentEnded() }
+            if let error = error { self.handleError(error) }
         }
         scheduleSegmentTimer()
+    }
+
+    /// Recognition-task error. Missing on-device assets → fall back to server
+    /// once; if that is not possible / also unavailable, emit ONE fatal error and
+    /// exit (no restart loop). Transient errors recycle after a backoff, and after
+    /// too many consecutive failures we give up fatally rather than spam.
+    private func handleError(_ error: Error) {
+        if restarting || stopped { return }
+        if isAssetError(error) {
+            if !triedServer && recognizer.supportsOnDeviceRecognition {
+                triedServer = true
+                forceServer = true
+                note("on-device model missing for \(recognizer.locale.identifier); falling back to server recognition")
+                restartSegment(after: errorBackoff)
+                return
+            }
+            emitFatal(localeUnavailableMessage(localeId))
+        }
+        consecutiveFailures += 1
+        if consecutiveFailures >= maxConsecutiveFailures {
+            emitFatal("speech recognition kept failing for \(localeId) (\(error.localizedDescription)) — check the microphone and network, or set ALFRED_STT_LOCALE=en-US")
+        }
+        restartSegment(after: errorBackoff)
+    }
+
+    /// Clean up and emit a single {"error"} before exiting non-zero. The parent
+    /// (wakeword.ts) sees the non-zero exit and stops respawning.
+    private func emitFatal(_ message: String) -> Never {
+        stopped = true
+        silenceTimer?.cancel()
+        segmentTimer?.cancel()
+        if tapInstalled { engine.inputNode.removeTap(onBus: 0) }
+        engine.stop()
+        request?.endAudio()
+        task?.cancel()
+        fail(message)
     }
 
     // ponytail: recycle before the ~1min SFSpeechRecognitionRequest cap; if we're
@@ -259,7 +357,9 @@ final class WakeRecognizer {
     }
 
     /// Tear the current task down and start a fresh one (clears the transcript).
-    private func restartSegment() {
+    /// `after` applies a backoff so a task that fails to start is never recycled
+    /// in a tight loop (many times a second).
+    private func restartSegment(after delay: TimeInterval = 0) {
         if restarting { return }
         restarting = true
         silenceTimer?.cancel(); silenceTimer = nil
@@ -270,7 +370,7 @@ final class WakeRecognizer {
         request = nil
         awake = false
         pendingCommand = ""
-        DispatchQueue.main.async { [weak self] in
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
             guard let self = self, !self.stopped else { return }
             self.startSegment()
         }

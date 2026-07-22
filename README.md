@@ -182,6 +182,16 @@ prolonged silence, or via the kill switch. Language defaults to `pt-BR`
 (Brazilian Portuguese); override with `ALFRED_STT_LOCALE` (e.g. `en-US`, `pt-PT`)
 or the `--locale` helper flag.
 
+**On-device model must be installed for your locale.** On-device recognition
+only works if the language pack is present. The default `pt-BR` is **not**
+installed on a factory Mac — add it in **System Settings → Keyboard → Dictation
+→ Edit** and add *Português (Brasil)* (this downloads the on-device model). Until
+then Alfred falls back to **server** recognition, which needs an internet
+connection. If neither is available for the locale, the helper reports it **once**
+(no error spam) and disables voice for that locale — the fix is one of: install
+the model, connect to the internet, or switch to a locale that is installed
+(e.g. `ALFRED_STT_LOCALE=en-US`).
+
 A small Swift helper does the listening (`native/alfred-stt`). `./setup.sh`
 compiles it via `xcrun` (which pins the correct macOS SDK/toolchain); the source
 is committed, the binary is gitignored. Voice input is **optional** — if the
@@ -209,6 +219,12 @@ the shared `ALFRED_STT_LOCALE` (default `pt-BR`).
   Porcupine) — it is a best-effort local option, not a precision trigger.
 - Single mic owner: pressing the 🎙 mic pauses the wake listener for the manual
   dictation, then resumes it. The kill switch stops both.
+- **Needs an installed on-device model too** (same as push-to-talk above): the
+  default `pt-BR` requires *Português (Brasil)* added in **System Settings →
+  Keyboard → Dictation**, else it uses server recognition (needs internet), else
+  `ALFRED_STT_LOCALE=en-US`. If the locale can't run at all, wake reports it
+  **once**, disables itself (no respawn loop / no error spam), and stays off
+  until you re-toggle **👂 WAKE** after fixing it.
 
 ### Troubleshooting: CoreFoundation / Swift build
 

@@ -20,6 +20,7 @@ import {
   denialError,
 } from '../src/main/core/governance.ts';
 import { readJsonLines } from '../src/main/core/stt.ts';
+import { classifyWakeExit, WAKE_MAX_FAST_FAILS } from '../src/main/core/wakeword.ts';
 import { shell } from '../src/main/tools/shell.ts';
 import { filesystem } from '../src/main/tools/filesystem.ts';
 import { browser } from '../src/main/tools/browser.ts';
@@ -47,6 +48,7 @@ import {
   tileLayout,
   cardOnDisplay,
   resolveCardDisplay,
+  nextDisplayId,
   DISPLAY_MAIN,
   DISPLAY_ALL,
 } from '../src/main/core/layout.ts';
@@ -328,6 +330,25 @@ test('resolveCardDisplay — a card on a vanished display falls back to primary'
   assert.equal(resolveCardDisplay(DISPLAY_MAIN, present), DISPLAY_MAIN); // sentinel untouched
   assert.equal(resolveCardDisplay(DISPLAY_ALL, present), DISPLAY_ALL);
   assert.equal(resolveCardDisplay('101', []), DISPLAY_MAIN); // no displays known → primary
+});
+
+test('nextDisplayId — cycles to the next monitor, wraps, resolves main/unknown', () => {
+  const displays = [
+    { id: '100', primary: true },
+    { id: '200', primary: false },
+    { id: '300', primary: false },
+  ];
+  // concrete id → next, wrapping past the end back to the primary
+  assert.equal(nextDisplayId('100', displays), '200');
+  assert.equal(nextDisplayId('200', displays), '300');
+  assert.equal(nextDisplayId('300', displays), '100');
+  // 'main' sentinel resolves to the primary, then steps to the next
+  assert.equal(nextDisplayId(DISPLAY_MAIN, displays), '200');
+  // unknown id (e.g. a stale pin) starts at the first display
+  assert.equal(nextDisplayId('999', displays), '200');
+  // nowhere to move with fewer than two displays
+  assert.equal(nextDisplayId('100', [{ id: '100', primary: true }]), undefined);
+  assert.equal(nextDisplayId('100', []), undefined);
 });
 
 // ── workspace CLAUDE.md (claude -p identity) ─────────────────────────────────
@@ -763,6 +784,31 @@ test('readJsonLines — skips blank and non-JSON lines, keeps the good ones', ()
   readJsonLines(s as unknown as NodeJS.ReadableStream, (m) => got.push(m));
   s.push('\n  \nnot json\n{"wake":true}\n');
   assert.deepEqual(got, [{ wake: true }]);
+});
+
+// ── wakeword: fatal-exit / respawn-backoff classifier ────────────────────────
+
+test('classifyWakeExit — non-zero exit is fatal (no respawn), any elapsed', () => {
+  assert.deepEqual(classifyWakeExit(2, 10, 0), { failed: true, fastFailCount: 0 });
+  assert.deepEqual(classifyWakeExit(2, 999_999, 0), { failed: true, fastFailCount: 0 });
+  // signal death (code null) is fatal too
+  assert.deepEqual(classifyWakeExit(null, 50, 0), { failed: true, fastFailCount: 0 });
+});
+
+test('classifyWakeExit — clean but repeatedly fast exit trips failed after the limit', () => {
+  let count = 0;
+  let failed = false;
+  for (let i = 0; i < WAKE_MAX_FAST_FAILS; i++) {
+    const r = classifyWakeExit(0, 100, count);
+    count = r.fastFailCount;
+    failed = r.failed;
+  }
+  assert.equal(count, WAKE_MAX_FAST_FAILS);
+  assert.equal(failed, true, 'stops respawning after too many fast clean exits');
+});
+
+test('classifyWakeExit — a clean long-lived exit resets the fast-fail counter, no fail', () => {
+  assert.deepEqual(classifyWakeExit(0, 60_000, 2), { failed: false, fastFailCount: 0 });
 });
 
 // ── memory: parse/serialize round-trip + merge fallbacks (edge cases) ─────────
