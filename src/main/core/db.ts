@@ -89,13 +89,15 @@ CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, ts);
 -- (title is a fixed label supplied by core/layout.ts). Both the user's drags
 -- (via IPC) and the AI's ui_layout tool read/write this same table.
 CREATE TABLE IF NOT EXISTS layout (
-  cardId   TEXT PRIMARY KEY,
-  x        INTEGER NOT NULL,
-  y        INTEGER NOT NULL,
-  w        INTEGER NOT NULL,
-  h        INTEGER NOT NULL,
-  z        INTEGER NOT NULL,
-  visible  INTEGER NOT NULL DEFAULT 1
+  cardId    TEXT PRIMARY KEY,
+  x         INTEGER NOT NULL,
+  y         INTEGER NOT NULL,
+  w         INTEGER NOT NULL,
+  h         INTEGER NOT NULL,
+  z         INTEGER NOT NULL,
+  visible   INTEGER NOT NULL DEFAULT 1,
+  -- Concrete display.id, or the 'main' / 'all' sentinels (see core/layout.ts).
+  displayId TEXT NOT NULL DEFAULT 'main'
 );
 `;
 
@@ -109,6 +111,11 @@ export function openDb(dbPath: string): AlfredDb {
   // before it existed. CREATE TABLE IF NOT EXISTS above won't add columns.
   const hasNote = (db.prepare('PRAGMA table_info(audit)').all() as { name: string }[]).some((c) => c.name === 'note');
   if (!hasNote) db.exec('ALTER TABLE audit ADD COLUMN note TEXT');
+  // Idempotent migration: `layout.displayId` (multi-monitor) for DBs created before it existed.
+  const hasDisplayId = (db.prepare('PRAGMA table_info(layout)').all() as { name: string }[]).some(
+    (c) => c.name === 'displayId',
+  );
+  if (!hasDisplayId) db.exec("ALTER TABLE layout ADD COLUMN displayId TEXT NOT NULL DEFAULT 'main'");
   return db;
 }
 

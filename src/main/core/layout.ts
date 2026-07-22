@@ -18,6 +18,34 @@ import type { CardLayout, CardPatch } from './types.ts';
 export const MIN_W = 220;
 export const MIN_H = 120;
 
+/** displayId sentinels: a card can pin to a concrete `display.id`, or follow one of these. */
+export const DISPLAY_MAIN = 'main'; // shown on the primary display
+export const DISPLAY_ALL = 'all'; // mirrored on every display
+
+/**
+ * Does a card belong on the renderer showing `myDisplayId`? Pure so both the
+ * per-display renderer filter and the tests use identical logic. When
+ * `myDisplayId` is empty (windowed / single-window fallback) every card shows —
+ * there is only one canvas to filter into.
+ */
+export function cardOnDisplay(cardDisplayId: string, myDisplayId: string, isPrimary: boolean): boolean {
+  if (!myDisplayId) return true;
+  if (cardDisplayId === DISPLAY_ALL) return true;
+  if (cardDisplayId === DISPLAY_MAIN) return isPrimary;
+  return cardDisplayId === myDisplayId;
+}
+
+/**
+ * Resolve a card's displayId against the displays currently present: a card
+ * pinned to a concrete display that is gone falls back to the primary
+ * (`'main'`). Sentinels pass through unchanged. Used on display-removed and
+ * defensively at read time.
+ */
+export function resolveCardDisplay(cardDisplayId: string, presentIds: readonly string[]): string {
+  if (cardDisplayId === DISPLAY_ALL || cardDisplayId === DISPLAY_MAIN) return cardDisplayId;
+  return presentIds.includes(cardDisplayId) ? cardDisplayId : DISPLAY_MAIN;
+}
+
 /** Keep at least this much of a card on-screen when clamping. */
 const MIN_VISIBLE = 60;
 /** Keep at least the header row reachable when clamping vertically. */
@@ -101,6 +129,7 @@ interface Row {
   h: number;
   z: number;
   visible: number;
+  displayId: string;
 }
 
 /**
@@ -110,11 +139,12 @@ interface Row {
  */
 export function getLayout(db: AlfredDb): CardLayout[] {
   const insert = db.prepare(
-    'INSERT OR IGNORE INTO layout(cardId, x, y, w, h, z, visible) VALUES (?, ?, ?, ?, ?, ?, 1)',
+    'INSERT OR IGNORE INTO layout(cardId, x, y, w, h, z, visible, displayId) VALUES (?, ?, ?, ?, ?, ?, 1, ?)',
   );
-  DEFAULTS.forEach(([id, x, y, w, h], i) => insert.run(id, x, y, w, h, i + 1));
+  // Defaults distribute every card onto the primary display (the 'main' sentinel).
+  DEFAULTS.forEach(([id, x, y, w, h], i) => insert.run(id, x, y, w, h, i + 1, DISPLAY_MAIN));
 
-  const rows = db.prepare('SELECT cardId AS id, x, y, w, h, z, visible FROM layout').all() as Row[];
+  const rows = db.prepare('SELECT cardId AS id, x, y, w, h, z, visible, displayId FROM layout').all() as Row[];
   return rows
     .filter((r) => CARD_TITLES[r.id]) // drop stale rows for cards no longer shipped
     .map((r) => ({ ...r, title: CARD_TITLES[r.id], visible: r.visible !== 0 }))
@@ -140,16 +170,28 @@ export function updateCard(db: AlfredDb, id: string, patch: CardPatch, bounds?: 
   if (bounds) box = clampBox(box, bounds);
   const z = Math.round(patch.z ?? cur.z);
   const visible = (patch.visible ?? cur.visible) ? 1 : 0;
+  const displayId = patch.displayId ?? cur.displayId;
 
-  db.prepare('UPDATE layout SET x=?, y=?, w=?, h=?, z=?, visible=? WHERE cardId=?').run(
+  db.prepare('UPDATE layout SET x=?, y=?, w=?, h=?, z=?, visible=?, displayId=? WHERE cardId=?').run(
     box.x,
     box.y,
     box.w,
     box.h,
     z,
     visible,
+    displayId,
     id,
   );
+  return getLayout(db);
+}
+
+/**
+ * Reassign every card pinned to `removedDisplayId` back to the primary display
+ * (the 'main' sentinel), so cards on an unplugged monitor reappear instead of
+ * vanishing. Returns the full updated layout.
+ */
+export function reassignDisplayCards(db: AlfredDb, removedDisplayId: string): CardLayout[] {
+  db.prepare('UPDATE layout SET displayId=? WHERE displayId=?').run(DISPLAY_MAIN, removedDisplayId);
   return getLayout(db);
 }
 

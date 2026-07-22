@@ -35,7 +35,14 @@ import {
   resolveActiveBrainId,
 } from '../src/main/core/providers.ts';
 import { costOf, isKnownModel } from '../src/main/core/pricing.ts';
-import { clampBox, tileLayout } from '../src/main/core/layout.ts';
+import {
+  clampBox,
+  tileLayout,
+  cardOnDisplay,
+  resolveCardDisplay,
+  DISPLAY_MAIN,
+  DISPLAY_ALL,
+} from '../src/main/core/layout.ts';
 import {
   claudeMdNeedsWrite,
   buildClaudeMd,
@@ -288,6 +295,32 @@ test('tileLayout fits every card inside the bounds, in order', () => {
   const narrow = tileLayout(['a', 'b'], { w: 300, h: 800 });
   assert.equal(narrow[0].x, narrow[1].x);
   assert.ok(narrow[1].y > narrow[0].y);
+});
+
+// ── multi-monitor: card ↔ display assignment ─────────────────────────────────
+
+test('cardOnDisplay — concrete id matches its window; sentinels resolve', () => {
+  // concrete display pinning
+  assert.equal(cardOnDisplay('101', '101', false), true);
+  assert.equal(cardOnDisplay('101', '202', false), false);
+  // 'main' shows only on the primary window
+  assert.equal(cardOnDisplay(DISPLAY_MAIN, '101', true), true);
+  assert.equal(cardOnDisplay(DISPLAY_MAIN, '101', false), false);
+  // 'all' mirrors everywhere
+  assert.equal(cardOnDisplay(DISPLAY_ALL, '101', false), true);
+  assert.equal(cardOnDisplay(DISPLAY_ALL, '202', true), true);
+  // empty myDisplayId (windowed / single-window fallback) → everything shows
+  assert.equal(cardOnDisplay('202', '', false), true);
+  assert.equal(cardOnDisplay(DISPLAY_MAIN, '', false), true);
+});
+
+test('resolveCardDisplay — a card on a vanished display falls back to primary', () => {
+  const present = ['101', '202'];
+  assert.equal(resolveCardDisplay('101', present), '101'); // still here
+  assert.equal(resolveCardDisplay('303', present), DISPLAY_MAIN); // unplugged → primary
+  assert.equal(resolveCardDisplay(DISPLAY_MAIN, present), DISPLAY_MAIN); // sentinel untouched
+  assert.equal(resolveCardDisplay(DISPLAY_ALL, present), DISPLAY_ALL);
+  assert.equal(resolveCardDisplay('101', []), DISPLAY_MAIN); // no displays known → primary
 });
 
 // ── workspace CLAUDE.md (claude -p identity) ─────────────────────────────────

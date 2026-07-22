@@ -23,6 +23,8 @@ interface Props {
   onChange: (patch: CardPatch) => void;
   onFocus: () => void;
   onHide: () => void;
+  /** When present (multi-monitor), a header button that sends this card to the next display. */
+  onMoveDisplay?: () => void;
   children: ReactNode;
 }
 
@@ -43,7 +45,7 @@ interface DragState {
   canvasH: number;
 }
 
-export function DraggableCard({ card, meta, onChange, onFocus, onHide, children }: Props) {
+export function DraggableCard({ card, meta, onChange, onFocus, onHide, onMoveDisplay, children }: Props) {
   const [box, setBox] = useState({ x: card.x, y: card.y, w: card.w, h: card.h });
   const boxRef = useRef(box);
   boxRef.current = box;
@@ -134,6 +136,16 @@ export function DraggableCard({ card, meta, onChange, onFocus, onHide, children 
         </div>
         <div className="dcard-head-right">
           {meta}
+          {onMoveDisplay && (
+            <button
+              type="button"
+              className="dcard-hide no-drag"
+              title="Move card to the next monitor"
+              onClick={onMoveDisplay}
+            >
+              ⇄
+            </button>
+          )}
           <button type="button" className="dcard-hide no-drag" title="Hide card" onClick={onHide}>
             ✕
           </button>

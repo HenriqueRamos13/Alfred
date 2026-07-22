@@ -23,11 +23,14 @@ export function ApprovalPrompt({ request, onResolve }: ApprovalPromptProps) {
       role="alertdialog"
       aria-label={`Approval required for ${request.toolName}`}
       style={{
-        background: 'var(--panel, #0e1420)',
+        minWidth: 'min(520px, 90vw)',
+        background: 'var(--glass)',
+        backdropFilter: 'blur(16px)',
+        WebkitBackdropFilter: 'blur(16px)',
         border: `1px solid ${color}`,
-        borderRadius: 8,
-        boxShadow: `0 0 16px -6px ${color}`,
-        padding: 16,
+        borderRadius: 14,
+        boxShadow: `inset 0 1px 0 rgba(255,255,255,0.06), 0 0 44px -6px ${color}`,
+        padding: 18,
         fontFamily: 'var(--font-mono, ui-monospace, monospace)',
       }}
     >

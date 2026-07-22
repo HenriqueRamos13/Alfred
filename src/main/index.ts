@@ -4,23 +4,27 @@
  * window's webContents.
  *
  * Window modes (ALFRED_WINDOW_MODE):
- *   overlay  (default) — frameless, transparent, always-on-top HUD sized to the
- *                        CURRENT screen (the display under the cursor), so it is
- *                        always fully visible. Drag/HIDE/QUIT live in the UI
- *                        top-bar; CommandOrControl+Shift+A or +Shift+H toggles
- *                        visibility. Set ALFRED_SPAN_DISPLAYS=1 to opt into
- *                        spanning the whole virtual desktop (all monitors).
+ *   overlay  (default) — one frameless, transparent, always-on-top, CLICK-THROUGH
+ *                        HUD PER display (see DisplayManager in displays.ts). The
+ *                        LayoutStore in main is the single source of truth; each
+ *                        window renders only the cards whose displayId matches its
+ *                        display. If per-display creation fails it falls back to a
+ *                        single overlay on the primary screen. Drag/HIDE/QUIT live
+ *                        in the UI top-bar; CommandOrControl+Shift+A or +Shift+H
+ *                        toggles ALL windows.
  *   windowed           — classic bordered window (fallback if the overlay annoys).
  */
-import { app, BrowserWindow, globalShortcut, screen } from 'electron';
+import { app, BrowserWindow, globalShortcut, ipcMain, screen } from 'electron';
 import { join } from 'node:path';
 import { mkdirSync, readFileSync, existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { openDb } from './core/db.ts';
 import { createOrchestrator } from './core/orchestrator.ts';
 import { loadPricingOverrides } from './core/pricing.ts';
+import { reassignDisplayCards } from './core/layout.ts';
 import { listBrains, resolveActiveBrainId } from './core/providers.ts';
 import { registerIpc, registerWindowIpc, type Orchestrator } from './ipc.ts';
+import { DisplayManager } from './displays.ts';
 import type { AlfredConfig, StreamEvent } from './core/types.ts';
 
 const TOGGLE_SHORTCUT = 'CommandOrControl+Shift+A';
@@ -120,28 +124,27 @@ function dataDir(): string {
   return dir;
 }
 
-const webPreferences = {
-  preload: join(import.meta.dirname, '../preload/index.mjs'),
-  contextIsolation: true,
-  nodeIntegration: false,
-  sandbox: false,
-} as const;
+/** webPreferences, with per-window `additionalArguments` the preload reads (--overlay/--display-id/--primary). */
+function webPreferences(args: string[]) {
+  return {
+    preload: join(import.meta.dirname, '../preload/index.mjs'),
+    contextIsolation: true,
+    nodeIntegration: false,
+    sandbox: false,
+    additionalArguments: args,
+  };
+}
 
-function createWindow(): BrowserWindow {
-  const overlay = windowMode() === 'overlay';
-
-  const win = overlay ? createOverlayWindow() : createWindowedWindow();
-
+/** Load the renderer (dev server or built file) into a window and show it when ready. */
+function loadRenderer(win: BrowserWindow): BrowserWindow {
   win.once('ready-to-show', () => win.show());
-
   const url = process.env.ELECTRON_RENDERER_URL;
   if (url) win.loadURL(url);
   else win.loadFile(join(import.meta.dirname, '../renderer/index.html'));
-
   return win;
 }
 
-/** Classic bordered window (fallback). */
+/** Classic bordered window (ALFRED_WINDOW_MODE=windowed; not click-through, no per-display filtering). */
 function createWindowedWindow(): BrowserWindow {
   return new BrowserWindow({
     width: 1360,
@@ -151,7 +154,7 @@ function createWindowedWindow(): BrowserWindow {
     backgroundColor: '#04060c',
     titleBarStyle: 'hiddenInset',
     show: false,
-    webPreferences,
+    webPreferences: webPreferences(['--overlay=0']),
   });
 }
 
@@ -202,7 +205,8 @@ function createOverlayWindow(): BrowserWindow {
     backgroundColor: '#00000000',
     resizable: false,
     show: false,
-    webPreferences,
+    // No --display-id → the renderer shows every card on this single canvas.
+    webPreferences: webPreferences(['--overlay=1']),
   });
   win.setAlwaysOnTop(true, 'screen-saver');
   win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
@@ -226,27 +230,58 @@ function createOverlayWindow(): BrowserWindow {
   return win;
 }
 
-function boot(): BrowserWindow {
+let displayManager: DisplayManager | undefined;
+
+function boot(): void {
   loadEnv();
   const config = loadConfig();
   logBrainStatus();
   const data = dataDir();
   loadPricingOverrides(process.env, data);
   const db = openDb(join(data, 'alfred.db'));
-  const win = createWindow();
 
+  // The set of windows the stream fans out to. In overlay mode this is one
+  // window PER display (DisplayManager); in windowed / fallback mode a single
+  // window. emit closes over the getter so a display added/removed at runtime
+  // is picked up without re-wiring the orchestrator.
+  let getWindows: () => BrowserWindow[];
   const emit = (event: StreamEvent): void => {
-    if (!win.isDestroyed()) win.webContents.send('alfred:stream', event);
+    for (const w of getWindows()) if (!w.isDestroyed()) w.webContents.send('alfred:stream', event);
   };
+
+  if (windowMode() === 'windowed') {
+    const win = loadRenderer(createWindowedWindow());
+    getWindows = () => [win];
+  } else {
+    try {
+      const dm = new DisplayManager({
+        rendererUrl: process.env.ELECTRON_RENDERER_URL,
+        // A monitor was unplugged: move its cards back to the primary and push
+        // the corrected layout to every remaining window.
+        onDisplayRemoved: (removedId) => emit({ kind: 'layout', cards: reassignDisplayCards(db, removedId) }),
+      });
+      dm.start();
+      displayManager = dm;
+      getWindows = () => dm.all();
+    } catch (err) {
+      // Per-display creation failed → never crash: fall back to a single overlay
+      // on the primary screen (no per-display filtering).
+      console.warn('[alfred] per-display overlay failed; using a single window.', err);
+      const win = loadRenderer(createOverlayWindow());
+      getWindows = () => [win];
+    }
+  }
 
   const core = createOrchestrator({ config, db, emit, dataDir: data }) as Orchestrator;
   registerIpc(core, emit);
-  registerWindowIpc(win);
+  registerWindowIpc();
+  // Displays for the renderer's "move card to next monitor" control.
+  ipcMain.removeHandler('alfred:listDisplays');
+  ipcMain.handle('alfred:listDisplays', () => displayManager?.list() ?? []);
 
   // Crash-proofing: a stray throw / rejection anywhere must NOT close Alfred.
   // Log (secret-free) + surface to the UI + stay alive. Registered once.
   installProcessGuards(emit);
-  return win;
 }
 
 let guardsInstalled = false;
@@ -267,15 +302,18 @@ function installProcessGuards(emit: (e: StreamEvent) => void): void {
 }
 
 app.whenReady().then(() => {
-  const win = boot();
+  boot();
 
-  // Global toggle so the overlay can always be summoned/dismissed.
+  // Global toggle so EVERY overlay window can be summoned/dismissed at once.
   const toggle = () => {
-    const w = BrowserWindow.getAllWindows()[0] ?? win;
-    if (w.isVisible()) w.hide();
-    else {
-      w.show();
-      w.focus();
+    const wins = BrowserWindow.getAllWindows();
+    const anyVisible = wins.some((w) => w.isVisible());
+    for (const w of wins) {
+      if (anyVisible) w.hide();
+      else {
+        w.show();
+        w.focus();
+      }
     }
   };
   globalShortcut.register(TOGGLE_SHORTCUT, toggle);
@@ -286,7 +324,10 @@ app.whenReady().then(() => {
   });
 });
 
-app.on('will-quit', () => globalShortcut.unregisterAll());
+app.on('will-quit', () => {
+  globalShortcut.unregisterAll();
+  displayManager?.dispose();
+});
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit();

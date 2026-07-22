@@ -181,10 +181,23 @@ export interface CardLayout {
   h: number;
   z: number;
   visible: boolean;
+  /**
+   * Which display this card lives on: a concrete `display.id` (as a string), or
+   * the sentinel `'main'` (follow the primary display) / `'all'` (mirror on
+   * every display). x/y are relative to that display's overlay window.
+   */
+  displayId: string;
 }
 
 /** Fields a drag/resize or the AI may patch on a card. */
-export type CardPatch = Partial<Pick<CardLayout, 'x' | 'y' | 'w' | 'h' | 'z' | 'visible'>>;
+export type CardPatch = Partial<Pick<CardLayout, 'x' | 'y' | 'w' | 'h' | 'z' | 'visible' | 'displayId'>>;
+
+/** A physical display the overlay can span, exposed to the renderer for the "move to next monitor" control. */
+export interface DisplayInfo {
+  id: string;
+  label: string;
+  primary: boolean;
+}
 
 /** Components the AI may render via render_ui (whitelist enforced in the registry). */
 export const AI_COMPONENTS = [

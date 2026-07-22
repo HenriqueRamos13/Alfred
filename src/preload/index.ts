@@ -12,12 +12,30 @@ import type {
   CardPatch,
   ChatMessage,
   CostSnapshot,
+  DisplayInfo,
 } from '../main/core/types.ts';
 import type { BrainInfo } from '../main/core/providers.ts';
+
+/** Read a `--key=value` flag from additionalArguments (per-window: --display-id/--primary/--overlay). */
+function arg(key: string): string {
+  const prefix = `--${key}=`;
+  const found = process.argv.find((a) => a.startsWith(prefix));
+  return found ? found.slice(prefix.length) : '';
+}
 
 const api = {
   /** Auto-hide the top strip (command bar + toolbar). Default ON; ALFRED_AUTOHIDE_TOP=0 disables. */
   autoHideTop: process.env.ALFRED_AUTOHIDE_TOP !== '0',
+  /** This window's display.id (empty in windowed/single-window mode → renderer shows every card). */
+  displayId: arg('display-id'),
+  /** True when this window covers the primary display (drives the 'main' sentinel filter). */
+  isPrimary: arg('primary') === '1',
+  /** True for click-through overlay windows (enables the interactive-on-hover pivot). */
+  overlay: arg('overlay') !== '0',
+  /** Flip this window interactive (pointer over a card) vs click-through (empty desktop). */
+  setInteractive: (on: boolean): void => ipcRenderer.send('overlay:setInteractive', on === true),
+  /** Physical displays (for the "move card to next monitor" control). */
+  listDisplays: (): Promise<DisplayInfo[]> => ipcRenderer.invoke('alfred:listDisplays'),
   /** Whether Google OAuth is configured — drives the "connect Gmail" hint in the UI. */
   gmailConfigured: !!(process.env.GOOGLE_OAUTH_CLIENT_ID && process.env.GOOGLE_OAUTH_CLIENT_SECRET),
   /** Send a user command / chat turn to the orchestrator. */

@@ -8,7 +8,7 @@
  * injected `emit` callback (see index.ts), so IPC is only inbound commands
  * plus a couple of read queries.
  */
-import { app, ipcMain, type BrowserWindow } from 'electron';
+import { app, BrowserWindow, ipcMain } from 'electron';
 import type {
   ApprovalDecision,
   ProjectRecord,
@@ -73,6 +73,7 @@ function sanitizeCardPatch(patch: unknown): CardPatch {
     if (typeof p[k] === 'number' && Number.isFinite(p[k])) out[k] = p[k] as number;
   }
   if (typeof p.visible === 'boolean') out.visible = p.visible;
+  if (typeof p.displayId === 'string' && p.displayId) out.displayId = p.displayId;
   return out;
 }
 
@@ -205,11 +206,27 @@ export function registerIpc(core: Orchestrator, emit: (e: StreamEvent) => void):
 }
 
 /**
- * Window controls for the frameless overlay — without these (and the draggable
- * top-bar in the UI) a frameless always-on-top window would trap the user.
+ * Window controls for the frameless overlays — without these (and the draggable
+ * top-bar in the UI) frameless always-on-top windows would trap the user.
+ * Operate on EVERY window so hide/toggle cover all per-display overlays at once.
+ *
+ * `overlay:setInteractive` is the click-through pivot: each overlay starts
+ * click-through (setIgnoreMouseEvents(true,{forward})); the renderer flips its
+ * own window interactive while the pointer is over a card and back to
+ * click-through when it leaves, so empty desktop stays clickable behind Alfred.
  */
-export function registerWindowIpc(win: BrowserWindow): void {
-  ipcMain.on('window:hide', () => win.hide());
+export function registerWindowIpc(): void {
+  const all = () => BrowserWindow.getAllWindows();
+  ipcMain.on('window:hide', () => all().forEach((w) => w.hide()));
   ipcMain.on('window:quit', () => app.quit());
-  ipcMain.on('window:toggle', () => (win.isVisible() ? win.hide() : win.show()));
+  ipcMain.on('window:toggle', () => {
+    const anyVisible = all().some((w) => w.isVisible());
+    all().forEach((w) => (anyVisible ? w.hide() : w.show()));
+  });
+  ipcMain.on('overlay:setInteractive', (e, interactive: unknown) => {
+    const win = BrowserWindow.fromWebContents(e.sender);
+    // forward:true keeps move events flowing so the renderer can detect the
+    // pointer re-entering a card and flip back to interactive.
+    win?.setIgnoreMouseEvents(!interactive, { forward: true });
+  });
 }

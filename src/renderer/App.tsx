@@ -17,7 +17,7 @@ import { ChatLog } from './components/ChatLog.tsx';
 import { ProjectList } from './components/ProjectList.tsx';
 import { ApprovalPrompt } from './components/ApprovalPrompt.tsx';
 import { DraggableCard } from './components/DraggableCard.tsx';
-import { clampBox, tileLayout, type Bounds } from '../main/core/layout.ts';
+import { clampBox, tileLayout, cardOnDisplay, DISPLAY_MAIN, type Bounds } from '../main/core/layout.ts';
 import type {
   AgentStatus,
   ApprovalDecision,
@@ -28,6 +28,7 @@ import type {
   CardPatch,
   ChatMessage,
   CostSnapshot,
+  DisplayInfo,
   ProjectRecord,
   StreamEvent,
   UiNode,
@@ -90,6 +91,13 @@ export default function App() {
   const [dictation, setDictation] = useState<{ text: string; seq: number }>({ text: '', seq: 0 });
 
   const [bounds, setBounds] = useState<Bounds | null>(null);
+  const [displays, setDisplays] = useState<DisplayInfo[]>([]);
+
+  // This window's display identity (baked in at creation via --display-id).
+  // Empty displayId = windowed / single-window fallback → no per-display filter.
+  const myDisplayId = alfred.displayId ?? '';
+  const isPrimary = alfred.isPrimary ?? false;
+  const overlay = alfred.overlay ?? true;
 
   const logRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLDivElement>(null);
@@ -166,10 +174,49 @@ export default function App() {
     return () => ro.disconnect();
   }, []);
 
+  // Click-through pivot (overlay windows only): the window starts click-through
+  // so empty desktop stays clickable; while the pointer is over a card / the top
+  // strip we flip it interactive, and back to click-through on leave. forward:true
+  // (main side) keeps mousemove flowing so we can detect re-entry.
+  useEffect(() => {
+    if (!overlay) return;
+    let interactive = true; // force the first setInteractive(false) to fire
+    const INTERACTIVE = '.dcard, .topstrip, .top-hint, .alerts, .overlay';
+    const set = (v: boolean) => {
+      if (v === interactive) return;
+      interactive = v;
+      alfred.setInteractive(v);
+    };
+    const onMove = (e: MouseEvent) => set(!!(e.target as HTMLElement | null)?.closest(INTERACTIVE));
+    window.addEventListener('mousemove', onMove);
+    set(false); // begin click-through
+    return () => window.removeEventListener('mousemove', onMove);
+  }, [overlay]);
+
+  // Physical displays for the "move card to next monitor" control. Rare to
+  // change, so refresh on mount and whenever this window regains focus.
+  useEffect(() => {
+    const refresh = () => alfred.listDisplays?.().then(setDisplays).catch(() => {});
+    refresh();
+    window.addEventListener('focus', refresh);
+    return () => window.removeEventListener('focus', refresh);
+  }, []);
+
+  /** Send a card to the next physical display (cycles). displayId sentinels resolve to the primary. */
+  const moveToNextDisplay = (card: CardLayout) => {
+    if (displays.length < 2) return;
+    const primaryId = displays.find((d) => d.primary)?.id;
+    const current = card.displayId === DISPLAY_MAIN ? primaryId : card.displayId;
+    const i = Math.max(0, displays.findIndex((d) => d.id === current));
+    patchCard(card.id, { displayId: displays[(i + 1) % displays.length].id });
+  };
+
   /** Recoloca todos os cards (incl. escondidos) numa grelha limpa ajustada à janela. */
   const arrangeAll = () => {
     if (!bounds) return;
-    const list = cardsRef.current;
+    // Only this window's own cards: tiling every display's cards into one
+    // window's bounds would drag other monitors' cards to bogus positions.
+    const list = cardsRef.current.filter((c) => cardOnDisplay(c.displayId, myDisplayId, isPrimary));
     const tiles = tileLayout(list.map((c) => c.id), bounds);
     list.forEach((c, i) => patchCard(c.id, { ...tiles[i], visible: true }));
   };
@@ -187,6 +234,10 @@ export default function App() {
   useEffect(() => {
     if (!bounds) return;
     for (const c of cardsRef.current) {
+      // Only clamp cards that belong to THIS window's display against its
+      // bounds — otherwise two differently-sized monitors' windows keep
+      // rewriting each other's cards (write storm + cross-display corruption).
+      if (!cardOnDisplay(c.displayId, myDisplayId, isPrimary)) continue;
       const fit = clampBox(c, bounds);
       if (fit.x !== c.x || fit.y !== c.y || fit.w !== c.w || fit.h !== c.h) patchCard(c.id, fit);
     }
@@ -726,7 +777,7 @@ export default function App() {
 
       <div className="canvas" ref={canvasRef}>
         {cards
-          .filter((c) => c.visible)
+          .filter((c) => c.visible && cardOnDisplay(c.displayId, myDisplayId, isPrimary))
           .map((c) => {
             const { meta, body } = cardParts(c.id);
             // Defensive: never render a card off-screen, whatever the store/AI wrote.
@@ -739,6 +790,7 @@ export default function App() {
                 onChange={(patch) => patchCard(c.id, patch)}
                 onFocus={() => focusCard(c.id)}
                 onHide={() => patchCard(c.id, { visible: false })}
+                onMoveDisplay={displays.length > 1 ? () => moveToNextDisplay(c) : undefined}
               >
                 {body}
               </DraggableCard>

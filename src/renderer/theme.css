@@ -16,6 +16,20 @@
   --panel-border: rgba(64, 224, 255, 0.16);
   --glass: linear-gradient(160deg, rgba(18, 28, 46, 0.55), rgba(8, 12, 22, 0.45));
   --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+
+  /* Aliases so the inline-styled components (CommandBar, ApprovalPrompt,
+     ChatLog, ProjectList, Markdown) resolve onto the neon design palette
+     instead of their generic Tailwind fallbacks. Green === lime, per the
+     "active is green" convention. */
+  --neon-cyan: var(--cyan);
+  --neon-green: var(--lime);
+  --neon-amber: var(--amber);
+  --neon-red: var(--red);
+  --neon-magenta: var(--magenta);
+  --text-dim: var(--muted);
+  --border: var(--panel-border);
+  --panel: rgba(9, 14, 24, 0.9);       /* command bar / approval dialog surface */
+  --panel-2: rgba(4, 9, 17, 0.55);     /* nested boxes: chat bubbles, code, args */
 }
 
 * { box-sizing: border-box; }
@@ -45,6 +59,8 @@ body {
 @keyframes scan    { 0% { transform: translateY(-120%); } 100% { transform: translateY(120%); } }
 @keyframes wave    { 0%, 100% { transform: scaleY(0.14); } 50% { transform: scaleY(1); } }
 @keyframes sweep   { 0% { transform: translateX(-140%); } 100% { transform: translateX(140%); } }
+/* Status glyph / mic pulse used by CommandBar (inline `animation`). */
+@keyframes alfred-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
 @keyframes alarm {
   0%, 100% { box-shadow: 0 0 0 1px rgba(255, 59, 82, 0.5), 0 0 26px rgba(255, 59, 82, 0.25); }
   50%      { box-shadow: 0 0 0 1px rgba(255, 59, 82, 0.95), 0 0 44px rgba(255, 59, 82, 0.6); }

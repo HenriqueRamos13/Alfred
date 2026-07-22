@@ -86,11 +86,15 @@ export function CommandBar({
         display: 'flex',
         alignItems: 'center',
         gap: 10,
-        background: 'var(--panel, #0e1420)',
-        border: `1px solid ${killed ? 'var(--neon-red, #f87171)' : 'var(--neon-cyan, #22d3ee)'}`,
-        borderRadius: 8,
-        padding: '8px 12px',
-        boxShadow: '0 0 14px -8px var(--neon-cyan, #22d3ee)',
+        background: 'var(--glass)',
+        backdropFilter: 'blur(16px)',
+        WebkitBackdropFilter: 'blur(16px)',
+        border: `1px solid ${killed ? 'var(--neon-red, #f87171)' : 'rgba(64,224,255,0.4)'}`,
+        borderRadius: 12,
+        padding: '10px 14px',
+        boxShadow: killed
+          ? 'inset 0 1px 0 rgba(255,255,255,0.06), 0 0 22px rgba(255,59,82,0.28)'
+          : 'inset 0 1px 0 rgba(255,255,255,0.06), 0 0 26px rgba(53,229,255,0.18)',
       }}
     >
       <span
