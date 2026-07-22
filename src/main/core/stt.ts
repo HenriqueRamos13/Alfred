@@ -21,6 +21,32 @@ import type { StreamEvent } from './types.ts';
 
 let proc: ChildProcess | null = null;
 
+/**
+ * Relay a child's line-delimited JSON stdout to `onMessage`, one object per line.
+ * Partial lines are buffered across chunks; blank/unparseable lines are skipped.
+ * Shared by the STT and wake-word helpers (identical protocol).
+ */
+export function readJsonLines(
+  stream: NodeJS.ReadableStream,
+  onMessage: (msg: Record<string, unknown>) => void,
+): void {
+  let buf = '';
+  stream.on('data', (chunk: Buffer) => {
+    buf += chunk.toString();
+    let nl: number;
+    while ((nl = buf.indexOf('\n')) >= 0) {
+      const line = buf.slice(0, nl).trim();
+      buf = buf.slice(nl + 1);
+      if (!line) continue;
+      try {
+        onMessage(JSON.parse(line));
+      } catch {
+        /* not JSON — skip this line */
+      }
+    }
+  });
+}
+
 /** Locate the compiled helper: dev (cwd/native) or packaged (Resources/native). */
 export function findSttBinary(): string | null {
   const rel = join('native', 'alfred-stt');
@@ -60,24 +86,10 @@ export function startListening(emit: (e: StreamEvent) => void, sessionId: string
     emit({ kind: 'stt.final', sessionId, text });
   };
 
-  let buf = '';
-  child.stdout.on('data', (chunk: Buffer) => {
-    buf += chunk.toString();
-    let nl: number;
-    while ((nl = buf.indexOf('\n')) >= 0) {
-      const line = buf.slice(0, nl).trim();
-      buf = buf.slice(nl + 1);
-      if (!line) continue;
-      let msg: { partial?: unknown; final?: unknown; error?: unknown };
-      try {
-        msg = JSON.parse(line);
-      } catch {
-        continue;
-      }
-      if (typeof msg.partial === 'string') emit({ kind: 'stt.partial', sessionId, text: msg.partial });
-      else if (typeof msg.final === 'string') finalOnce(msg.final);
-      else if (typeof msg.error === 'string') emit({ kind: 'error', sessionId, message: `voice input: ${msg.error}` });
-    }
+  readJsonLines(child.stdout, (msg) => {
+    if (typeof msg.partial === 'string') emit({ kind: 'stt.partial', sessionId, text: msg.partial });
+    else if (typeof msg.final === 'string') finalOnce(msg.final);
+    else if (typeof msg.error === 'string') emit({ kind: 'error', sessionId, message: `voice input: ${msg.error}` });
   });
 
   child.stderr.on('data', (d: Buffer) => console.error('[alfred] stt:', d.toString().trim()));

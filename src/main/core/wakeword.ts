@@ -19,7 +19,7 @@
  */
 import { spawn, type ChildProcess } from 'node:child_process';
 import type { StreamEvent } from './types.ts';
-import { findSttBinary } from './stt.ts';
+import { findSttBinary, readJsonLines } from './stt.ts';
 
 let proc: ChildProcess | null = null;
 
@@ -47,26 +47,12 @@ export function startWakeword(emit: (e: StreamEvent) => void, sessionId: string)
   const child = spawn(bin, ['--wake', '--locale', locale], { stdio: ['pipe', 'pipe', 'pipe'] });
   proc = child;
 
-  let buf = '';
-  child.stdout.on('data', (chunk: Buffer) => {
-    buf += chunk.toString();
-    let nl: number;
-    while ((nl = buf.indexOf('\n')) >= 0) {
-      const line = buf.slice(0, nl).trim();
-      buf = buf.slice(nl + 1);
-      if (!line) continue;
-      let msg: { wake?: unknown; final?: unknown; error?: unknown };
-      try {
-        msg = JSON.parse(line);
-      } catch {
-        continue;
-      }
-      if (msg.wake === true) emit({ kind: 'wake.detected', sessionId });
-      // Route the command through the mic path: fill the input, do not auto-send.
-      else if (typeof msg.final === 'string' && msg.final.trim())
-        emit({ kind: 'stt.final', sessionId, text: msg.final });
-      else if (typeof msg.error === 'string') emit({ kind: 'error', sessionId, message: `wake word: ${msg.error}` });
-    }
+  readJsonLines(child.stdout, (msg) => {
+    if (msg.wake === true) emit({ kind: 'wake.detected', sessionId });
+    // Route the command through the mic path: fill the input, do not auto-send.
+    else if (typeof msg.final === 'string' && msg.final.trim())
+      emit({ kind: 'stt.final', sessionId, text: msg.final });
+    else if (typeof msg.error === 'string') emit({ kind: 'error', sessionId, message: `wake word: ${msg.error}` });
   });
 
   child.stderr.on('data', (d: Buffer) => console.error('[alfred] wakeword:', d.toString().trim()));

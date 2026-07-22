@@ -117,10 +117,6 @@ export class BudgetTracker {
     );
   }
 
-  step(): void {
-    this.steps++;
-  }
-
   /**
    * Persist token usage from a model call and return the fresh snapshot. When
    * `model` is given, also records the per-model tokens + estimated USD cost

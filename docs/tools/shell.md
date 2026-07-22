@@ -25,7 +25,9 @@ that truncates/errors. Kill signal on timeout is `SIGKILL`.
 The destructive heuristic (regex, errs toward asking) matches, among others:
 `rm`, `mkfs`, `dd`, `shutdown`, `reboot`, `killall`, `kill -9`, redirection to
 `/dev/`, `sudo`, `chmod -R`, `chown -R`, `git reset --hard`, `git clean -f`,
-`git push --force`, fork bombs, `npm publish`, `mv … /`. It is a heuristic, not
+`git push --force`, fork bombs, `npm publish`, `mv … /`, and package-manager
+mutations (`npm/pnpm/yarn/pip/brew/apt/gem/cargo/go … install|add|remove|uninstall`).
+It is a heuristic, not
 a parser: expect occasional false positives (harmless — you just get an approval
 prompt) and do not assume it catches every dangerous form.
 

@@ -10,6 +10,15 @@ import { type ReactNode, createElement } from 'react';
 
 const INLINE = /(\*\*[^*]+\*\*|\*[^*]+\*|`[^`]+`|\[[^\]]+\]\([^)]+\))/g;
 
+/**
+ * Only allow http/https/mailto link targets. Markdown here can be derived from
+ * untrusted web/email content, so a `javascript:`/`data:` href must never reach
+ * an <a> in this Electron renderer. Returns the URL when safe, else null.
+ */
+function safeHref(url: string): string | null {
+  return /^(https?:|mailto:)/i.test(url.trim()) ? url.trim() : null;
+}
+
 function inline(text: string): ReactNode[] {
   return text.split(INLINE).map((part, i) => {
     if (part.startsWith('**') && part.endsWith('**')) return <strong key={i}>{part.slice(2, -2)}</strong>;
@@ -21,12 +30,16 @@ function inline(text: string): ReactNode[] {
         </code>
       );
     const link = /^\[([^\]]+)\]\(([^)]+)\)$/.exec(part);
-    if (link)
+    if (link) {
+      const href = safeHref(link[2]);
+      // Unsafe scheme (javascript:, data:, …) → render the label as plain text.
+      if (!href) return link[1];
       return (
-        <a key={i} href={link[2]} target="_blank" rel="noreferrer" style={{ color: 'var(--neon-cyan, #22d3ee)' }}>
+        <a key={i} href={href} target="_blank" rel="noreferrer" style={{ color: 'var(--neon-cyan, #22d3ee)' }}>
           {link[1]}
         </a>
       );
+    }
     return part;
   });
 }

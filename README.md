@@ -53,11 +53,20 @@ Electron, three processes:
 | **preload**     | `contextBridge` safe API (`contextIsolation` on, `nodeIntegration` off) |
 | **renderer** (React) | control window + generative UI surface |
 
+It follows a **hexagonal (ports & adapters)** design: a provider-agnostic
+domain core (`src/main/core` — orchestrator, governance, budget, memory,
+curator, layout, providers) surrounded by driven adapters (`src/main/tools/*`,
+the model providers, voice, the macOS Keychain, SQLite) and driving adapters
+(the Electron shell, IPC bridge, and React UI). The full map, an ASCII data-flow
+diagram, and "how to extend" guides are in **[ARCHITECTURE.md](ARCHITECTURE.md)**.
+
 Everything the AI can render maps through a whitelist:
 `Panel, StatTile, Card, DataTable, Markdown, LogFeed, AgentStatus, ProjectList`.
 App-driven UI (`CommandBar, ChatLog, ApprovalPrompt`) is not AI-renderable.
 
 Data lives in `data/` (SQLite `alfred.db`, browser profile) — git-ignored.
+For the agent-facing operating manual (capabilities, governance summary, task
+routing) see **[AGENTS.md](AGENTS.md)** and the `docs/` tree.
 
 ## Brains / Providers
 
@@ -124,6 +133,43 @@ when the permission or an optional CLI is missing:
 
 In `npm run dev` these attach to the **Electron** binary; a packaged build
 attaches them to Alfred itself.
+
+## Environment variables
+
+All configuration is via `.env` (loaded at boot; see `.env.example`). Nothing is
+required to *launch* Alfred, but at least one brain must be enabled to get a
+reply. Keys are read only from `process.env`, never logged, and masked in the
+audit.
+
+| Variable | Default | What it does |
+|----------|---------|--------------|
+| `ALFRED_PROVIDER` | `anthropic` | Default active brain: `anthropic` \| `openai` \| `deepseek`. |
+| `ANTHROPIC_API_KEY` | — | Enables the Anthropic brain (a key containing `xxxx` is treated as a placeholder = disabled). |
+| `ANTHROPIC_MODEL` | `claude-sonnet-5` | Anthropic model id. |
+| `OPENAI_API_KEY` | — | Enables the OpenAI/ChatGPT brain. |
+| `OPENAI_MODEL` | `gpt-4o` | OpenAI model id. |
+| `DEEPSEEK_API_KEY` | — | Enables the DeepSeek brain. |
+| `DEEPSEEK_MODEL` | `deepseek-v4-flash` | DeepSeek model id (`deepseek-v4-pro` also priced). |
+| `ALFRED_MODEL` | — | Legacy alias for `ANTHROPIC_MODEL` (used only if it is unset). |
+| `ALFRED_CURATOR_MODEL` | cheapest enabled brain | Model the memory curator uses (usually DeepSeek by price). |
+| `ALFRED_WORKSPACE` | `~/AlfredWorkspace` | Where projects + memory live. |
+| `ALFRED_DAILY_TOKEN_BUDGET` | `2000000` | **Hard** daily token kill-switch across all sessions. |
+| `ALFRED_DAILY_USD_BUDGET` | unset | **Soft** daily USD warning (estimated); warns, never blocks. |
+| `ALFRED_STEP_CAP` | `40` | Max tool/model steps per task. |
+| `ALFRED_PRICING_JSON` | — | Path to a pricing-override JSON (`{ "model": { inputPerM, outputPerM } }`); else `data/pricing.json`. |
+| `ALFRED_WINDOW_MODE` | `overlay` | `overlay` (frameless click-through HUD) or `windowed` (classic window). |
+| `ALFRED_SPAN_DISPLAYS` | `0` | `1`/`true` → one overlay spans the whole virtual desktop (see multi-monitor note). |
+| `ALFRED_AUTOHIDE_TOP` | on | `0` disables auto-hiding the top command/toolbar strip. |
+| `ALFRED_TTS_ENGINE` | `say` | Voice-output engine: `say` (macOS, pt-BR) or `kokoro` (English). |
+| `ALFRED_TTS_VOICE` | `Luciana` / `af_heart` | Voice name (per engine). |
+| `ALFRED_TTS_RATE` | — | `say` speaking rate (words/min). |
+| `ALFRED_TTS_DTYPE` | `fp32` | `kokoro` precision: `q8` \| `q4` \| `fp16` \| `fp32`. |
+| `ALFRED_PREWARM_TTS` | `0` | `setup.sh`: `1` pre-downloads the Kokoro weights. |
+| `ALFRED_STT_LOCALE` | `pt-BR` | Speech-recognition language (e.g. `en-US`, `pt-PT`). |
+| `ALFRED_STT_SILENCE` | `2.0` | Silence (seconds) that ends a push-to-talk session. |
+| `ALFRED_WAKEWORD` | `alfred` | Wake trigger (also matches the ASR variant `alfredo`). |
+| `GOOGLE_OAUTH_CLIENT_ID` | — | Google OAuth client for read-only Gmail (see below). |
+| `GOOGLE_OAUTH_CLIENT_SECRET` | — | Google OAuth client secret. |
 
 ## Voice input (speech-to-text)
 
@@ -250,6 +296,38 @@ OAuth client:
 6. In Alfred, ask it to *connect Gmail*; it runs the OAuth flow and stores the
    token in your Keychain. The token never touches disk.
 
+## Security & governance model
+
+Every tool call is classified into a **risk tier** and the rails are **enforced
+in code** (`src/main/core/governance.ts` + the orchestrator), not by prompt text:
+
+- **T0** read/search/list · **T1** reversible workspace writes — run freely.
+- **T2** delete / send / install / egress / delegation · **T3** money /
+  credentials — block on a **human approval** shown in the UI (5-minute timeout =
+  deny).
+- **Trifecta-lite**: if a session has read untrusted content *and* holds private
+  data *and* is about to send data outward, that egress is escalated to an
+  approval — a guard against exfiltration.
+- **Kill-switch + caps**: a hard daily token budget, a per-task step cap, and
+  identical-call loop detection hard-stop a task. These are **not** bypassed by
+  DANGEROUS mode.
+- **DANGEROUS mode** (user-only toggle) bypasses *approvals* — never the
+  kill-switch, step cap, loop detection, or per-tool constraints.
+- Secrets live in the macOS Keychain and are masked in the audit; every call is
+  audited (tool, masked args, tier, status, provenance).
+
+Details: [docs/governance/risk-tiers.md](docs/governance/risk-tiers.md),
+[approval-flow.md](docs/governance/approval-flow.md),
+[dangerous-mode.md](docs/governance/dangerous-mode.md).
+
+> **Honest limitations.** Alfred targets **Intel** Macs, so STT is Apple's
+> classic `SFSpeechRecognizer` (not the Apple-Silicon `SpeechAnalyzer`), and the
+> account-free wake word is best-effort — less reliable than a dedicated engine
+> like Porcupine. The `filesystem`/`shell` tools have **no sandbox** (an absolute
+> path or command can reach anything the OS user can); the approval rails, not a
+> jail, are the boundary. These are acceptable for a **single-user, local dev**
+> tool and would need hardening before any multi-user or hosted use.
+
 ## Development
 
 ```bash
@@ -259,6 +337,9 @@ npm run rebuild    # rebuild native modules for Electron
 npm test           # pure-logic tests (node --test, no native deps)
 npm run typecheck  # tsc --noEmit
 ```
+
+Contributing (how to run, test, and the repo layout):
+[CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## License
 

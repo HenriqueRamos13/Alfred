@@ -4,6 +4,7 @@ import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { gmail as gmailApi, auth } from '@googleapis/gmail';
 import type { gmail_v1 } from '@googleapis/gmail';
+import { denialError } from '../core/governance.ts';
 import type { Tool, ToolCtx } from './types.ts';
 
 type OAuth2Client = InstanceType<typeof auth.OAuth2>;
@@ -136,8 +137,7 @@ export const gmail: Tool<Args> = {
           tier: 'T2',
           reason: 'Connect a Gmail account (read-only) via Google consent',
         });
-        if (approval.decision !== 'approve')
-          return { ok: false, error: approval.timedOut ? 'Approval timed out — denied' : 'Denied by user' };
+        if (approval.decision !== 'approve') return { ok: false, error: denialError(approval) };
 
         const { tokens, email } = await oauthConnect(clientId, clientSecret);
         await ctx.secrets.set(`gmail:${email}`, JSON.stringify(tokens));

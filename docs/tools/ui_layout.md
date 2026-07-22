@@ -8,7 +8,7 @@ latest manual placement. Source: tool `src/main/tools/uiLayout.ts`, logic
 ## Ops
 | op | args | does |
 |----|------|------|
-| `get_layout` | — | list every card `{ id, title, x, y, w, h, visible }` + the canvas `viewport { w, h }` |
+| `get_layout` | — | list every card `{ id, title, x, y, w, h, visible, displayId }` + the canvas `viewport { w, h }` |
 | `move_card` | `id`, `x`, `y` | reposition (pixels from canvas top-left) |
 | `resize_card` | `id`, `w`, `h` | resize |
 | `show_card` | `id` | make visible |
@@ -19,6 +19,15 @@ latest manual placement. Source: tool `src/main/tools/uiLayout.ts`, logic
 ## Cards
 Canonical ids: `conversation`, `surface`, `brains`, `cost`, `projects`,
 `accounts`, `activity`.
+
+## Multi-monitor
+In overlay mode Alfred runs **one click-through HUD per display** and each card
+carries a `displayId`: a concrete display id, or the sentinel `main` (the primary
+display) / `all` (mirrored on every display). `x`/`y` are relative to that card's
+display canvas. **Moving a card between monitors is a user action** (the "move to
+next monitor" control in the UI) — this tool positions cards *within* their
+current display's canvas; it does not reassign `displayId`. A card on an unplugged
+monitor falls back to the primary automatically.
 
 ## Behaviour & limits
 - **Call `get_layout` first** — the user drags cards too, so positions change.

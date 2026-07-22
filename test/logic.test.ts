@@ -13,10 +13,17 @@ import {
   classifyAction,
   isEgressTool,
   trifectaImpact,
+  fullTrifecta,
   maskSecrets,
   approvalKey,
   isAutoApproved,
+  denialError,
 } from '../src/main/core/governance.ts';
+import { readJsonLines } from '../src/main/core/stt.ts';
+import { shell } from '../src/main/tools/shell.ts';
+import { filesystem } from '../src/main/tools/filesystem.ts';
+import { browser } from '../src/main/tools/browser.ts';
+import { delegate } from '../src/main/tools/delegate.ts';
 import {
   dayKey,
   makeBudget,
@@ -632,4 +639,186 @@ test('parseDisplays — resolution + main flag, never throws on garbage', () => 
   ]);
   assert.deepEqual(parseDisplays('not json'), []);
   assert.deepEqual(parseDisplays('{}'), []);
+});
+
+// ── tool risk() gates — the authoritative per-tool classifier (overrides classifyAction) ──
+
+test('shell.risk — destructive commands escalate to T2, ordinary ones stay T1', () => {
+  const risk = (command: string) => shell.risk!({ command } as never);
+  // reversible / read-only work
+  for (const c of ['ls -la', 'git status --porcelain', 'echo hi > out.txt', 'cat file', 'node build.js'])
+    assert.equal(risk(c), 'T1', `${c} should be T1`);
+  // destructive / irreversible
+  for (const c of ['rm -rf /tmp/x', 'sudo reboot', 'dd if=/dev/zero of=/dev/sda', 'git reset --hard HEAD~3', 'git push origin main --force', 'chmod -R 777 /'])
+    assert.equal(risk(c), 'T2', `${c} should be T2`);
+});
+
+test('shell.risk — package-manager installs/removals are T2 (supply-chain egress, per AGENTS.md)', () => {
+  const risk = (command: string) => shell.risk!({ command } as never);
+  for (const c of ['npm install left-pad', 'pnpm add react', 'yarn add -D vitest', 'pip install requests', 'pip3 install numpy', 'brew install jq', 'apt-get install curl', 'gem install rails', 'cargo add serde', 'go install ./...', 'npm uninstall foo', 'brew remove wget'])
+    assert.equal(risk(c), 'T2', `${c} should be T2`);
+  // non-mutating package-manager reads stay T1
+  for (const c of ['npm run build', 'npm test', 'brew list', 'pip list', 'cargo build'])
+    assert.equal(risk(c), 'T1', `${c} should be T1`);
+});
+
+test('filesystem.risk — read/list T0, mkdir/write T1, delete T2', () => {
+  const risk = (op: string) => filesystem.risk!({ op } as never);
+  assert.equal(risk('read'), 'T0');
+  assert.equal(risk('list'), 'T0');
+  assert.equal(risk('write'), 'T1');
+  assert.equal(risk('mkdir'), 'T1');
+  assert.equal(risk('delete'), 'T2');
+});
+
+test('browser.risk — navigation/reading T0, interaction T1', () => {
+  const risk = (op: string) => browser.risk!({ op } as never);
+  for (const op of ['goto', 'readText', 'screenshot']) assert.equal(risk(op), 'T0', `${op} should be T0`);
+  for (const op of ['click', 'type']) assert.equal(risk(op), 'T1', `${op} should be T1`);
+});
+
+test('delegate.risk — always T2 (delegates autonomous execution)', () => {
+  assert.equal(delegate.risk!({ task: 'anything' } as never), 'T2');
+  assert.equal(delegate.risk!({ task: 'read a file' } as never), 'T2');
+});
+
+// ── governance edge cases ────────────────────────────────────────────────────
+
+test('fullTrifecta — true only when all three flags are set', () => {
+  assert.equal(fullTrifecta({ readUntrusted: true, hasPrivate: true, canEgress: true }), true);
+  assert.equal(fullTrifecta({ readUntrusted: true, hasPrivate: true, canEgress: false }), false);
+  assert.equal(fullTrifecta({ readUntrusted: false, hasPrivate: true, canEgress: true }), false);
+  assert.equal(fullTrifecta({ readUntrusted: false, hasPrivate: false, canEgress: false }), false);
+});
+
+test('denialError — distinguishes timeout from an explicit deny', () => {
+  assert.match(denialError({ timedOut: true }), /timed out/i);
+  assert.match(denialError({ timedOut: false }), /denied/i);
+  assert.match(denialError({}), /denied/i);
+});
+
+test('maskSecrets — redacts nested arrays + more key shapes, leaves plain data', () => {
+  const masked = maskSecrets({
+    authorization: 'Bearer x',
+    Cookie: 'sid=1',
+    apiKey: 'k',
+    api_key: 'k2',
+    bearer: 'b',
+    items: [{ password: 'p' }, { name: 'ok' }],
+    count: 3,
+    nested: { refreshToken: 't', label: 'keep' },
+  }) as Record<string, unknown>;
+  assert.equal(masked.authorization, '***');
+  assert.equal(masked.Cookie, '***');
+  assert.equal(masked.apiKey, '***');
+  assert.equal(masked.api_key, '***');
+  assert.equal(masked.bearer, '***');
+  assert.equal((masked.items as Record<string, unknown>[])[0].password, '***');
+  assert.equal((masked.items as Record<string, unknown>[])[1].name, 'ok');
+  assert.equal(masked.count, 3);
+  assert.equal((masked.nested as Record<string, unknown>).refreshToken, '***');
+  assert.equal((masked.nested as Record<string, unknown>).label, 'keep');
+  // primitives pass through untouched
+  assert.equal(maskSecrets('plain'), 'plain');
+  assert.equal(maskSecrets(42), 42);
+});
+
+// ── stt/wakeword shared protocol reader (line-delimited JSON) ─────────────────
+
+/** Minimal stand-in for a ReadableStream: readJsonLines only ever calls .on('data', …). */
+function fakeStream() {
+  let handler: (c: Buffer) => void = () => {};
+  return {
+    on(_e: string, h: (c: Buffer) => void) {
+      handler = h;
+      return this as unknown as NodeJS.ReadableStream;
+    },
+    push(s: string) {
+      handler(Buffer.from(s));
+    },
+  };
+}
+
+test('readJsonLines — one object per newline, multiple in a single chunk', () => {
+  const s = fakeStream();
+  const got: Record<string, unknown>[] = [];
+  readJsonLines(s as unknown as NodeJS.ReadableStream, (m) => got.push(m));
+  s.push('{"partial":"he"}\n{"partial":"hello"}\n');
+  assert.deepEqual(got, [{ partial: 'he' }, { partial: 'hello' }]);
+});
+
+test('readJsonLines — buffers a partial line across chunks until its newline', () => {
+  const s = fakeStream();
+  const got: Record<string, unknown>[] = [];
+  readJsonLines(s as unknown as NodeJS.ReadableStream, (m) => got.push(m));
+  s.push('{"fin');
+  assert.equal(got.length, 0, 'no complete line yet');
+  s.push('al":"done"}\n');
+  assert.deepEqual(got, [{ final: 'done' }]);
+});
+
+test('readJsonLines — skips blank and non-JSON lines, keeps the good ones', () => {
+  const s = fakeStream();
+  const got: Record<string, unknown>[] = [];
+  readJsonLines(s as unknown as NodeJS.ReadableStream, (m) => got.push(m));
+  s.push('\n  \nnot json\n{"wake":true}\n');
+  assert.deepEqual(got, [{ wake: true }]);
+});
+
+// ── memory: parse/serialize round-trip + merge fallbacks (edge cases) ─────────
+
+test('serializeNote → parseNote round-trips with empty observations & relations', () => {
+  const note: Note = {
+    title: 'Empty Note', type: 'note', created: '2026-07-21', updated: '2026-07-21',
+    tags: [], observations: [], relations: [],
+  };
+  const round = parseNote(serializeNote(note));
+  assert.equal(round.title, 'Empty Note');
+  assert.deepEqual(round.tags, []);
+  assert.deepEqual(round.observations, []);
+  assert.deepEqual(round.relations, []);
+});
+
+test('parseFrontmatter — an empty tags array parses to []', () => {
+  const { data } = parseFrontmatter('---\ntitle: X\ntags: []\n---\nbody');
+  assert.deepEqual(data.tags, []);
+});
+
+test('mergeNotes — keeps base.created, inherits missing fields from base', () => {
+  const base: Note = {
+    title: 'Base', type: 'project', created: '2026-07-01', updated: '2026-07-01',
+    tags: ['a'], observations: [], relations: [],
+  };
+  // incoming lacks created & has blank title/type → base values survive.
+  const incoming: Note = {
+    title: '', type: '', updated: '2026-07-22',
+    tags: [], observations: [], relations: [],
+  } as Note;
+  const m = mergeNotes(base, incoming);
+  assert.equal(m.created, '2026-07-01'); // base creation preserved
+  assert.equal(m.updated, '2026-07-22'); // incoming bump wins
+  assert.equal(m.title, 'Base'); // blank incoming title → keep base
+  assert.equal(m.type, 'project'); // blank incoming type → keep base
+});
+
+// ── budget: signature stability + custom loop limit ──────────────────────────
+
+test('callSignature — stable across nested key reordering and array order-sensitive', () => {
+  assert.equal(
+    callSignature('t', { a: { x: 1, y: 2 }, list: [1, 2] }),
+    callSignature('t', { list: [1, 2], a: { y: 2, x: 1 } }),
+  );
+  // arrays are order-significant (not sorted)
+  assert.notEqual(callSignature('t', { list: [1, 2] }), callSignature('t', { list: [2, 1] }));
+});
+
+test('isLoop — honours a custom limit', () => {
+  const sig = callSignature('x', {});
+  assert.equal(isLoop([sig], sig, 1), true); // 1 prior meets limit 1
+  assert.equal(isLoop([], sig, 1), false);
+  assert.equal(isLoop([sig, sig], sig, 5), false); // well under
+});
+
+test('costOf — zero usage costs nothing even for a known model', () => {
+  assert.equal(costOf('claude-sonnet-5', { inputTokens: 0, outputTokens: 0 }), 0);
 });

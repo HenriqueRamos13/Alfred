@@ -398,6 +398,9 @@ export class Orchestrator {
       return out.ok ? out.result ?? {} : { error: out.error };
     } catch (err) {
       const error = err instanceof Error ? err.message : String(err);
+      // Log the ORIGINAL error (stack) with context — the audit/UI keep only the
+      // message string, so without this the root cause is lost.
+      console.error(`[alfred] tool "${t.name}" threw (session ${ctx.sessionId}):`, err);
       this.audit({ toolName: t.name, args, tier, status: 'error', error, durationMs: Date.now() - started, note: approvalNote });
       ctx.emit({ kind: 'tool.end', sessionId: ctx.sessionId, toolName: t.name, status: 'error', error });
       return { error };
@@ -441,6 +444,26 @@ async function spawnClaudeConversation(prompt: string, cwd: string, resumeId?: s
   } catch {
     return { result: out.stdout.trim() };
   }
+}
+
+/**
+ * Cost snapshot for the claude-code brain: spend is billed by the subscription,
+ * not Alfred's estimator, so everything is zero and `external` is flagged. Shared
+ * by the live turn path and the startup read so the COST card matches.
+ */
+function externalCostSnapshot(dailyTokenCap: number): CostSnapshot {
+  const zero = { inputTokens: 0, outputTokens: 0, tokens: 0, usd: 0 };
+  return {
+    activeBrain: 'claude-code',
+    activeModel: 'claude -p',
+    day: dayKey(),
+    today: zero,
+    session: zero,
+    byModel: [],
+    dailyTokenCap,
+    overUsdBudget: false,
+    external: true,
+  };
 }
 
 /** Prepend recent persisted history to a claude prompt (cold-start continuity). */
@@ -714,20 +737,7 @@ export function createOrchestrator(opts: CreateOrchestratorOpts): OrchestratorHa
       });
     }
     // Spend is billed by the Claude Code subscription, not Alfred's estimator.
-    emit({
-      kind: 'cost',
-      snapshot: {
-        activeBrain: 'claude-code',
-        activeModel: 'claude -p',
-        day: dayKey(),
-        today: { inputTokens: 0, outputTokens: 0, tokens: 0, usd: 0 },
-        session: { inputTokens: 0, outputTokens: 0, tokens: 0, usd: 0 },
-        byModel: [],
-        dailyTokenCap: config.dailyTokenBudget,
-        overUsdBudget: false,
-        external: true,
-      },
-    });
+    emit({ kind: 'cost', snapshot: externalCostSnapshot(config.dailyTokenBudget) });
     emit({ kind: 'agent.status', sessionId, status: 'done' });
   }
 
@@ -870,19 +880,7 @@ export function createOrchestrator(opts: CreateOrchestratorOpts): OrchestratorHa
     getCost() {
       const brainId = activeBrainId();
       // claude-code spend is external (subscription) — mirror the turn-path shape.
-      if (brainId === 'claude-code') {
-        return {
-          activeBrain: 'claude-code',
-          activeModel: 'claude -p',
-          day: dayKey(),
-          today: { inputTokens: 0, outputTokens: 0, tokens: 0, usd: 0 },
-          session: { inputTokens: 0, outputTokens: 0, tokens: 0, usd: 0 },
-          byModel: [],
-          dailyTokenCap: config.dailyTokenBudget,
-          overUsdBudget: false,
-          external: true,
-        };
-      }
+      if (brainId === 'claude-code') return externalCostSnapshot(config.dailyTokenBudget);
       const brain = listBrains().find((b) => b.id === brainId);
       return costTracker.costSnapshot(brainId ?? '—', brain?.model ?? '—');
     },

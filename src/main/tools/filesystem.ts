@@ -1,5 +1,6 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
+import { denialError } from '../core/governance.ts';
 import type { Tool, ToolCtx } from './types.ts';
 
 type Op = 'read' | 'write' | 'list' | 'mkdir' | 'delete';
@@ -88,8 +89,7 @@ export const filesystem: Tool<Args> = {
               tier: 'T2',
               reason: `Overwrite existing file ${target}`,
             });
-            if (res.decision !== 'approve')
-              return { ok: false, error: res.timedOut ? 'Approval timed out — denied' : 'Denied by user' };
+            if (res.decision !== 'approve') return { ok: false, error: denialError(res) };
           }
           await fs.mkdir(path.dirname(target), { recursive: true });
           await fs.writeFile(target, a.content ?? '', 'utf8');
@@ -103,8 +103,7 @@ export const filesystem: Tool<Args> = {
             tier: 'T2',
             reason: `Delete ${target}${a.recursive ? ' (recursive)' : ''}`,
           });
-          if (res.decision !== 'approve')
-            return { ok: false, error: res.timedOut ? 'Approval timed out — denied' : 'Denied by user' };
+          if (res.decision !== 'approve') return { ok: false, error: denialError(res) };
           await fs.rm(target, { recursive: a.recursive ?? false, force: false });
           return { ok: true, result: { path: target, deleted: true } };
         }

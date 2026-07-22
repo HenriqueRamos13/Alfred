@@ -110,6 +110,11 @@ export function isAutoApproved(rules: readonly string[], toolName: string, args:
   return rules.includes(approvalKey(toolName, args));
 }
 
+/** Standard tool-facing error string for a denied/timed-out approval. */
+export function denialError(res: { timedOut?: boolean }): string {
+  return res.timedOut ? 'Approval timed out — denied' : 'Denied by user';
+}
+
 // ── audit ─────────────────────────────────────────────────────────────────────
 
 const SECRET_KEY = /token|secret|password|passwd|api[-_]?key|authorization|credential|cookie|bearer/i;
