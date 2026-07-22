@@ -255,6 +255,13 @@ body {
 }
 .dot.live { animation: breathe 1.4s ease-in-out infinite; }
 .panel-meta { font-size: 9px; letter-spacing: 1px; color: #4d6b80; }
+.panel-meta-btn {
+  font-size: 9px; letter-spacing: 1px; font-weight: 700;
+  background: transparent; color: #4d6b80;
+  border: 1px solid rgba(255, 59, 82, 0.3); border-radius: 4px;
+  padding: 2px 6px; cursor: pointer;
+}
+.panel-meta-btn:hover { color: var(--red); border-color: rgba(255, 59, 82, 0.6); }
 
 /* ── generative surface ────────────────────────────────────────────── */
 .surface-body { flex: 1; min-height: 0; overflow: auto; }

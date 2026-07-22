@@ -21,6 +21,7 @@ import type {
   StreamEvent,
 } from './core/types.ts';
 import type { BrainInfo } from './core/providers.ts';
+import type { FactoryResetInfo } from './core/orchestrator.ts';
 
 export interface Orchestrator {
   /** Run one command / chat turn; streams StreamEvents via the injected emit. */
@@ -36,6 +37,12 @@ export interface Orchestrator {
   setDangerousMode(on: boolean): boolean | Promise<boolean>;
   /** Clear all persisted auto-approve rules. */
   resetApprovals(): void;
+  /** Reset ONLY the main conversation (chat + claude-code session); keeps memory/projects. */
+  resetConversation(): void;
+  /** What a factory reset will erase (paths + counts), for the confirmation modal. */
+  factoryResetInfo(): FactoryResetInfo | Promise<FactoryResetInfo>;
+  /** Nuke everything Alfred knows. */
+  factoryReset(): Promise<void>;
   /** Manually run the memory curator (drain inbox → notes, rebuild MOCs/backlinks). */
   runCurator(): Promise<unknown>;
   listProjects(): ProjectRecord[] | Promise<ProjectRecord[]>;
@@ -201,6 +208,24 @@ export function registerIpc(core: Orchestrator, emit: (e: StreamEvent) => void):
       core.resetApprovals();
     } catch (err) {
       fail('reset approvals', err);
+    }
+  });
+  ipcMain.on('alfred:resetConversation', () => {
+    try {
+      core.resetConversation();
+    } catch (err) {
+      fail('reset conversation', err);
+    }
+  });
+  ipcMain.handle(
+    'alfred:factoryResetInfo',
+    guard('factory reset info', () => core.factoryResetInfo(), null as FactoryResetInfo | null),
+  );
+  ipcMain.handle('alfred:factoryReset', async () => {
+    try {
+      await core.factoryReset();
+    } catch (err) {
+      fail('factory reset', err);
     }
   });
   ipcMain.handle('alfred:runCurator', guard('run curator', () => core.runCurator(), null as unknown));

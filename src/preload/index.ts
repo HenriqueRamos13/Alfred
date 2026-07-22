@@ -15,6 +15,7 @@ import type {
   DisplayInfo,
 } from '../main/core/types.ts';
 import type { BrainInfo } from '../main/core/providers.ts';
+import type { FactoryResetInfo } from '../main/core/orchestrator.ts';
 import { gmailConfigured } from '../main/tools/gmail-config.ts';
 
 /** Read a `--key=value` flag from additionalArguments (per-window: --display-id/--primary/--overlay). */
@@ -53,6 +54,12 @@ const api = {
   setDangerousMode: (on: boolean): Promise<boolean> => ipcRenderer.invoke('alfred:setDangerousMode', on),
   /** Clear all persisted auto-approve rules. */
   resetApprovals: (): void => ipcRenderer.send('alfred:resetApprovals'),
+  /** Reset ONLY the main conversation (chat + claude-code session); keeps memory/projects. */
+  resetConversation: (): void => ipcRenderer.send('alfred:resetConversation'),
+  /** What a factory reset will erase (paths + counts) — drives the confirmation modal. */
+  factoryResetInfo: (): Promise<FactoryResetInfo | null> => ipcRenderer.invoke('alfred:factoryResetInfo'),
+  /** Nuke everything Alfred knows; the UI reloads on the factory.reset.done event. */
+  factoryReset: (): Promise<void> => ipcRenderer.invoke('alfred:factoryReset'),
   /** Manually run the memory curator (drain inbox → notes, rebuild MOCs/backlinks). */
   runCurator: (): Promise<unknown> => ipcRenderer.invoke('alfred:runCurator'),
   listProjects: (): Promise<ProjectRecord[]> => ipcRenderer.invoke('alfred:listProjects'),

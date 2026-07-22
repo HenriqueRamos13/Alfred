@@ -19,6 +19,8 @@ import { ApprovalPrompt } from './components/ApprovalPrompt.tsx';
 import { DraggableCard } from './components/DraggableCard.tsx';
 import { clampBox, tileLayout, cardOnDisplay, nextDisplayId, type Bounds } from '../main/core/layout.ts';
 import { initialDictation, dictationReduce } from '../main/core/dictation.ts';
+import { confirmMatches } from '../main/core/reset.ts';
+import type { FactoryResetInfo } from '../main/core/orchestrator.ts';
 import type {
   AgentStatus,
   ApprovalDecision,
@@ -85,6 +87,10 @@ export default function App() {
   const [activeBrain, setActiveBrain] = useState<string | null>(null);
   const [cards, setCards] = useState<CardLayout[]>([]);
   const [dangerous, setDangerous] = useState(false);
+  // Factory-reset modal: null = closed; the info object = open, listing what will be erased.
+  const [factoryInfo, setFactoryInfo] = useState<FactoryResetInfo | null>(null);
+  const [factoryConfirm, setFactoryConfirm] = useState('');
+  const [factoryBusy, setFactoryBusy] = useState(false);
   const [tts, setTts] = useState(false);
   const [wake, setWake] = useState(false);
   const [listening, setListening] = useState(false);
@@ -416,6 +422,15 @@ export default function App() {
         case 'cost':
           setCost(e.snapshot);
           break;
+        case 'conversation.reset':
+          setMessages([]);
+          setStreaming('');
+          pushLog({ tag: 'KERNEL', tone: 'amber', msg: 'conversation reset — chat cleared' });
+          break;
+        case 'factory.reset.done':
+          // Everything Alfred knew is gone; reload into the blank factory state.
+          window.location.reload();
+          break;
         case 'error':
           pushLog({ tag: 'ERROR', tone: 'red', msg: e.message });
           pushAlert(e.message);
@@ -482,6 +497,39 @@ export default function App() {
     pushLog({ tag: 'HITL', tone: 'lime', msg: 'auto-approve rules cleared' });
   };
 
+  const resetConversation = () => {
+    if (!window.confirm('Limpar a conversa atual? (memória, factos e projetos mantêm-se)')) return;
+    alfred.resetConversation();
+    setMessages([]); // optimistic; the conversation.reset event confirms across windows
+    setStreaming('');
+  };
+
+  const openFactoryReset = () => {
+    setFactoryConfirm('');
+    alfred
+      .factoryResetInfo()
+      .then((info) => info && setFactoryInfo(info))
+      .catch(() => {});
+  };
+
+  const confirmFactoryReset = () => {
+    if (!confirmMatches(factoryConfirm) || factoryBusy) return;
+    setFactoryBusy(true);
+    pushLog({ tag: 'KERNEL', tone: 'red', msg: '!! FACTORY RESET — erasing everything' });
+    alfred
+      .factoryReset()
+      .catch((err) => {
+        const m = err instanceof Error ? err.message : String(err);
+        pushLog({ tag: 'ERROR', tone: 'red', msg: m });
+        pushAlert(m);
+      })
+      .finally(() => {
+        setFactoryBusy(false);
+        setFactoryInfo(null);
+        // main emits factory.reset.done → the window reloads; this is the fallback.
+      });
+  };
+
   const toggleTts = () => {
     const next = !tts;
     setTts(next); // optimistic
@@ -517,7 +565,19 @@ export default function App() {
   const cardParts = (id: string): { meta?: ReactNode; body: ReactNode } => {
     switch (id) {
       case 'conversation':
-        return { body: <ChatLog messages={messages} streaming={streaming} /> };
+        return {
+          meta: (
+            <button
+              type="button"
+              className="panel-meta-btn no-drag"
+              onClick={resetConversation}
+              title="Clear this conversation (keeps memory, facts and projects)"
+            >
+              ⟲ RESET
+            </button>
+          ),
+          body: <ChatLog messages={messages} streaming={streaming} />,
+        };
       case 'surface':
         return {
           meta: <span className="panel-meta">{status.toUpperCase()}</span>,
@@ -761,6 +821,14 @@ export default function App() {
           </button>
           <button
             type="button"
+            className="topbar-btn danger no-drag"
+            onClick={openFactoryReset}
+            title="Factory reset — erase EVERYTHING Alfred knows (memory, DB, secrets, browser profile, projects)"
+          >
+            ⌫ FACTORY RESET
+          </button>
+          <button
+            type="button"
             className="topbar-btn no-drag"
             onClick={arrangeAll}
             title="Organise all cards into a clean grid"
@@ -846,6 +914,117 @@ export default function App() {
       {approval && (
         <div className="overlay">
           <ApprovalPrompt request={approval} onResolve={onResolve} />
+        </div>
+      )}
+
+      {factoryInfo && (
+        <div className="overlay">
+          <div
+            className="factory-reset no-drag"
+            role="alertdialog"
+            aria-label="Factory reset confirmation"
+            style={{
+              minWidth: 'min(560px, 92vw)',
+              maxWidth: 'min(560px, 92vw)',
+              background: 'var(--glass)',
+              backdropFilter: 'blur(16px)',
+              WebkitBackdropFilter: 'blur(16px)',
+              border: '1px solid var(--red)',
+              borderRadius: 14,
+              boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.06), 0 0 44px -6px var(--red)',
+              padding: 20,
+              fontFamily: 'var(--font-mono, ui-monospace, monospace)',
+              color: 'var(--text)',
+            }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
+              <span
+                style={{
+                  color: 'var(--red)',
+                  border: '1px solid var(--red)',
+                  borderRadius: 4,
+                  padding: '1px 6px',
+                  fontSize: 11,
+                  fontWeight: 700,
+                }}
+              >
+                DESTRUCTIVE
+              </span>
+              <span style={{ fontWeight: 600 }}>Factory reset</span>
+            </div>
+
+            <p style={{ fontSize: 13, margin: '0 0 12px', lineHeight: 1.5 }}>
+              Isto apaga <strong>tudo o que o Alfred sabe e tem</strong>. Irreversível. Vai eliminar:
+            </p>
+
+            <ul style={{ margin: '0 0 12px', paddingLeft: 18, fontSize: 12, lineHeight: 1.6 }}>
+              <li>
+                Base de dados (chat, audit, budget, índice de projetos, contas, layout, settings/toggles) —{' '}
+                <code>{factoryInfo.dbPath}</code>
+                <br />
+                <span style={{ color: 'var(--dim)' }}>
+                  {factoryInfo.counts.messages} mensagens · {factoryInfo.counts.projects} projetos (índice) ·{' '}
+                  {factoryInfo.counts.accounts} contas
+                </span>
+              </li>
+              {factoryInfo.paths.map((p) => (
+                <li key={p.path}>
+                  {p.label}
+                  <br />
+                  <code>{p.path}</code>
+                </li>
+              ))}
+              <li>
+                Segredos no Keychain (tokens Gmail, serviço "alfred") —{' '}
+                <span style={{ color: 'var(--dim)' }}>{factoryInfo.counts.secrets} conta(s)</span>
+              </li>
+            </ul>
+
+            <label style={{ display: 'block', fontSize: 12, marginBottom: 6 }}>
+              Escreve <strong>confirmar</strong> para ativar o botão:
+            </label>
+            <input
+              type="text"
+              className="no-drag"
+              value={factoryConfirm}
+              autoFocus
+              disabled={factoryBusy}
+              onChange={(ev) => setFactoryConfirm(ev.target.value)}
+              placeholder="confirmar"
+              style={{
+                width: '100%',
+                boxSizing: 'border-box',
+                background: 'var(--panel-2, #131b2b)',
+                border: `1px solid ${confirmMatches(factoryConfirm) ? 'var(--red)' : 'rgba(255,255,255,0.15)'}`,
+                borderRadius: 8,
+                padding: '8px 10px',
+                color: 'var(--text)',
+                fontFamily: 'inherit',
+                fontSize: 13,
+                marginBottom: 14,
+              }}
+            />
+
+            <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
+              <button
+                type="button"
+                className="topbar-btn no-drag"
+                disabled={factoryBusy}
+                onClick={() => setFactoryInfo(null)}
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                className="topbar-btn danger no-drag"
+                disabled={!confirmMatches(factoryConfirm) || factoryBusy}
+                onClick={confirmFactoryReset}
+                style={{ opacity: confirmMatches(factoryConfirm) && !factoryBusy ? 1 : 0.4 }}
+              >
+                {factoryBusy ? 'A apagar…' : 'Confirmar reset'}
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>

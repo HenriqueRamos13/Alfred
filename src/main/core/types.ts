@@ -270,6 +270,10 @@ export type StreamEvent =
   | { kind: 'agent.status'; sessionId: string; status: AgentStatus }
   | { kind: 'budget'; state: BudgetState }
   | { kind: 'cost'; snapshot: CostSnapshot }
+  // The main conversation was reset: the UI clears the chat (every window).
+  | { kind: 'conversation.reset'; sessionId: string }
+  // A factory reset completed: the UI reloads to a blank factory state.
+  | { kind: 'factory.reset.done'; sessionId: string }
   | { kind: 'error'; sessionId: string; message: string };
 
 export type AgentStatus = 'idle' | 'thinking' | 'tool' | 'awaiting-approval' | 'error' | 'done';

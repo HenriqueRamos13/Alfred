@@ -16,6 +16,7 @@
  */
 
 import { randomUUID } from 'node:crypto';
+import { rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { streamText, tool, jsonSchema, stepCountIs } from 'ai';
 import type { LanguageModel, ToolSet } from 'ai';
@@ -41,11 +42,12 @@ import { CAPABILITY_MANIFEST } from './manifest.ts';
 import { runCurator } from './curator.ts';
 import { createSecrets } from './secrets.ts';
 import { getProject, listProjects } from './projects.ts';
+import { factoryResetPaths } from './reset.ts';
 import { resolveProvider, listBrains, resolveActiveBrainId } from './providers.ts';
 import type { BrainInfo } from './providers.ts';
 import { getSetting, setSetting, insertMessage, getRecentMessages } from './db.ts';
 import { dayKey } from './budget.ts';
-import { spawnClaudeCli } from './claudeSpawn.ts';
+import { spawnClaudeCli, dangerousArgs } from './claudeSpawn.ts';
 import * as tts from './tts.ts';
 import * as stt from './stt.ts';
 import * as wakeword from './wakeword.ts';
@@ -341,8 +343,13 @@ interface ClaudeTurn {
   enoent?: boolean;
 }
 
-async function spawnClaudeConversation(prompt: string, cwd: string, resumeId?: string): Promise<ClaudeTurn> {
-  const args = ['-p', prompt, '--output-format', 'json'];
+async function spawnClaudeConversation(
+  prompt: string,
+  cwd: string,
+  dangerous: boolean,
+  resumeId?: string,
+): Promise<ClaudeTurn> {
+  const args = ['-p', prompt, '--output-format', 'json', ...dangerousArgs(dangerous)];
   if (resumeId) args.push('--resume', resumeId);
   const out = await spawnClaudeCli(args, { cwd });
   if (out.enoent) return { enoent: true };
@@ -404,6 +411,15 @@ export interface CreateOrchestratorOpts {
   windowControl?: { hide(): void; show(): void };
 }
 
+/** Exactly what a factory reset erases — surfaced to the confirmation modal. */
+export interface FactoryResetInfo {
+  /** Absolute directories removed from disk (confined to workspace + data dir). */
+  paths: { label: string; path: string }[];
+  /** The DB file whose tables are cleared (not deleted, so the handle stays valid). */
+  dbPath: string;
+  counts: { messages: number; projects: number; accounts: number; secrets: number };
+}
+
 export interface OrchestratorHandle {
   send(text: string): Promise<void>;
   /** Recent persisted chat messages (oldest→newest) for the UI to reload on open. */
@@ -415,6 +431,15 @@ export interface OrchestratorHandle {
   setDangerousMode(on: boolean): boolean;
   /** Clear all persisted auto-approve rules ("ask again next time"). */
   resetApprovals(): void;
+  /**
+   * Reset ONLY the main conversation: wipe chat history + the claude-code
+   * --resume session id (fresh next turn). Memory, facts and projects are kept.
+   */
+  resetConversation(): void;
+  /** What a factory reset will erase (paths + counts), for the confirmation modal. */
+  factoryResetInfo(): FactoryResetInfo;
+  /** Nuke everything Alfred knows (DB, memory, projects, browser profile, secrets). */
+  factoryReset(): Promise<void>;
   /** Manually run the memory curator (drain inbox → notes, rebuild MOCs/backlinks). */
   runCurator(): Promise<unknown>;
   listProjects(): ProjectRecord[];
@@ -677,7 +702,9 @@ export function createOrchestrator(opts: CreateOrchestratorOpts): OrchestratorHa
     // On a cold start (no resume id yet) seed the prompt with recent history so
     // continuity survives even the first turn; --resume carries it thereafter.
     const prompt = resumeId ? text : withHistoryPreamble(db, text);
-    const turn = await spawnClaudeConversation(prompt, config.workspace, resumeId);
+    // DANGEROUS mode wires through to `claude -p`: skip its own permission
+    // prompts + append a preamble so the brain never asks for confirmation.
+    const turn = await spawnClaudeConversation(prompt, config.workspace, isDangerous(), resumeId);
 
     if (turn.enoent) {
       emit({
@@ -817,6 +844,94 @@ export function createOrchestrator(opts: CreateOrchestratorOpts): OrchestratorHa
     },
     resetApprovals() {
       setSetting(db, 'auto_approve', '[]');
+    },
+    resetConversation() {
+      active?.abort();
+      // Clear the persisted chat + the claude-code --resume ids so the next turn
+      // starts a fresh session. Memory / facts / projects are untouched.
+      try {
+        db.prepare('DELETE FROM messages').run();
+        db.prepare("DELETE FROM settings WHERE key LIKE 'claude_session:%'").run();
+      } catch (err) {
+        console.error('[alfred] reset conversation failed:', err instanceof Error ? err.message : err);
+      }
+      emit({ kind: 'conversation.reset', sessionId });
+    },
+    factoryResetInfo() {
+      const count = (sql: string): number => {
+        try {
+          return (db.prepare(sql).get() as { n: number }).n;
+        } catch {
+          return 0;
+        }
+      };
+      const [memory, projectsDir, browserProfile] = factoryResetPaths(config.workspace, opts.dataDir);
+      return {
+        paths: [
+          { label: 'Memória (journal, factos, notas, mapas, inbox, index, preferences, house-rules)', path: memory },
+          { label: 'Projetos (ficheiros criados pelo Alfred)', path: projectsDir },
+          { label: 'Perfil do browser (logins/cookies)', path: browserProfile },
+        ],
+        dbPath: join(opts.dataDir, 'alfred.db'),
+        counts: {
+          messages: count('SELECT COUNT(*) AS n FROM messages'),
+          projects: count('SELECT COUNT(*) AS n FROM projects'),
+          accounts: count('SELECT COUNT(*) AS n FROM accounts'),
+          secrets: count('SELECT COUNT(*) AS n FROM accounts'),
+        },
+      };
+    },
+    async factoryReset() {
+      const log = (label: string, err: unknown): void =>
+        console.error(`[alfred] factory reset — ${label} failed:`, err instanceof Error ? err.message : err);
+
+      // 1. Halt everything that owns a resource: the running turn, TTS, the mic
+      //    (wake + manual), the browser and the MCP bridge. Best-effort each.
+      active?.abort();
+      tts.stop();
+      wakeSuppressed = true;
+      try {
+        wakeword.stopWakeword();
+      } catch (err) {
+        log('stop wakeword', err);
+      }
+      try {
+        stt.stopListening();
+      } catch (err) {
+        log('stop stt', err);
+      }
+      await browser.close().catch((err) => log('close browser', err));
+      await mcpBridge?.shutdown().catch((err) => log('shutdown mcp', err));
+      mcpBridge = null;
+
+      // 2. Delete Keychain secrets (service "alfred"). Read the refs BEFORE the
+      //    accounts table is cleared. delete() throws off-macOS → caught per key.
+      for (const acc of queryAccounts()) {
+        await ctx.secrets.delete(acc.secretRef).catch((err) => log(`delete secret ${acc.secretRef}`, err));
+      }
+
+      // 3. Clear every DB table (factory-empty). The file/handle stays valid —
+      //    the whole app holds this handle, so wiping rows is the robust reset.
+      try {
+        db.exec(
+          'DELETE FROM messages; DELETE FROM sessions; DELETE FROM audit; DELETE FROM budget;' +
+            ' DELETE FROM usage_by_model; DELETE FROM projects; DELETE FROM accounts;' +
+            ' DELETE FROM settings; DELETE FROM layout;',
+        );
+      } catch (err) {
+        log('clear database', err);
+      }
+
+      // 4. Remove the on-disk paths — CONFINED to workspace + data dir (reset.ts).
+      for (const p of factoryResetPaths(config.workspace, opts.dataDir)) {
+        await rm(p, { recursive: true, force: true }).catch((err) => log(`remove ${p}`, err));
+      }
+
+      // 5. Re-seed an empty memory scaffold so the app boots clean, not broken.
+      await ensureScaffold(config.workspace).catch((err) => log('ensure scaffold', err));
+
+      // 6. Tell the UI to reload into the blank factory state.
+      emit({ kind: 'factory.reset.done', sessionId });
     },
     listProjects() {
       return listProjects(db);

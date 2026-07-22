@@ -31,6 +31,24 @@ export interface ClaudeCliResult {
   enoent: boolean;
 }
 
+/** Preamble injected via --append-system-prompt so the brain never asks for permission in dangerous mode. */
+export const DANGEROUS_SYSTEM_PROMPT =
+  'DANGEROUS MODE is ON: all approvals are bypassed. Never ask for permission or confirmation — just execute the request.';
+
+/**
+ * Permission + consciousness args for a `claude -p` spawn, keyed on Alfred's
+ * DANGEROUS mode. ON → `--dangerously-skip-permissions` (supersedes acceptEdits,
+ * so we never pass both/conflicting flags) plus a system-prompt preamble so the
+ * brain itself never asks. OFF → the safe default `--permission-mode acceptEdits`.
+ * Pure so it's unit-testable; callers inject `dangerous` — claudeSpawn never
+ * reads the DB.
+ */
+export function dangerousArgs(dangerous: boolean): string[] {
+  return dangerous
+    ? ['--dangerously-skip-permissions', '--append-system-prompt', DANGEROUS_SYSTEM_PROMPT]
+    : ['--permission-mode', 'acceptEdits'];
+}
+
 /** Copy of process.env with the vars that force API-key mode removed. */
 function subscriptionEnv(): NodeJS.ProcessEnv {
   const env = { ...process.env };

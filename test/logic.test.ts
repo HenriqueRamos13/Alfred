@@ -26,6 +26,7 @@ import { shell } from '../src/main/tools/shell.ts';
 import { filesystem } from '../src/main/tools/filesystem.ts';
 import { browser } from '../src/main/tools/browser.ts';
 import { delegate } from '../src/main/tools/delegate.ts';
+import { dangerousArgs, DANGEROUS_SYSTEM_PROMPT } from '../src/main/core/claudeSpawn.ts';
 import { gmailConfigured } from '../src/main/tools/gmail-config.ts';
 import {
   dayKey,
@@ -37,6 +38,7 @@ import {
   isLoop,
 } from '../src/main/core/budget.ts';
 import { slugify } from '../src/main/core/projects.ts';
+import { confirmMatches, factoryResetPaths } from '../src/main/core/reset.ts';
 import {
   defaultProviderId,
   parseProviderSpec,
@@ -217,6 +219,22 @@ test('slugify produces filesystem-safe slugs', () => {
   assert.equal(slugify('  Weird__Name!! '), 'weird-name');
   assert.equal(slugify('Café Crème'), 'cafe-creme');
   assert.equal(slugify('already-good'), 'already-good');
+});
+
+// ── factory reset: confirmation gate + path confinement ─────────────────────
+
+test('confirmMatches — accepts "confirmar" case/accent/whitespace-insensitive, nothing else', () => {
+  for (const ok of ['confirmar', 'Confirmar', 'CONFIRMAR', '  confirmar  ', 'confirmár', 'CONFIRMÁR'])
+    assert.equal(confirmMatches(ok), true, ok);
+  for (const no of ['', 'confirm', 'confirma', 'sim', 'confirmar!', 'delete', 'confirmarr'])
+    assert.equal(confirmMatches(no), false, no);
+});
+
+test('factoryResetPaths — only workspace/memory, workspace/projects, dataDir/browser-profile', () => {
+  const paths = factoryResetPaths('/ws', '/data');
+  assert.deepEqual(paths, ['/ws/memory', '/ws/projects', '/data/browser-profile']);
+  // every path is confined to the workspace or the data dir — never anything else
+  assert.ok(paths.every((p) => p.startsWith('/ws/') || p.startsWith('/data/')));
 });
 
 // ── providers / brain selection ────────────────────────────────────────────────
@@ -760,6 +778,20 @@ test('browser.risk — navigation/reading T0, interaction T1', () => {
 test('delegate.risk — always T2 (delegates autonomous execution)', () => {
   assert.equal(delegate.risk!({ task: 'anything' } as never), 'T2');
   assert.equal(delegate.risk!({ task: 'read a file' } as never), 'T2');
+});
+
+// ── claude -p permission args by DANGEROUS mode ──────────────────────────────
+
+test('dangerousArgs — OFF keeps acceptEdits; ON skips permissions + injects preamble (never both)', () => {
+  // OFF → safe default, Claude Code still gates its own tools
+  assert.deepEqual(dangerousArgs(false), ['--permission-mode', 'acceptEdits']);
+  // ON → skip-permissions supersedes acceptEdits (they must not both appear) +
+  // the system-prompt preamble so the brain never asks verbally
+  const on = dangerousArgs(true);
+  assert.deepEqual(on, ['--dangerously-skip-permissions', '--append-system-prompt', DANGEROUS_SYSTEM_PROMPT]);
+  assert.ok(!on.includes('--permission-mode'), 'no conflicting acceptEdits when skipping permissions');
+  assert.ok(!on.includes('acceptEdits'));
+  assert.match(DANGEROUS_SYSTEM_PROMPT, /never ask for permission/i);
 });
 
 // ── governance edge cases ────────────────────────────────────────────────────

@@ -9,7 +9,7 @@
  * return a clear error instead of crashing.
  */
 import path from 'node:path';
-import { spawnClaudeCli } from '../core/claudeSpawn.ts';
+import { spawnClaudeCli, dangerousArgs } from '../core/claudeSpawn.ts';
 import type { Tool } from './types.ts';
 
 interface Args {
@@ -50,10 +50,14 @@ export const delegate: Tool<Args> = {
       return { ok: false, error: `cwd must be inside the workspace (${ctx.workspace})` };
     }
 
-    const out = await spawnClaudeCli(
-      ['-p', a.task, '--output-format', 'json', '--permission-mode', 'acceptEdits'],
-      { cwd },
-    );
+    // DANGEROUS mode → skip Claude Code's own permission prompts (and tell the
+    // delegated agent). Read inline (not via db.ts) so delegate stays strip-types
+    // testable — importing core/db.ts would pull the native driver into the tests.
+    const dangerous =
+      (ctx.db.prepare("SELECT value FROM settings WHERE key = 'dangerous_mode'").get() as { value?: string } | undefined)
+        ?.value === '1';
+
+    const out = await spawnClaudeCli(['-p', a.task, '--output-format', 'json', ...dangerousArgs(dangerous)], { cwd });
     if (out.enoent) {
       return {
         ok: false,
