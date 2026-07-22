@@ -10,6 +10,7 @@
  */
 import path from 'node:path';
 import { spawnClaudeCli, dangerousArgs } from '../core/claudeSpawn.ts';
+import { agentClaudeModel } from '../core/modelCatalog.ts';
 import type { Tool } from './types.ts';
 
 interface Args {
@@ -57,7 +58,18 @@ export const delegate: Tool<Args> = {
       (ctx.db.prepare("SELECT value FROM settings WHERE key = 'dangerous_mode'").get() as { value?: string } | undefined)
         ?.value === '1';
 
-    const out = await spawnClaudeCli(['-p', a.task, '--output-format', 'json', ...dangerousArgs(dangerous)], { cwd });
+    // Run the delegated `claude -p` on the main agent's Claude model (or the
+    // default). Read agent_config inline so delegate stays strip-types-testable
+    // (importing core/db.ts would pull the native driver into the tests).
+    const rawAgentCfg = (
+      ctx.db.prepare("SELECT value FROM settings WHERE key = 'agent_config'").get() as { value?: string } | undefined
+    )?.value;
+    const model = agentClaudeModel(rawAgentCfg);
+
+    const out = await spawnClaudeCli(
+      ['-p', a.task, '--output-format', 'json', '--model', model, ...dangerousArgs(dangerous)],
+      { cwd },
+    );
     if (out.enoent) {
       return {
         ok: false,

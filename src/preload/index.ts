@@ -16,6 +16,13 @@ import type {
 } from '../main/core/types.ts';
 import type { BrainInfo } from '../main/core/providers.ts';
 import type { FactoryResetInfo } from '../main/core/orchestrator.ts';
+import type {
+  AgentId,
+  AgentConfig,
+  AgentConfigMap,
+  CatalogModel,
+  ProviderId,
+} from '../main/core/modelCatalog.ts';
 import { gmailConfigured } from '../main/tools/gmail-config.ts';
 
 /** Read a `--key=value` flag from additionalArguments (per-window: --display-id/--primary/--overlay). */
@@ -73,6 +80,13 @@ const api = {
   getActiveBrain: (): Promise<string | null> => ipcRenderer.invoke('alfred:getActiveBrain'),
   /** Select the active/main brain (enabled only); resolves with the new effective id. */
   setActiveBrain: (id: string): Promise<string | null> => ipcRenderer.invoke('alfred:setActiveBrain', id),
+  /** Per-agent config (main / reference / curator): name + provider + model. */
+  getAgentConfig: (): Promise<AgentConfigMap | null> => ipcRenderer.invoke('alfred:getAgentConfig'),
+  /** Patch one agent's config; resolves with the full config. */
+  setAgentConfig: (id: AgentId, patch: Partial<AgentConfig>): Promise<AgentConfigMap | null> =>
+    ipcRenderer.invoke('alfred:setAgentConfig', id, patch),
+  /** The hardcoded model catalog per provider (settings-card dropdowns). */
+  getModelCatalog: (): Promise<Record<ProviderId, CatalogModel[]>> => ipcRenderer.invoke('alfred:getModelCatalog'),
   /** Launch the Gmail OAuth flow; resolves with the connected account. */
   connectGmail: (): Promise<AccountRecord | null> => ipcRenderer.invoke('alfred:connectGmail'),
   /** Full floating-card layout (seeds defaults on first read). */

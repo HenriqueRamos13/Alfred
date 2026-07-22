@@ -166,7 +166,11 @@ const CARD_TITLES: Record<string, string> = {
   projects: 'PROJECTS',
   accounts: 'ACCOUNTS',
   activity: 'ACTIVITY',
+  settings: 'SETTINGS',
 };
+
+/** Cards that start hidden (opened from the top-bar), not shown on first run. */
+const HIDDEN_DEFAULT = new Set<string>(['settings']);
 
 /** First-run positions (px from the canvas top-left). [id, x, y, w, h]. */
 const DEFAULTS: ReadonlyArray<readonly [string, number, number, number, number]> = [
@@ -177,6 +181,7 @@ const DEFAULTS: ReadonlyArray<readonly [string, number, number, number, number]>
   ['brains', 1126, 368, 300, 210],
   ['accounts', 1126, 588, 300, 160],
   ['projects', 1126, 758, 300, 200],
+  ['settings', 300, 150, 560, 560],
 ];
 
 const clampPos = (v: number): number => Math.max(0, Math.round(v));
@@ -199,10 +204,13 @@ interface Row {
  */
 export function getLayout(db: AlfredDb): CardLayout[] {
   const insert = db.prepare(
-    'INSERT OR IGNORE INTO layout(cardId, x, y, w, h, z, visible, displayId) VALUES (?, ?, ?, ?, ?, ?, 1, ?)',
+    'INSERT OR IGNORE INTO layout(cardId, x, y, w, h, z, visible, displayId) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
   );
-  // Defaults distribute every card onto the primary display (the 'main' sentinel).
-  DEFAULTS.forEach(([id, x, y, w, h], i) => insert.run(id, x, y, w, h, i + 1, DISPLAY_MAIN));
+  // Defaults distribute every card onto the primary display (the 'main' sentinel);
+  // cards in HIDDEN_DEFAULT seed hidden (opened from the top-bar).
+  DEFAULTS.forEach(([id, x, y, w, h], i) =>
+    insert.run(id, x, y, w, h, i + 1, HIDDEN_DEFAULT.has(id) ? 0 : 1, DISPLAY_MAIN),
+  );
 
   const rows = db.prepare('SELECT cardId AS id, x, y, w, h, z, visible, displayId FROM layout').all() as Row[];
   return rows

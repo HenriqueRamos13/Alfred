@@ -1226,3 +1226,115 @@ test('gmailConfigured — rejects missing / placeholder / malformed values', () 
     'wrong id shape',
   );
 });
+
+// ── model catalog + per-agent config ─────────────────────────────────────────
+
+import {
+  listModels,
+  findModel,
+  priceOf,
+  catalogPrices,
+  DEFAULT_MODEL,
+  MODEL_CATALOG,
+  PROVIDER_IDS,
+  brainToProvider,
+  providerToBrain,
+  coerceAgent,
+  parseAgentConfig,
+  hasPersistedAgent,
+  agentToSpec,
+  agentClaudeModel,
+  type AgentConfig,
+} from '../src/main/core/modelCatalog.ts';
+
+test('catalog — listModels/findModel/priceOf, Anthropic shared by both Claude providers', () => {
+  assert.ok(listModels('deepseek').length === 2);
+  assert.equal(findModel('claude-api', 'claude-sonnet-5')?.name, 'Sonnet 5');
+  assert.equal(findModel('openai', 'nope'), undefined);
+  assert.deepEqual(priceOf('deepseek', 'deepseek-v4-flash'), { inputPerM: 0.14, outputPerM: 0.28 });
+  assert.equal(priceOf('claude-cli', 'ghost'), undefined);
+  // claude-api and claude-cli intentionally expose the SAME Anthropic list
+  assert.equal(MODEL_CATALOG['claude-api'], MODEL_CATALOG['claude-cli']);
+  assert.deepEqual(listModels('claude-api').map((m) => m.id), listModels('claude-cli').map((m) => m.id));
+  // sonnet-5 carries the intro-pricing note
+  assert.match(findModel('claude-api', 'claude-sonnet-5')!.notes!, /2026-09-01/);
+});
+
+test('catalog — every provider default is a real model in its own list', () => {
+  for (const p of PROVIDER_IDS) assert.ok(findModel(p, DEFAULT_MODEL[p]), `${p} default missing`);
+});
+
+test('catalogPrices — flat table prices any catalog model (feeds the cost estimator)', () => {
+  const prices = catalogPrices();
+  assert.deepEqual(prices['claude-sonnet-5'], { inputPerM: 2, outputPerM: 10 });
+  assert.deepEqual(prices['gpt-5.6-luna'], { inputPerM: 1, outputPerM: 6 });
+  assert.deepEqual(prices['deepseek-v4-pro'], { inputPerM: 0.435, outputPerM: 0.87 });
+});
+
+test('pricing.ts merges the catalog so any selected model is known', () => {
+  assert.equal(isKnownModel('claude-opus-4-8'), true);
+  assert.equal(isKnownModel('gpt-5.6-terra'), true);
+  assert.equal(costOf('claude-opus-4-8', { inputTokens: 1_000_000, outputTokens: 0 }), 5);
+});
+
+test('brain-id ⇄ provider-id — the two vocabularies map both ways', () => {
+  assert.equal(brainToProvider('anthropic'), 'claude-api');
+  assert.equal(brainToProvider('claude-code'), 'claude-cli');
+  assert.equal(brainToProvider('openai'), 'openai');
+  assert.equal(brainToProvider('deepseek'), 'deepseek');
+  assert.equal(brainToProvider('mystery'), 'claude-api'); // unknown → claude-api
+  assert.equal(providerToBrain('claude-api'), 'anthropic');
+  assert.equal(providerToBrain('claude-cli'), 'claude-code');
+});
+
+test('coerceAgent — invalid provider/model snap to the fallback / provider default', () => {
+  const fb: AgentConfig = { name: 'Main', provider: 'claude-api', model: 'claude-sonnet-5' };
+  // wholesale garbage → fallback
+  assert.deepEqual(coerceAgent(null, fb), fb);
+  // bad provider → fallback provider kept
+  assert.deepEqual(coerceAgent({ provider: 'nope', model: 'x' }, fb), fb);
+  // valid provider, invalid model → snap to that provider's default
+  assert.deepEqual(coerceAgent({ provider: 'deepseek', model: 'x' }, fb), {
+    name: 'Main',
+    provider: 'deepseek',
+    model: 'deepseek-v4-flash',
+  });
+  // blank name ignored (fallback kept), whitespace trimmed
+  assert.equal(coerceAgent({ name: '   ' }, fb).name, 'Main');
+  assert.equal(coerceAgent({ name: '  Boss  ' }, fb).name, 'Boss');
+});
+
+test('parseAgentConfig — defaults when empty; persisted merged over defaults', () => {
+  const mainDefault: AgentConfig = { name: 'Main', provider: 'claude-api', model: 'claude-sonnet-5' };
+  const empty = parseAgentConfig(undefined, mainDefault);
+  assert.deepEqual(empty.main, mainDefault);
+  assert.deepEqual(empty.reference, { name: 'Reference', provider: 'deepseek', model: 'deepseek-v4-flash' });
+  assert.deepEqual(empty.curator, { name: 'Curator', provider: 'deepseek', model: 'deepseek-v4-flash' });
+  // persisted main overrides; secondaries stay default
+  const merged = parseAgentConfig(JSON.stringify({ main: { provider: 'openai', model: 'gpt-5.6-luna', name: 'Jarvis' } }), mainDefault);
+  assert.deepEqual(merged.main, { name: 'Jarvis', provider: 'openai', model: 'gpt-5.6-luna' });
+  assert.equal(merged.reference.provider, 'deepseek');
+  // malformed JSON → all defaults, never throws
+  assert.deepEqual(parseAgentConfig('{not json', mainDefault).main, mainDefault);
+});
+
+test('hasPersistedAgent — true only when the key is present in the JSON', () => {
+  assert.equal(hasPersistedAgent(undefined, 'curator'), false);
+  assert.equal(hasPersistedAgent(JSON.stringify({ main: {} }), 'curator'), false);
+  assert.equal(hasPersistedAgent(JSON.stringify({ curator: { provider: 'deepseek' } }), 'curator'), true);
+  assert.equal(hasPersistedAgent('garbage', 'curator'), false);
+});
+
+test('agentToSpec — brainId:model, claude-cli routes through the anthropic SDK brain', () => {
+  assert.equal(agentToSpec({ name: 'M', provider: 'claude-api', model: 'claude-opus-4-8' }), 'anthropic:claude-opus-4-8');
+  assert.equal(agentToSpec({ name: 'M', provider: 'claude-cli', model: 'claude-sonnet-5' }), 'anthropic:claude-sonnet-5');
+  assert.equal(agentToSpec({ name: 'R', provider: 'deepseek', model: 'deepseek-v4-pro' }), 'deepseek:deepseek-v4-pro');
+});
+
+test('agentClaudeModel — main Claude model for delegation, else the default', () => {
+  assert.equal(agentClaudeModel(JSON.stringify({ main: { provider: 'claude-cli', model: 'claude-opus-4-8' } })), 'claude-opus-4-8');
+  assert.equal(agentClaudeModel(JSON.stringify({ main: { provider: 'claude-api', model: 'claude-haiku-4-5' } })), 'claude-haiku-4-5');
+  // non-Claude main → fall back to the default Claude model
+  assert.equal(agentClaudeModel(JSON.stringify({ main: { provider: 'deepseek', model: 'deepseek-v4-flash' } })), 'claude-sonnet-5');
+  assert.equal(agentClaudeModel(undefined), 'claude-sonnet-5');
+});

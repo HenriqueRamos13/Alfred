@@ -113,6 +113,34 @@ set `ALFRED_PROVIDER` to change it.
   reach it), `claude -p` just runs with its own tools — no crash.
 
 Keys are read only from `process.env`, never logged, and masked in the audit log.
+
+### Per-agent configuration (Settings card)
+
+Open **⚙ SETTINGS** in the top-bar to configure three agents independently — each
+picks a **provider + model** from a hardcoded catalogue
+(`src/main/core/modelCatalog.ts`), with the in/out price shown beside every model.
+Each agent also has an editable **name**. Persisted as JSON in the `agent_config`
+setting.
+
+| Agent | Role | Default |
+|-------|------|---------|
+| **main** | the chat brain | derived from `ALFRED_PROVIDER` (e.g. `anthropic` → `claude-api` + `claude-sonnet-5`) |
+| **reference** | reference brain (used in a later phase) | DeepSeek V4 Flash |
+| **curator** | the memory curator | DeepSeek V4 Flash |
+
+**The two Claudes.** The catalogue exposes Anthropic under **two providers that
+share the same model ids** but differ in how the model is run:
+
+- **`claude-api`** → the Vercel AI SDK path (`ANTHROPIC_API_KEY`).
+- **`claude-cli`** → spawns `claude -p --model <id>` (subscription auth), the
+  same path used by delegation. Its spend is billed externally, so the COST card
+  shows no US$ estimate.
+
+The **main** agent's provider is the single source of truth for the active brain:
+the **BRAINS** panel and the Settings card stay in sync (changing one updates the
+other). The **curator** agent's provider/model overrides `ALFRED_CURATOR_MODEL`
+(kept as a fallback). Delegation (`claude -p`) runs on the main agent's Claude
+model when one is selected, else the catalogue default.
 The MCP bridge token is likewise never logged and never leaves `127.0.0.1`.
 
 ## Setup (from a factory Intel Mac)

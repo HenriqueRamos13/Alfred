@@ -17,6 +17,7 @@
  */
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { catalogPrices } from './modelCatalog.ts';
 
 export interface ModelPrice {
   /** USD per 1M input tokens. */
@@ -25,11 +26,15 @@ export interface ModelPrice {
   outputPerM: number;
 }
 
+/**
+ * The catalog (modelCatalog.ts) is the source of truth for every current model's
+ * price; `gpt-4o` is kept as a legacy fallback (providers.ts' default OpenAI
+ * model when none is selected). This lets the COST card estimate any model a
+ * user picks in the settings card.
+ */
 export const DEFAULT_PRICES: Record<string, ModelPrice> = {
-  'claude-sonnet-5': { inputPerM: 2, outputPerM: 10 },
+  ...catalogPrices(),
   'gpt-4o': { inputPerM: 2.5, outputPerM: 10 },
-  'deepseek-v4-flash': { inputPerM: 0.14, outputPerM: 0.28 },
-  'deepseek-v4-pro': { inputPerM: 0.435, outputPerM: 0.87 },
 };
 
 /** Live table; starts from defaults, may be replaced by env/file overrides at boot. */

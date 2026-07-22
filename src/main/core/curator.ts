@@ -64,6 +64,8 @@ export interface RunCuratorDeps {
   stepCap: number;
   dailyUsdBudget?: number;
   env?: Env;
+  /** Explicit "<brainId>:<model>" spec for the curator agent (agent_config.curator); overrides env + auto-pick. */
+  curatorSpec?: string;
 }
 
 export interface CuratorResult {
@@ -165,7 +167,7 @@ export async function runCurator(deps: RunCuratorDeps): Promise<CuratorResult> {
   // Resolve the cheap curator brain (skipped when over budget → verbatim only).
   let provider: ReturnType<typeof resolveProvider> | null = null;
   if (!overBudget) {
-    const spec = pickCuratorSpec(env, listBrains(env));
+    const spec = deps.curatorSpec ?? pickCuratorSpec(env, listBrains(env));
     if (spec) {
       try {
         provider = resolveProvider(spec, env);

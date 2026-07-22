@@ -22,6 +22,15 @@ import type {
 } from './core/types.ts';
 import type { BrainInfo } from './core/providers.ts';
 import type { FactoryResetInfo } from './core/orchestrator.ts';
+import {
+  AGENT_IDS,
+  isProviderId,
+  type AgentId,
+  type AgentConfig,
+  type AgentConfigMap,
+  type CatalogModel,
+  type ProviderId,
+} from './core/modelCatalog.ts';
 
 export interface Orchestrator {
   /** Run one command / chat turn; streams StreamEvents via the injected emit. */
@@ -56,6 +65,12 @@ export interface Orchestrator {
   getActiveBrain(): string | null | Promise<string | null>;
   /** Persist the active brain (enabled only); returns the new effective id. */
   setActiveBrain(id: string): string | null | Promise<string | null>;
+  /** Per-agent config (main / reference / curator). */
+  getAgentConfig(): AgentConfigMap | Promise<AgentConfigMap>;
+  /** Patch one agent's config; returns the full config. */
+  setAgentConfig(id: AgentId, patch: Partial<AgentConfig>): AgentConfigMap | Promise<AgentConfigMap>;
+  /** The hardcoded model catalog, per provider. */
+  getModelCatalog(): Record<ProviderId, CatalogModel[]> | Promise<Record<ProviderId, CatalogModel[]>>;
   connectGmail(): Promise<AccountRecord | null>;
   /** Full floating-card layout. */
   getLayout(): CardLayout[] | Promise<CardLayout[]>;
@@ -135,6 +150,27 @@ export function registerIpc(core: Orchestrator, emit: (e: StreamEvent) => void):
       return null;
     }
   });
+  ipcMain.handle('alfred:getAgentConfig', guard('get agent config', () => core.getAgentConfig(), null as AgentConfigMap | null));
+  ipcMain.handle('alfred:setAgentConfig', async (_e, id: unknown, patch: unknown) => {
+    // Trust boundary: id must be a known agent; patch fields validated (provider
+    // against the catalog, model/name as strings) — core coerces the rest.
+    if (typeof id !== 'string' || !(AGENT_IDS as readonly string[]).includes(id)) return null;
+    const p = (patch ?? {}) as Record<string, unknown>;
+    const clean: Partial<AgentConfig> = {};
+    if (isProviderId(p.provider)) clean.provider = p.provider;
+    if (typeof p.model === 'string') clean.model = p.model;
+    if (typeof p.name === 'string') clean.name = p.name;
+    try {
+      return await core.setAgentConfig(id as AgentId, clean);
+    } catch (err) {
+      fail('set agent config', err);
+      return null;
+    }
+  });
+  ipcMain.handle(
+    'alfred:getModelCatalog',
+    guard('get model catalog', () => core.getModelCatalog(), {} as Record<ProviderId, CatalogModel[]>),
+  );
   ipcMain.handle('alfred:connectGmail', guard('connect Gmail', () => core.connectGmail(), null as AccountRecord | null));
   ipcMain.handle('alfred:getLayout', guard('get layout', () => core.getLayout(), [] as CardLayout[]));
   ipcMain.handle('alfred:updateCard', async (_e, id: unknown, patch: unknown) => {

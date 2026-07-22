@@ -37,6 +37,19 @@ import type {
   UiNode,
 } from '../main/core/types.ts';
 import type { BrainInfo } from '../main/core/providers.ts';
+import {
+  AGENT_IDS,
+  PROVIDER_IDS,
+  PROVIDER_LABELS,
+  DEFAULT_MODEL,
+  listModels,
+  findModel,
+  type AgentId,
+  type AgentConfig,
+  type AgentConfigMap,
+  type CatalogModel,
+  type ProviderId,
+} from '../main/core/modelCatalog.ts';
 
 type Tone = 'cyan' | 'lime' | 'amber' | 'magenta' | 'red' | 'dim';
 interface LogRow {
@@ -85,6 +98,8 @@ export default function App() {
   const [alerts, setAlerts] = useState<{ id: number; msg: string }[]>([]);
   const [brains, setBrains] = useState<BrainInfo[]>([]);
   const [activeBrain, setActiveBrain] = useState<string | null>(null);
+  const [agentCfg, setAgentCfg] = useState<AgentConfigMap | null>(null);
+  const [catalog, setCatalog] = useState<Record<ProviderId, CatalogModel[]> | null>(null);
   const [cards, setCards] = useState<CardLayout[]>([]);
   const [dangerous, setDangerous] = useState(false);
   const [grill, setGrill] = useState(true); // GRILL-ME defaults ON
@@ -273,11 +288,28 @@ export default function App() {
   const refreshBrains = () => {
     alfred.listBrains().then(setBrains).catch(() => {});
     alfred.getActiveBrain().then(setActiveBrain).catch(() => {});
+    // The main agent's provider is the source of truth behind the active brain,
+    // so keep the settings card in step whenever brains refresh.
+    alfred.getAgentConfig().then((c) => c && setAgentCfg(c)).catch(() => {});
   };
 
   const selectBrain = (b: BrainInfo) => {
     if (!b.enabled || b.id === activeBrain) return;
-    alfred.setActiveBrain(b.id).then(setActiveBrain).catch(() => {});
+    // Reconcile: picking a brain here updates agent_config.main.provider; refresh
+    // both the highlight and the settings card from the new source of truth.
+    alfred.setActiveBrain(b.id).then(() => refreshBrains()).catch(() => {});
+  };
+
+  /** Persist one agent's config (settings card). Refreshes the BRAINS panel when 'main' changes. */
+  const saveAgent = (id: AgentId, patch: AgentConfig) => {
+    alfred
+      .setAgentConfig(id, patch)
+      .then((c) => {
+        if (c) setAgentCfg(c);
+        if (id === 'main') refreshBrains();
+      })
+      .catch(() => {});
+    pushLog({ tag: 'SETTINGS', tone: 'lime', msg: `${id}: ${patch.provider} · ${patch.model}` });
   };
 
   const pushLog = (row: Omit<LogRow, 'id' | 'time'>) =>
@@ -321,6 +353,9 @@ export default function App() {
     alfred.getLayout().then(setCards).catch(() => {});
     // Show today's persisted spend immediately (don't wait for the first turn).
     alfred.getCost().then((c) => c && setCost(c)).catch(() => {});
+    // Per-agent config + the model catalog for the SETTINGS card.
+    alfred.getAgentConfig().then((c) => c && setAgentCfg(c)).catch(() => {});
+    alfred.getModelCatalog().then(setCatalog).catch(() => {});
     // Reflect the persisted DANGEROUS-mode state in the toggle + visuals.
     alfred.getDangerousMode().then(setDangerous).catch(() => {});
     // Reflect the persisted GRILL-ME toggle (default on).
@@ -742,6 +777,16 @@ export default function App() {
             </div>
           ),
         };
+      case 'settings':
+        return {
+          meta: <span className="panel-meta">{AGENT_IDS.length} AGENTS</span>,
+          body:
+            agentCfg && catalog ? (
+              <AgentSettings config={agentCfg} catalog={catalog} onSave={saveAgent} />
+            ) : (
+              <div className="empty">LOADING…</div>
+            ),
+        };
       case 'activity':
         return {
           meta: <span className="panel-meta">live tail —f · memory on</span>,
@@ -854,6 +899,17 @@ export default function App() {
             title="Factory reset — erase EVERYTHING Alfred knows (memory, DB, secrets, browser profile, projects)"
           >
             ⌫ FACTORY RESET
+          </button>
+          <button
+            type="button"
+            className="topbar-btn no-drag"
+            onClick={() => {
+              patchCard('settings', { visible: true });
+              focusCard('settings');
+            }}
+            title="Settings — provider + model per agent (main / reference / curator)"
+          >
+            ⚙ SETTINGS
           </button>
           <button
             type="button"
@@ -1055,6 +1111,100 @@ export default function App() {
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+const AGENT_HINT: Record<AgentId, string> = {
+  main: 'chat principal',
+  reference: 'referência (fase 2)',
+  curator: 'curador da memória',
+};
+
+/**
+ * SETTINGS card body: per agent (main / reference / curator) an editable name, a
+ * provider dropdown and a model dropdown (filtered by provider, with in/out price).
+ * Edits are held in a local draft; SAVE persists via IPC. Changing the provider
+ * snaps the model to that provider's first entry so the pair is always valid.
+ */
+function AgentSettings({
+  config,
+  catalog,
+  onSave,
+}: {
+  config: AgentConfigMap;
+  catalog: Record<ProviderId, CatalogModel[]>;
+  onSave: (id: AgentId, patch: AgentConfig) => void;
+}) {
+  const [draft, setDraft] = useState<AgentConfigMap>(config);
+  // Resync when the store changes underneath us (e.g. the BRAINS panel changed main).
+  useEffect(() => setDraft(config), [config]);
+
+  const setField = (id: AgentId, patch: Partial<AgentConfig>) =>
+    setDraft((d) => {
+      const next = { ...d[id], ...patch };
+      if (patch.provider && !listModels(patch.provider).some((m) => m.id === next.model)) {
+        // Snap to the provider default (same as the BRAINS-panel switch) so both
+        // paths land on the same model — not the first list entry.
+        next.model = DEFAULT_MODEL[patch.provider] ?? listModels(patch.provider)[0]?.id ?? next.model;
+      }
+      return { ...d, [id]: next };
+    });
+
+  return (
+    <div className="settings">
+      {AGENT_IDS.map((id) => {
+        const a = draft[id];
+        const models = catalog[a.provider] ?? listModels(a.provider);
+        const note = findModel(a.provider, a.model)?.notes;
+        const dirty = JSON.stringify(a) !== JSON.stringify(config[id]);
+        return (
+          <div className="settings-agent" key={id}>
+            <div className="settings-agent-id">
+              {id.toUpperCase()} <span className="settings-agent-hint">· {AGENT_HINT[id]}</span>
+            </div>
+            <input
+              className="settings-name no-drag"
+              value={a.name}
+              placeholder={id}
+              onChange={(e) => setField(id, { name: e.target.value })}
+            />
+            <div className="settings-row">
+              <select
+                className="settings-select no-drag"
+                value={a.provider}
+                onChange={(e) => setField(id, { provider: e.target.value as ProviderId })}
+              >
+                {PROVIDER_IDS.map((p) => (
+                  <option key={p} value={p}>
+                    {PROVIDER_LABELS[p]}
+                  </option>
+                ))}
+              </select>
+              <select
+                className="settings-select no-drag"
+                value={a.model}
+                onChange={(e) => setField(id, { model: e.target.value })}
+              >
+                {models.map((m) => (
+                  <option key={m.id} value={m.id}>
+                    {m.name} — ${m.inputPerM}/${m.outputPerM}
+                  </option>
+                ))}
+              </select>
+            </div>
+            {note && <div className="settings-note">{note}</div>}
+            <button
+              type="button"
+              className={`settings-save no-drag${dirty ? ' dirty' : ''}`}
+              disabled={!dirty}
+              onClick={() => onSave(id, a)}
+            >
+              {dirty ? 'GUARDAR' : 'GUARDADO'}
+            </button>
+          </div>
+        );
+      })}
     </div>
   );
 }

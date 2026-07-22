@@ -45,6 +45,18 @@ import { getProject, listProjects } from './projects.ts';
 import { factoryResetPaths } from './reset.ts';
 import { resolveProvider, listBrains, resolveActiveBrainId } from './providers.ts';
 import type { BrainInfo } from './providers.ts';
+import {
+  parseAgentConfig,
+  coerceAgent,
+  agentToSpec,
+  hasPersistedAgent,
+  brainToProvider,
+  providerToBrain,
+  DEFAULT_MODEL,
+  DEFAULT_MAIN_NAME,
+  MODEL_CATALOG,
+} from './modelCatalog.ts';
+import type { AgentConfig, AgentConfigMap, AgentId, ProviderId, CatalogModel } from './modelCatalog.ts';
 import { getSetting, setSetting, insertMessage, getRecentMessages } from './db.ts';
 import { grillMeEnabled } from './settings-pure.ts';
 import { dayKey } from './budget.ts';
@@ -364,8 +376,10 @@ async function spawnClaudeConversation(
   cwd: string,
   dangerous: boolean,
   resumeId?: string,
+  model?: string,
 ): Promise<ClaudeTurn> {
   const args = ['-p', prompt, '--output-format', 'json', ...dangerousArgs(dangerous)];
+  if (model) args.push('--model', model);
   if (resumeId) args.push('--resume', resumeId);
   const out = await spawnClaudeCli(args, { cwd });
   if (out.enoent) return { enoent: true };
@@ -385,11 +399,11 @@ async function spawnClaudeConversation(
  * not Alfred's estimator, so everything is zero and `external` is flagged. Shared
  * by the live turn path and the startup read so the COST card matches.
  */
-function externalCostSnapshot(dailyTokenCap: number): CostSnapshot {
+function externalCostSnapshot(dailyTokenCap: number, model?: string): CostSnapshot {
   const zero = { inputTokens: 0, outputTokens: 0, tokens: 0, usd: 0 };
   return {
     activeBrain: 'claude-code',
-    activeModel: 'claude -p',
+    activeModel: model ? `claude -p (${model})` : 'claude -p',
     day: dayKey(),
     today: zero,
     session: zero,
@@ -465,10 +479,16 @@ export interface OrchestratorHandle {
   listAccounts(): AccountRecord[];
   /** Brain availability (enabled/disabled) for the UI. */
   listBrains(): BrainInfo[];
-  /** The effective active brain id (resolved: persisted → env → first enabled). */
+  /** The effective active brain id (derived from the main agent's provider). */
   getActiveBrain(): string | null;
   /** Persist the active brain (only if it exists and is enabled); returns the new effective id. */
   setActiveBrain(id: string): string | null;
+  /** Per-agent config (main / reference / curator): name + provider + model. */
+  getAgentConfig(): AgentConfigMap;
+  /** Patch one agent's config (validated against the catalog); returns the full config. */
+  setAgentConfig(id: AgentId, patch: Partial<AgentConfig>): AgentConfigMap;
+  /** The hardcoded model catalog, per provider (for the settings-card dropdowns). */
+  getModelCatalog(): Record<ProviderId, CatalogModel[]>;
   connectGmail(): Promise<AccountRecord | null>;
   /** Full floating-card layout (seeds defaults on first read). */
   getLayout(): CardLayout[];
@@ -630,15 +650,22 @@ export function createOrchestrator(opts: CreateOrchestratorOpts): OrchestratorHa
   // when the inbox is empty and respects the daily token kill-switch.
   let curating = false;
   let curatorTimer: ReturnType<typeof setTimeout> | null = null;
-  const curatorDeps = () => ({
-    db,
-    workspace: config.workspace,
-    sessionId,
-    dailyTokenBudget: config.dailyTokenBudget,
-    stepCap: config.stepCap,
-    dailyUsdBudget: config.dailyUsdBudget,
-    env: process.env,
-  });
+  const curatorDeps = () => {
+    // The curator agent's config wins when explicitly set; otherwise runCurator
+    // falls back to ALFRED_CURATOR_MODEL, then the cheapest enabled brain.
+    const raw = getSetting(db, 'agent_config');
+    const curatorSpec = hasPersistedAgent(raw, 'curator') ? agentToSpec(getAgentConfig().curator) : undefined;
+    return {
+      db,
+      workspace: config.workspace,
+      sessionId,
+      dailyTokenBudget: config.dailyTokenBudget,
+      stepCap: config.stepCap,
+      dailyUsdBudget: config.dailyUsdBudget,
+      env: process.env,
+      curatorSpec,
+    };
+  };
   async function runCuratorNow(): Promise<ReturnType<typeof runCurator> | void> {
     if (curating) return;
     curating = true;
@@ -696,16 +723,30 @@ export function createOrchestrator(opts: CreateOrchestratorOpts): OrchestratorHa
       .join('\n');
   }
 
-  /** Resolve the effective active brain id from persisted settings + env. */
-  const activeBrainId = (): string | null =>
-    resolveActiveBrainId(getSetting(db, 'active_brain'), process.env, listBrains());
+  // ── per-agent config (main chat / reference / curator) ──────────────────────
+  // Single source of truth: the 'agent_config' setting (JSON). The main agent is
+  // the primary brain; the BRAINS panel + active_brain reconcile THROUGH it (see
+  // getActiveBrain/setActiveBrain below). Defaults derive from ALFRED_PROVIDER
+  // and — for a smooth upgrade — the pre-existing persisted active_brain choice.
+  const mainAgentDefault = (): AgentConfig => {
+    const brainId = resolveActiveBrainId(getSetting(db, 'active_brain'), process.env, listBrains()) ?? 'anthropic';
+    const provider = brainToProvider(brainId);
+    return { name: DEFAULT_MAIN_NAME, provider, model: DEFAULT_MODEL[provider] };
+  };
+  const getAgentConfig = (): AgentConfigMap => parseAgentConfig(getSetting(db, 'agent_config'), mainAgentDefault());
+  const setAgentConfig = (id: AgentId, patch: Partial<AgentConfig>): AgentConfigMap => {
+    const cur = getAgentConfig();
+    const next: AgentConfigMap = { ...cur, [id]: coerceAgent({ ...cur[id], ...patch }, cur[id]) };
+    setSetting(db, 'agent_config', JSON.stringify(next));
+    return next;
+  };
 
   /**
    * claude-code conversational turn: run `claude -p` with session continuity.
    * Claude Code drives its own tools; no Alfred tools, no per-turn HITL. Cost is
    * external (subscription), so the COST panel is flagged external, not estimated.
    */
-  async function runClaudeTurn(text: string): Promise<void> {
+  async function runClaudeTurn(text: string, model?: string): Promise<void> {
     emit({ kind: 'agent.status', sessionId, status: 'thinking' });
     // claude -p reads the CLAUDE.md of its cwd (the workspace) automatically —
     // seed it with Alfred's identity so the vanilla CLI knows it's Alfred.
@@ -723,7 +764,8 @@ export function createOrchestrator(opts: CreateOrchestratorOpts): OrchestratorHa
     const prompt = resumeId ? text : withHistoryPreamble(db, text);
     // DANGEROUS mode wires through to `claude -p`: skip its own permission
     // prompts + append a preamble so the brain never asks for confirmation.
-    const turn = await spawnClaudeConversation(prompt, config.workspace, isDangerous(), resumeId);
+    // The chosen Anthropic model (agent_config.main) is passed as --model.
+    const turn = await spawnClaudeConversation(prompt, config.workspace, isDangerous(), resumeId, model);
 
     if (turn.enoent) {
       emit({
@@ -755,7 +797,7 @@ export function createOrchestrator(opts: CreateOrchestratorOpts): OrchestratorHa
       });
     }
     // Spend is billed by the Claude Code subscription, not Alfred's estimator.
-    emit({ kind: 'cost', snapshot: externalCostSnapshot(config.dailyTokenBudget) });
+    emit({ kind: 'cost', snapshot: externalCostSnapshot(config.dailyTokenBudget, model) });
     emit({ kind: 'agent.status', sessionId, status: 'done' });
   }
 
@@ -780,27 +822,44 @@ export function createOrchestrator(opts: CreateOrchestratorOpts): OrchestratorHa
         }
       }
       try {
-        const brainId = activeBrainId();
-        if (!brainId) {
+        const main = getAgentConfig().main;
+        const brains = listBrains();
+
+        // claude-cli → the `claude -p` spawn path (the "second Claude"), with the
+        // chosen Anthropic model. claude-api/openai/deepseek → the AI SDK.
+        if (main.provider === 'claude-cli') {
+          const cc = brains.find((b) => b.id === 'claude-code');
+          if (!cc?.enabled) {
+            emit({
+              kind: 'error',
+              sessionId,
+              message: 'Claude Code CLI not found on PATH. Install it: npm i -g @anthropic-ai/claude-code',
+            });
+            emit({ kind: 'agent.status', sessionId, status: 'error' });
+            return;
+          }
+          await runClaudeTurn(text, main.model);
+          return;
+        }
+
+        const brainId = providerToBrain(main.provider);
+        const brain = brains.find((b) => b.id === brainId);
+        if (!brain?.enabled) {
           emit({
             kind: 'error',
             sessionId,
             message:
-              'No brain connected: set an API key in .env (ANTHROPIC_API_KEY / OPENAI_API_KEY / DEEPSEEK_API_KEY) or install the Claude Code CLI, then restart.',
+              `Brain "${brainId}" (agent "main") is not connected: set its API key in .env ` +
+              '(ANTHROPIC_API_KEY / OPENAI_API_KEY / DEEPSEEK_API_KEY) or pick a connected provider in Settings, then restart.',
           });
           emit({ kind: 'agent.status', sessionId, status: 'error' });
           return;
         }
 
-        if (brainId === 'claude-code') {
-          await runClaudeTurn(text);
-          return;
-        }
-
         let provider: ReturnType<typeof resolveProvider>;
         try {
-          // brainId is already resolved to an enabled API brain → no noisy fallback.
-          provider = resolveProvider(brainId);
+          // brainId is enabled and the model comes from the catalog → no noisy fallback.
+          provider = resolveProvider(agentToSpec(main));
         } catch (err) {
           const detail = err instanceof Error ? err.message : String(err);
           console.error('[alfred] cannot start turn:', detail);
@@ -969,12 +1028,33 @@ export function createOrchestrator(opts: CreateOrchestratorOpts): OrchestratorHa
       return listBrains();
     },
     getActiveBrain() {
-      return activeBrainId();
+      // Derived from the main agent's provider so the BRAINS panel highlight and
+      // the settings card never disagree.
+      return providerToBrain(getAgentConfig().main.provider);
     },
     setActiveBrain(id) {
       const brain = listBrains().find((b) => b.id === id);
-      if (brain?.enabled) setSetting(db, 'active_brain', id);
-      return activeBrainId();
+      if (!brain?.enabled) return providerToBrain(getAgentConfig().main.provider);
+      const provider = brainToProvider(id);
+      const cur = getAgentConfig().main;
+      // Switching provider from the BRAINS panel snaps the model to that
+      // provider's default; re-selecting the same provider keeps the model.
+      const model = provider === cur.provider ? cur.model : DEFAULT_MODEL[provider];
+      setAgentConfig('main', { provider, model });
+      setSetting(db, 'active_brain', id); // keep the legacy key roughly in step
+      return id;
+    },
+    getAgentConfig() {
+      return getAgentConfig();
+    },
+    setAgentConfig(id, patch) {
+      const next = setAgentConfig(id, patch);
+      // Keep the legacy active_brain aligned when the main provider changes.
+      if (id === 'main') setSetting(db, 'active_brain', providerToBrain(next.main.provider));
+      return next;
+    },
+    getModelCatalog() {
+      return MODEL_CATALOG;
     },
     async connectGmail() {
       const gmailTool = tools.find((t) => t.name === 'gmail');
@@ -998,11 +1078,10 @@ export function createOrchestrator(opts: CreateOrchestratorOpts): OrchestratorHa
       setSetting(db, 'viewport', `${Math.round(w)}x${Math.round(h)}`);
     },
     getCost() {
-      const brainId = activeBrainId();
-      // claude-code spend is external (subscription) — mirror the turn-path shape.
-      if (brainId === 'claude-code') return externalCostSnapshot(config.dailyTokenBudget);
-      const brain = listBrains().find((b) => b.id === brainId);
-      return costTracker.costSnapshot(brainId ?? '—', brain?.model ?? '—');
+      const main = getAgentConfig().main;
+      // claude-cli spend is external (subscription) — mirror the turn-path shape.
+      if (main.provider === 'claude-cli') return externalCostSnapshot(config.dailyTokenBudget, main.model);
+      return costTracker.costSnapshot(providerToBrain(main.provider), main.model);
     },
     getTts() {
       return getSetting(db, 'tts_enabled') === '1';
