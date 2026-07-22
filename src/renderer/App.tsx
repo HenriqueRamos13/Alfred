@@ -87,6 +87,7 @@ export default function App() {
   const [activeBrain, setActiveBrain] = useState<string | null>(null);
   const [cards, setCards] = useState<CardLayout[]>([]);
   const [dangerous, setDangerous] = useState(false);
+  const [grill, setGrill] = useState(true); // GRILL-ME defaults ON
   // Factory-reset modal: null = closed; the info object = open, listing what will be erased.
   const [factoryInfo, setFactoryInfo] = useState<FactoryResetInfo | null>(null);
   const [factoryConfirm, setFactoryConfirm] = useState('');
@@ -322,6 +323,8 @@ export default function App() {
     alfred.getCost().then((c) => c && setCost(c)).catch(() => {});
     // Reflect the persisted DANGEROUS-mode state in the toggle + visuals.
     alfred.getDangerousMode().then(setDangerous).catch(() => {});
+    // Reflect the persisted GRILL-ME toggle (default on).
+    alfred.getGrillMe().then(setGrill).catch(() => {});
     // Reflect the persisted voice-output toggle.
     alfred.getTts().then(setTts).catch(() => {});
     // Reflect the persisted wake-word toggle (default on when the STT binary exists).
@@ -414,6 +417,8 @@ export default function App() {
           if (e.status === 'done' || e.status === 'idle') {
             refreshProjects();
             refreshBrains();
+            // The agent may have flipped GRILL-ME via the system tool — reflect it.
+            alfred.getGrillMe().then(setGrill).catch(() => {});
           }
           break;
         case 'budget':
@@ -489,6 +494,17 @@ export default function App() {
       tag: 'KERNEL',
       tone: next ? 'red' : 'lime',
       msg: next ? '!! DANGEROUS MODE ON — approvals bypassed' : 'dangerous mode off — approvals restored',
+    });
+  };
+
+  const toggleGrill = () => {
+    const next = !grill;
+    setGrill(next); // optimistic
+    alfred.setGrillMe(next).then(setGrill).catch(() => setGrill(!next));
+    pushLog({
+      tag: 'KERNEL',
+      tone: next ? 'lime' : 'dim',
+      msg: next ? 'grill-me on — interview to lock the plan first' : 'grill-me off — act directly',
     });
   };
 
@@ -810,6 +826,18 @@ export default function App() {
             title="Clear all saved auto-approve rules (start asking again)"
           >
             ⟲ RESET APPROVALS
+          </button>
+          <button
+            type="button"
+            className={`topbar-btn no-drag${grill ? ' on' : ''}`}
+            onClick={toggleGrill}
+            title={
+              grill
+                ? 'Grill-me on — Alfred interviews you to lock the plan before acting on ambiguous/high-stakes requests. Click to act directly.'
+                : 'Grill-me off — Alfred acts directly. Click to make it lock the plan first on ambiguous/high-stakes requests.'
+            }
+          >
+            {grill ? '◆ GRILL ON' : '◇ GRILL'}
           </button>
           <button
             type="button"

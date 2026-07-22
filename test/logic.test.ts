@@ -39,6 +39,7 @@ import {
 } from '../src/main/core/budget.ts';
 import { slugify } from '../src/main/core/projects.ts';
 import { confirmMatches, factoryResetPaths } from '../src/main/core/reset.ts';
+import { grillMeEnabled } from '../src/main/core/settings-pure.ts';
 import {
   defaultProviderId,
   parseProviderSpec,
@@ -235,6 +236,15 @@ test('factoryResetPaths — only workspace/memory, workspace/projects, dataDir/b
   assert.deepEqual(paths, ['/ws/memory', '/ws/projects', '/data/browser-profile']);
   // every path is confined to the workspace or the data dir — never anything else
   assert.ok(paths.every((p) => p.startsWith('/ws/') || p.startsWith('/data/')));
+});
+
+// ── grill-me toggle: default ON, only explicit "0" disables ──────────────────
+
+test('grillMeEnabled — default ON, only explicit "0" disables', () => {
+  assert.equal(grillMeEnabled(undefined), true); // fresh DB → ON
+  assert.equal(grillMeEnabled('1'), true);
+  assert.equal(grillMeEnabled(''), true); // anything not "0" → ON
+  assert.equal(grillMeEnabled('0'), false);
 });
 
 // ── providers / brain selection ────────────────────────────────────────────────
@@ -713,7 +723,7 @@ test('system.risk — reads T0, reversible controls T1, destructive T2', () => {
   for (const op of ['battery', 'volume_get', 'brightness_get', 'displays', 'wifi', 'apps_running', 'app_frontmost', 'clipboard_read'])
     assert.equal(risk(op), 'T0', `${op} should be T0`);
   // reversible controls → T1
-  for (const op of ['volume_set', 'brightness_set', 'app_open', 'notify', 'clipboard_write', 'caffeinate', 'screenshot'])
+  for (const op of ['volume_set', 'brightness_set', 'app_open', 'notify', 'clipboard_write', 'caffeinate', 'screenshot', 'grill_me_on', 'grill_me_off', 'grill_me_toggle'])
     assert.equal(risk(op), 'T1', `${op} should be T1`);
   // destructive / disruptive → T2
   for (const op of ['app_quit', 'lock', 'sleep']) assert.equal(risk(op), 'T2', `${op} should be T2`);

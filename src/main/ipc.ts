@@ -35,6 +35,9 @@ export interface Orchestrator {
   /** DANGEROUS mode (bypass all approvals): read/toggle, persisted. */
   getDangerousMode(): boolean | Promise<boolean>;
   setDangerousMode(on: boolean): boolean | Promise<boolean>;
+  /** GRILL-ME (plan-clarity interview): read/toggle, persisted, default ON. */
+  getGrillMe(): boolean | Promise<boolean>;
+  setGrillMe(on: boolean): boolean | Promise<boolean>;
   /** Clear all persisted auto-approve rules. */
   resetApprovals(): void;
   /** Reset ONLY the main conversation (chat + claude-code session); keeps memory/projects. */
@@ -201,6 +204,15 @@ export function registerIpc(core: Orchestrator, emit: (e: StreamEvent) => void):
     } catch (err) {
       fail('set dangerous mode', err);
       return false;
+    }
+  });
+  ipcMain.handle('alfred:getGrillMe', guard('get grill me', () => core.getGrillMe(), true));
+  ipcMain.handle('alfred:setGrillMe', async (_e, on: unknown) => {
+    try {
+      return await core.setGrillMe(on === true);
+    } catch (err) {
+      fail('set grill me', err);
+      return true;
     }
   });
   ipcMain.on('alfred:resetApprovals', () => {

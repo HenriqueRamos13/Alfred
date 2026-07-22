@@ -1,6 +1,7 @@
 import { execFile, spawn, type ChildProcess } from 'node:child_process';
 import path from 'node:path';
 import type { Tool } from './types.ts';
+import { grillMeEnabled } from '../core/settings-pure.ts';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Pure parsers (no spawn, strip-types safe → tested in test/logic.test.ts)
@@ -138,7 +139,10 @@ type Op =
   | 'screenshot'
   | 'window_hide'
   | 'window_show'
-  | 'window_toggle';
+  | 'window_toggle'
+  | 'grill_me_on'
+  | 'grill_me_off'
+  | 'grill_me_toggle';
 
 interface Args {
   op: Op;
@@ -207,7 +211,9 @@ export const system: Tool<Args> = {
   description:
     'See and control the Mac: battery, volume, brightness, displays, Wi-Fi, running apps, ' +
     'notifications, clipboard, keep-awake, screen lock/sleep and screenshots. Also hide/show/toggle ' +
-    "Alfred's own overlay windows (window_hide/window_show/window_toggle). One `op` per call. " +
+    "Alfred's own overlay windows (window_hide/window_show/window_toggle), and toggle the " +
+    'GRILL-ME plan-clarity interview when the user asks ("ativa/desativa o grill me": ' +
+    'grill_me_on/grill_me_off/grill_me_toggle). One `op` per call. ' +
     'macOS privacy (TCC) permissions some ops may prompt for: ' +
     'app_quit/app_frontmost/apps_running(fallback)/sleep use AppleScript → Automation permission; ' +
     'screenshot uses screencapture → Screen Recording permission. ' +
@@ -240,6 +246,9 @@ export const system: Tool<Args> = {
           'window_hide',
           'window_show',
           'window_toggle',
+          'grill_me_on',
+          'grill_me_off',
+          'grill_me_toggle',
         ],
         description: 'Which capability to invoke.',
       },
@@ -273,6 +282,9 @@ export const system: Tool<Args> = {
       case 'window_hide':
       case 'window_show':
       case 'window_toggle':
+      case 'grill_me_on':
+      case 'grill_me_off':
+      case 'grill_me_toggle':
         return 'T1';
       default:
         return 'T0';
@@ -474,6 +486,20 @@ export const system: Tool<Args> = {
         case 'window_toggle': {
           const { toggleAllWindows } = await import('../windows.ts');
           return { ok: true, result: { visible: toggleAllWindows() } };
+        }
+
+        // GRILL-ME toggle — let the user turn the plan-clarity interview on/off by
+        // voice/chat ("ativa/desativa o grill me"). Persists grill_me_enabled; the
+        // topbar reflects it on the next idle. Dynamic db import keeps this module
+        // free of a top-level better-sqlite3 dep (it's loaded by the logic tests).
+        case 'grill_me_on':
+        case 'grill_me_off':
+        case 'grill_me_toggle': {
+          const { getSetting, setSetting } = await import('../core/db.ts');
+          const current = grillMeEnabled(getSetting(ctx.db, 'grill_me_enabled'));
+          const next = a.op === 'grill_me_on' ? true : a.op === 'grill_me_off' ? false : !current;
+          setSetting(ctx.db, 'grill_me_enabled', next ? '1' : '0');
+          return { ok: true, result: { grillMe: next } };
         }
 
         default:

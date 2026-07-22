@@ -46,6 +46,7 @@ import { factoryResetPaths } from './reset.ts';
 import { resolveProvider, listBrains, resolveActiveBrainId } from './providers.ts';
 import type { BrainInfo } from './providers.ts';
 import { getSetting, setSetting, insertMessage, getRecentMessages } from './db.ts';
+import { grillMeEnabled } from './settings-pure.ts';
 import { dayKey } from './budget.ts';
 import { spawnClaudeCli, dangerousArgs } from './claudeSpawn.ts';
 import * as tts from './tts.ts';
@@ -291,6 +292,21 @@ export class Orchestrator {
       sys +=
         '\n\nDANGEROUS MODE is ON: all approvals are bypassed — never ask for permission or confirmation, just execute.';
     }
+    // GRILL-ME (plan-clarity interview). Default ON; read per-turn like dangerous
+    // mode so the topbar/agent toggle takes effect next turn. Orthogonal to
+    // governance: it locks the PLAN before acting; it does NOT replace approvals.
+    if (grillMeEnabled(getSetting(ctx.db, 'grill_me_enabled'))) {
+      sys +=
+        '\n\nGRILL-ME is ON: when the user request is ambiguous OR high-stakes ' +
+        "(T2/T3, money, delete, a vague project like 'build me an app'), FIRST " +
+        'interview them ONE question at a time (grill-me style — see ' +
+        'skills/grill-me/SKILL.md) to lock the plan before acting; ask, wait, ' +
+        'resolve each branch; only implement once the plan is clear. When the ' +
+        'request is simple/unambiguous, act directly. This is about plan CLARITY ' +
+        'only — dangerous mode and governance approvals still fully apply. The ' +
+        'user can turn this off/on any time ("desativa/ativa o grill me"); when ' +
+        'they ask, call the system tool op grill_me_off / grill_me_on / grill_me_toggle.';
+    }
     const mem = await readStable(ctx.workspace).catch(() => '');
     if (mem.trim()) sys += `\n\n# Stable memory (honour these)\n${mem}`;
     // L1: the index.md Map of Content — the router to every durable note.
@@ -429,6 +445,9 @@ export interface OrchestratorHandle {
   /** DANGEROUS mode (bypass all approvals): read/toggle, persisted. */
   getDangerousMode(): boolean;
   setDangerousMode(on: boolean): boolean;
+  /** GRILL-ME (interview to lock the plan before acting): read/toggle, persisted, default ON. */
+  getGrillMe(): boolean;
+  setGrillMe(on: boolean): boolean;
   /** Clear all persisted auto-approve rules ("ask again next time"). */
   resetApprovals(): void;
   /**
@@ -841,6 +860,13 @@ export function createOrchestrator(opts: CreateOrchestratorOpts): OrchestratorHa
     setDangerousMode(on) {
       setSetting(db, 'dangerous_mode', on ? '1' : '0');
       return isDangerous();
+    },
+    getGrillMe() {
+      return grillMeEnabled(getSetting(db, 'grill_me_enabled'));
+    },
+    setGrillMe(on) {
+      setSetting(db, 'grill_me_enabled', on ? '1' : '0');
+      return grillMeEnabled(getSetting(db, 'grill_me_enabled'));
     },
     resetApprovals() {
       setSetting(db, 'auto_approve', '[]');

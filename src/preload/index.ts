@@ -52,6 +52,9 @@ const api = {
   /** DANGEROUS mode (bypass all approvals) — persisted; read on mount. */
   getDangerousMode: (): Promise<boolean> => ipcRenderer.invoke('alfred:getDangerousMode'),
   setDangerousMode: (on: boolean): Promise<boolean> => ipcRenderer.invoke('alfred:setDangerousMode', on),
+  /** GRILL-ME (interview to lock the plan before acting) — persisted; read on mount. Default ON. */
+  getGrillMe: (): Promise<boolean> => ipcRenderer.invoke('alfred:getGrillMe'),
+  setGrillMe: (on: boolean): Promise<boolean> => ipcRenderer.invoke('alfred:setGrillMe', on),
   /** Clear all persisted auto-approve rules. */
   resetApprovals: (): void => ipcRenderer.send('alfred:resetApprovals'),
   /** Reset ONLY the main conversation (chat + claude-code session); keeps memory/projects. */

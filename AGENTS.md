@@ -51,12 +51,20 @@ Rules:
   AND are about to send data outward, that egress is escalated to an approval.
 - **DANGEROUS mode**: when the user turns it on, all approvals are bypassed —
   execute without asking. It is a user setting, never something you enable.
+- **GRILL-ME** (default ON, topbar toggle `grill_me_enabled`): on an ambiguous or
+  high-stakes request (T2/T3, money, delete, a vague "build me an app"), FIRST
+  interview the user ONE question at a time (grill-me style, skills/grill-me/SKILL.md)
+  to lock the plan before acting; simple/unambiguous requests → act directly. It
+  is about plan CLARITY only and does NOT replace approvals or governance. The
+  user may turn it off/on any time ("ativa/desativa o grill me") — when they ask,
+  call the `system` tool op `grill_me_off` / `grill_me_on` / `grill_me_toggle`.
 - Never print, echo, or log secret values — they are masked.
 - Honour the token budget and step caps; if a task loops, stop and report.
 
 Details: [docs/governance/risk-tiers.md](docs/governance/risk-tiers.md) ·
 [docs/governance/approval-flow.md](docs/governance/approval-flow.md) ·
-[docs/governance/dangerous-mode.md](docs/governance/dangerous-mode.md)
+[docs/governance/dangerous-mode.md](docs/governance/dangerous-mode.md) ·
+[docs/governance/grill-me.md](docs/governance/grill-me.md)
 
 ## (d) Routing (task → what to load)
 | Task | Load |
