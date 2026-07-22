@@ -20,7 +20,7 @@ import {
   denialError,
 } from '../src/main/core/governance.ts';
 import { readJsonLines } from '../src/main/core/stt.ts';
-import { classifyWakeExit, WAKE_MAX_FAST_FAILS } from '../src/main/core/wakeword.ts';
+import { classifyWakeExit, WAKE_MAX_FAST_FAILS, wakeStreamEvent } from '../src/main/core/wakeword.ts';
 import { shell } from '../src/main/tools/shell.ts';
 import { filesystem } from '../src/main/tools/filesystem.ts';
 import { browser } from '../src/main/tools/browser.ts';
@@ -49,9 +49,12 @@ import {
   cardOnDisplay,
   resolveCardDisplay,
   nextDisplayId,
+  displayForCard,
+  resolveMoveTarget,
   DISPLAY_MAIN,
   DISPLAY_ALL,
 } from '../src/main/core/layout.ts';
+import type { DisplayGeom } from '../src/main/core/types.ts';
 import {
   claudeMdNeedsWrite,
   buildClaudeMd,
@@ -357,6 +360,52 @@ test('nextDisplayId — cycles to the next monitor, wraps, resolves main/unknown
   // nowhere to move with fewer than two displays
   assert.equal(nextDisplayId('100', [{ id: '100', primary: true }]), undefined);
   assert.equal(nextDisplayId('100', []), undefined);
+});
+
+// ── multi-monitor: ui_layout display resolution (move cards between monitors) ─
+
+const DISPLAYS: DisplayGeom[] = [
+  { id: '100', label: 'Built-in', primary: true, bounds: { x: 0, y: 0, width: 1440, height: 900 }, workArea: { x: 0, y: 25, width: 1440, height: 875 } },
+  { id: '200', label: 'DELL', primary: false, bounds: { x: 1440, y: 0, width: 3840, height: 2160 }, workArea: { x: 1440, y: 0, width: 3840, height: 2160 } },
+];
+
+test('displayForCard — concrete id, sentinels + stale ids fall back to primary', () => {
+  assert.equal(displayForCard('200', DISPLAYS)?.id, '200');
+  assert.equal(displayForCard('100', DISPLAYS)?.id, '100');
+  assert.equal(displayForCard(DISPLAY_MAIN, DISPLAYS)?.id, '100'); // sentinel → primary
+  assert.equal(displayForCard(DISPLAY_ALL, DISPLAYS)?.id, '100');
+  assert.equal(displayForCard('999', DISPLAYS)?.id, '100'); // stale → primary
+  assert.equal(displayForCard('200', []), undefined); // no displays known
+});
+
+test('resolveMoveTarget — omitted keeps current display; explicit id moves + clamps there', () => {
+  // omitted → stay on the card's current display, its geometry returned for clamping
+  assert.deepEqual(resolveMoveTarget(undefined, '100', DISPLAYS), { displayId: '100', display: DISPLAYS[0] });
+  // explicit concrete id → reassign + target that monitor
+  assert.deepEqual(resolveMoveTarget('200', '100', DISPLAYS), { displayId: '200', display: DISPLAYS[1] });
+  // sentinels are accepted verbatim, clamped to the primary
+  assert.deepEqual(resolveMoveTarget(DISPLAY_MAIN, '200', DISPLAYS), { displayId: DISPLAY_MAIN, display: DISPLAYS[0] });
+  assert.deepEqual(resolveMoveTarget(DISPLAY_ALL, '200', DISPLAYS), { displayId: DISPLAY_ALL, display: DISPLAYS[0] });
+});
+
+test('resolveMoveTarget — unknown requested id errors; stale current id silently falls back', () => {
+  const bad = resolveMoveTarget('999', '100', DISPLAYS);
+  assert.ok('error' in bad && /Unknown displayId/.test(bad.error));
+  // a card pinned to a now-gone display, no explicit request → keep id, clamp on primary (no error)
+  assert.deepEqual(resolveMoveTarget(undefined, '999', DISPLAYS), { displayId: '999', display: DISPLAYS[0] });
+  // no displays known (single-window fallback) → pass the id through, no display to clamp to
+  assert.deepEqual(resolveMoveTarget('200', '100', []), { displayId: '200' });
+  assert.deepEqual(resolveMoveTarget(undefined, '100', []), { displayId: '100' });
+});
+
+test('resolveMoveTarget + clampBox — a move to the big monitor clamps to ITS bounds, not the primary', () => {
+  const t = resolveMoveTarget('200', '100', DISPLAYS);
+  assert.ok(!('error' in t) && t.display);
+  const box = t.display!.bounds;
+  // a position valid only on the 3840×2160 monitor stays put (would be clamped off the 1440-wide primary)
+  const c = clampBox({ x: 3000, y: 1500, w: 300, h: 200 }, { w: box.width, h: box.height });
+  assert.equal(c.x, 3000);
+  assert.equal(c.y, 1500);
 });
 
 // ── workspace CLAUDE.md (claude -p identity) ─────────────────────────────────
@@ -792,6 +841,34 @@ test('readJsonLines — skips blank and non-JSON lines, keeps the good ones', ()
   readJsonLines(s as unknown as NodeJS.ReadableStream, (m) => got.push(m));
   s.push('\n  \nnot json\n{"wake":true}\n');
   assert.deepEqual(got, [{ wake: true }]);
+});
+
+// ── wakeword: helper-message → StreamEvent routing (wake→command) ────────────
+
+test('wakeStreamEvent — wake enters listening, command reuses the mic path', () => {
+  assert.deepEqual(wakeStreamEvent({ wake: true }, 's'), { kind: 'wake.detected', sessionId: 's' });
+  // partial = live command-forming feedback
+  assert.deepEqual(wakeStreamEvent({ partial: 'abre o' }, 's'), {
+    kind: 'stt.partial',
+    sessionId: 's',
+    text: 'abre o',
+  });
+  // final = settled command, routed like the mic button (fills the input)
+  assert.deepEqual(wakeStreamEvent({ final: 'abre o safari' }, 's'), {
+    kind: 'stt.final',
+    sessionId: 's',
+    text: 'abre o safari',
+  });
+  // an EMPTY final (wake heard, no command) still routes → UI leaves "listening"
+  assert.deepEqual(wakeStreamEvent({ final: '' }, 's'), { kind: 'stt.final', sessionId: 's', text: '' });
+  assert.deepEqual(wakeStreamEvent({ error: 'boom' }, 's'), {
+    kind: 'error',
+    sessionId: 's',
+    message: 'wake word: boom',
+  });
+  // wake must be the boolean true, not a string; unknown/blank lines are ignored
+  assert.equal(wakeStreamEvent({ wake: 'true' }, 's'), null);
+  assert.equal(wakeStreamEvent({}, 's'), null);
 });
 
 // ── wakeword: fatal-exit / respawn-backoff classifier ────────────────────────

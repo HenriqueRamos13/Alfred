@@ -199,6 +199,24 @@ export interface DisplayInfo {
   primary: boolean;
 }
 
+/** A rectangle in DIPs (Electron's Display bounds/workArea shape). */
+export interface Rect {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+/**
+ * A physical display with its coordinate spaces (DIPs), exposed to the
+ * `ui_layout` tool so the AI can see every monitor and move cards between them.
+ * `workArea` excludes the menu bar / dock; `bounds` is the full display.
+ */
+export interface DisplayGeom extends DisplayInfo {
+  bounds: Rect;
+  workArea: Rect;
+}
+
 /** Components the AI may render via render_ui (whitelist enforced in the registry). */
 export const AI_COMPONENTS = [
   'Panel',

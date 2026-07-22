@@ -59,6 +59,24 @@ export function isWakeAvailable(): boolean {
 }
 
 /**
+ * Map one line of the helper's JSON protocol to the StreamEvent it should emit,
+ * or null to ignore it. Pure so the wake→command routing is unit-testable.
+ *   {"wake":true}    → wake.detected  (UI: enter the "listening" state)
+ *   {"partial":"…"}  → stt.partial    (live command-forming feedback)
+ *   {"final":"…"}    → stt.final      — the SAME path as the mic button: it fills
+ *                      the input, not auto-sent. Emitted even when empty (a wake
+ *                      with no command) so the UI always leaves "listening".
+ *   {"error":"…"}    → error
+ */
+export function wakeStreamEvent(msg: Record<string, unknown>, sessionId: string): StreamEvent | null {
+  if (msg.wake === true) return { kind: 'wake.detected', sessionId };
+  if (typeof msg.partial === 'string') return { kind: 'stt.partial', sessionId, text: msg.partial };
+  if (typeof msg.final === 'string') return { kind: 'stt.final', sessionId, text: msg.final };
+  if (typeof msg.error === 'string') return { kind: 'error', sessionId, message: `wake word: ${msg.error}` };
+  return null;
+}
+
+/**
  * Start the always-on wake listener. No-op if already running or if the native
  * helper isn't compiled (graceful disable). Long-running: it only exits when
  * stopWakeword() (SIGINT) is called or the process crashes.
@@ -80,14 +98,11 @@ export function startWakeword(emit: (e: StreamEvent) => void, sessionId: string)
   let sawError = false; // helper already surfaced a reason → don't double-emit on close
 
   readJsonLines(child.stdout, (msg) => {
-    if (msg.wake === true) emit({ kind: 'wake.detected', sessionId });
-    // Route the command through the mic path: fill the input, do not auto-send.
-    else if (typeof msg.final === 'string' && msg.final.trim())
-      emit({ kind: 'stt.final', sessionId, text: msg.final });
-    else if (typeof msg.error === 'string') {
-      sawError = true;
-      emit({ kind: 'error', sessionId, message: `wake word: ${msg.error}` });
-    }
+    const ev = wakeStreamEvent(msg, sessionId);
+    if (!ev) return;
+    // Helper already surfaced a reason → don't double-emit on close.
+    if (ev.kind === 'error') sawError = true;
+    emit(ev);
   });
 
   child.stderr.on('data', (d: Buffer) => console.error('[alfred] wakeword:', d.toString().trim()));

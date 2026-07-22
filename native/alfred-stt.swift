@@ -376,22 +376,39 @@ final class WakeRecognizer {
         }
     }
 
+    /// One continuous recognition session throughout — we NEVER open a fresh
+    /// session for the command (a new session is what fails on missing on-device
+    /// assets / locale). The command is just the transcript AFTER the wake word,
+    /// streamed as {"partial"} so the UI shows it forming, until a silence gap or
+    /// isFinal finalizes it.
     private func handle(text: String) {
         if awake {
-            if let cmd = commandAfterWake(text) { pendingCommand = cmd }
+            if let cmd = commandAfterWake(text) {
+                pendingCommand = cmd
+                emit(["partial": cmd])   // live "capturing command" feedback
+            }
             resetSilence()
         } else if let cmd = commandAfterWake(text) {
             awake = true
             pendingCommand = cmd
+            // Boolean literal on purpose (parent matches `wake === true`); emit()
+            // would JSON-encode the value as the string "true".
             print("{\"wake\":true}")
             fflush(stdout)
             resetSilence()
         }
     }
 
+    /// Emit the captured command and recycle the session back to wake-listening.
+    /// ALWAYS emits a {"final"} — even empty (a wake heard with no command after
+    /// it) — so the parent/UI always gets a capture-end signal and never hangs in
+    /// a "listening" state. `guard awake` makes a race (silence timer + isFinal)
+    /// finalize at most once. The recycle clears the buffer only AFTER emitting.
     private func finalizeCommand() {
+        guard awake else { return }
+        awake = false
         let cmd = pendingCommand.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !cmd.isEmpty { emit(["final": cmd]) }
+        emit(["final": cmd])
         restartSegment()
     }
 

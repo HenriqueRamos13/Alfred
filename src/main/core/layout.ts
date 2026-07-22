@@ -13,7 +13,7 @@
  * regardless of what the store or the AI wrote.
  */
 import type { AlfredDb } from './db.ts';
-import type { CardLayout, CardPatch } from './types.ts';
+import type { CardLayout, CardPatch, DisplayGeom } from './types.ts';
 
 export const MIN_W = 220;
 export const MIN_H = 120;
@@ -61,6 +61,49 @@ export function nextDisplayId(
   const resolved = current === DISPLAY_MAIN ? displays.find((d) => d.primary)?.id : current;
   const i = displays.findIndex((d) => d.id === resolved);
   return displays[(Math.max(0, i) + 1) % displays.length].id;
+}
+
+/**
+ * The display a card currently lives on. Sentinels ('main'/'all') and stale
+ * concrete ids resolve to the primary. Pure so the ui_layout tool and the tests
+ * agree on which monitor's canvas a card is clamped into. Undefined only when no
+ * displays are known (single-window fallback).
+ */
+export function displayForCard(
+  cardDisplayId: string,
+  displays: readonly DisplayGeom[],
+): DisplayGeom | undefined {
+  if (displays.length === 0) return undefined;
+  const primary = displays.find((d) => d.primary) ?? displays[0];
+  if (cardDisplayId === DISPLAY_MAIN || cardDisplayId === DISPLAY_ALL) return primary;
+  return displays.find((d) => d.id === cardDisplayId) ?? primary;
+}
+
+/**
+ * Resolve a move_card target: which concrete `displayId` to persist on the card
+ * and which display's canvas to clamp its x/y into. `requested` is the tool's
+ * optional displayId arg (concrete id, 'main', or 'all'); when omitted the card
+ * stays on its current display. An explicitly-requested unknown id is an error
+ * (the AI should call get_layout for the valid list); a *stale current* id
+ * silently falls back to the primary. Pure + unit-tested.
+ */
+export function resolveMoveTarget(
+  requested: string | undefined,
+  currentDisplayId: string,
+  displays: readonly DisplayGeom[],
+): { displayId: string; display?: DisplayGeom } | { error: string } {
+  if (displays.length === 0) return { displayId: requested ?? currentDisplayId };
+  if (requested === undefined) {
+    return { displayId: currentDisplayId, display: displayForCard(currentDisplayId, displays) };
+  }
+  if (requested === DISPLAY_MAIN || requested === DISPLAY_ALL) {
+    return { displayId: requested, display: displays.find((d) => d.primary) ?? displays[0] };
+  }
+  const d = displays.find((x) => x.id === requested);
+  if (!d) {
+    return { error: `Unknown displayId "${requested}". Call get_layout to see the available displays.` };
+  }
+  return { displayId: requested, display: d };
 }
 
 /** Keep at least this much of a card on-screen when clamping. */

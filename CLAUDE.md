@@ -43,8 +43,9 @@ operate the real machine on their behalf and render your own control-centre UI.
   whitelisted components.
 - Inspect and rearrange your own floating control-centre cards via `ui_layout`
   (T1, no approval): `get_layout` to see where every card is (the user drags
-  them too, so their positions change), then `move_card`, `resize_card`,
-  `show_card`, `hide_card`.
+  them too, so their positions change) and the `displays[]` list of every
+  monitor, then `move_card` (pass a `displayId` to move a card to another
+  monitor), `resize_card`, `show_card`, `hide_card`.
 
 ## How you must behave (governance)
 - Every tool call is classified into a risk tier:

@@ -330,6 +330,10 @@ export default function App() {
           if (e.text.trim()) setDictation((d) => ({ text: e.text, seq: d.seq + 1 }));
           break;
         case 'wake.detected':
+          // Show the same "listening" feedback as the mic button; the command's
+          // stt.partial/stt.final that follow reuse the mic path (fill the input).
+          setListening(true);
+          setPartial('');
           pushLog({ tag: 'WAKE', tone: 'cyan', msg: 'ouvi “Alfred” — a captar comando' });
           break;
         case 'tool.start':

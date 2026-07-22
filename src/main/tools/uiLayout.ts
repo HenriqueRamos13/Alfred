@@ -9,9 +9,10 @@
  *
  * Risk T1: UI-only, reversible, no approval.
  */
+import { screen } from 'electron';
 import type { Tool } from './types.ts';
-import type { CardLayout } from '../core/types.ts';
-import { getLayout, updateCard, arrangeLayout, resetLayout, type Bounds } from '../core/layout.ts';
+import type { CardLayout, DisplayGeom } from '../core/types.ts';
+import { getLayout, updateCard, arrangeLayout, resetLayout, resolveMoveTarget, type Bounds } from '../core/layout.ts';
 import { getSetting } from '../core/db.ts';
 
 interface Args {
@@ -21,6 +22,8 @@ interface Args {
   y?: number;
   w?: number;
   h?: number;
+  /** move_card only: target monitor id (from get_layout.displays) or 'main'/'all'. */
+  displayId?: string;
 }
 
 /** Drop z from the cards handed to the model — it's an internal stacking detail. */
@@ -32,15 +35,33 @@ function viewport(db: import('better-sqlite3').Database): Bounds {
   return m ? { w: Number(m[1]), h: Number(m[2]) } : { w: 1280, h: 800 };
 }
 
+/** Every physical display with its DIP coordinate spaces (empty off-Electron). */
+function listDisplays(): DisplayGeom[] {
+  const primaryId = screen.getPrimaryDisplay().id;
+  return screen.getAllDisplays().map((d) => ({
+    id: String(d.id),
+    label: d.label || `Display ${d.id}`,
+    primary: d.id === primaryId,
+    bounds: d.bounds,
+    workArea: d.workArea,
+  }));
+}
+
+const COORDS_NOTE =
+  "x/y are DIPs relative to the top-left of the card's display workArea; each display has its own " +
+  'coordinate space (see displays[].bounds/workArea). move_card {displayId} moves a card to another monitor.';
+
 export const uiLayout: Tool<Args> = {
   name: 'ui_layout',
   description:
-    'Inspect and rearrange your own floating control-centre cards. ops: ' +
-    'get_layout (list every card with id, title, x, y, w, h, visible, plus the canvas viewport size), ' +
-    'move_card {id, x, y}, resize_card {id, w, h}, show_card {id}, hide_card {id}, ' +
+    'Inspect and rearrange your own floating control-centre cards across every monitor. ops: ' +
+    'get_layout (list every card with id, title, x, y, w, h, visible, displayId, plus a displays[] array of ' +
+    'ALL monitors — {id, label, primary, bounds, workArea} in DIPs — so you see each screen and its coordinate space), ' +
+    'move_card {id, x, y, displayId?} (omit displayId to move within the current monitor; pass a displays[].id — or ' +
+    '"main"/"all" — to move the card to that monitor), resize_card {id, w, h}, show_card {id}, hide_card {id}, ' +
     'arrange/tile (organise every card into a clean grid that fits the window), reset (restore defaults). ' +
-    'Coordinates are pixels relative to the canvas whose width/height get_layout reports; moves are ' +
-    'clamped on-screen. The user can also drag cards, so call get_layout first.',
+    'x/y are DIPs relative to the top-left of the card display workArea; moves are clamped to the target display. ' +
+    'The user can also drag cards and move them between monitors, so call get_layout first.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -53,6 +74,11 @@ export const uiLayout: Tool<Args> = {
       y: { type: 'number' },
       w: { type: 'number' },
       h: { type: 'number' },
+      displayId: {
+        type: 'string',
+        description:
+          'move_card only. Target monitor: a displays[].id from get_layout, or "main" (primary) / "all" (mirror on every monitor). Omit to keep the card on its current monitor.',
+      },
     },
     required: ['op'],
   },
@@ -61,33 +87,42 @@ export const uiLayout: Tool<Args> = {
 
   async execute(a, ctx) {
     const bounds = viewport(ctx.db);
+    const displays = listDisplays();
 
     if (a.op === 'get_layout') {
-      return { ok: true, result: { cards: view(getLayout(ctx.db)), viewport: bounds } };
+      return { ok: true, result: { cards: view(getLayout(ctx.db)), viewport: bounds, displays, note: COORDS_NOTE } };
     }
 
     if (a.op === 'arrange' || a.op === 'tile') {
       const cards = arrangeLayout(ctx.db, bounds);
       ctx.emit({ kind: 'layout', cards });
-      return { ok: true, result: { cards: view(cards), viewport: bounds } };
+      return { ok: true, result: { cards: view(cards), viewport: bounds, displays } };
     }
 
     if (a.op === 'reset') {
       const cards = resetLayout(ctx.db, bounds);
       ctx.emit({ kind: 'layout', cards });
-      return { ok: true, result: { cards: view(cards), viewport: bounds } };
+      return { ok: true, result: { cards: view(cards), viewport: bounds, displays } };
     }
 
     if (!a.id) return { ok: false, error: 'id is required for this op' };
-    if (!getLayout(ctx.db).some((c) => c.id === a.id)) {
-      return { ok: false, error: `Unknown card "${a.id}"` };
-    }
+    const card = getLayout(ctx.db).find((c) => c.id === a.id);
+    if (!card) return { ok: false, error: `Unknown card "${a.id}"` };
 
     let cards: CardLayout[];
     switch (a.op) {
-      case 'move_card':
-        cards = updateCard(ctx.db, a.id, { x: a.x, y: a.y }, bounds);
+      case 'move_card': {
+        // Resolve the target monitor: onto another display when displayId is
+        // given, else within the card's current display. Clamp to THAT display's
+        // canvas so a cross-monitor move can't land off-screen.
+        const target = resolveMoveTarget(a.displayId, card.displayId, displays);
+        if ('error' in target) return { ok: false, error: target.error };
+        const box: Bounds = target.display
+          ? { w: target.display.bounds.width, h: target.display.bounds.height }
+          : bounds;
+        cards = updateCard(ctx.db, a.id, { x: a.x, y: a.y, displayId: target.displayId }, box);
         break;
+      }
       case 'resize_card':
         cards = updateCard(ctx.db, a.id, { w: a.w, h: a.h }, bounds);
         break;
@@ -101,6 +136,6 @@ export const uiLayout: Tool<Args> = {
         return { ok: false, error: `Unknown op "${a.op}"` };
     }
     ctx.emit({ kind: 'layout', cards });
-    return { ok: true, result: { cards: view(cards), viewport: bounds } };
+    return { ok: true, result: { cards: view(cards), viewport: bounds, displays } };
   },
 };
