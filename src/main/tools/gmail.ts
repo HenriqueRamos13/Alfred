@@ -2,11 +2,11 @@ import http from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { google } from 'googleapis';
-import type { gmail_v1 } from 'googleapis';
+import { gmail as gmailApi, auth } from '@googleapis/gmail';
+import type { gmail_v1 } from '@googleapis/gmail';
 import type { Tool, ToolCtx } from './types.ts';
 
-type OAuth2Client = InstanceType<typeof google.auth.OAuth2>;
+type OAuth2Client = InstanceType<typeof auth.OAuth2>;
 
 const SCOPE = 'https://www.googleapis.com/auth/gmail.readonly';
 
@@ -45,7 +45,7 @@ function oauthConnect(clientId: string, clientSecret: string): Promise<{ tokens:
         if (err || !code) throw new Error(err ?? 'No authorization code returned');
         const { tokens } = await oauth2.getToken(code);
         oauth2.setCredentials(tokens);
-        const gmail = google.gmail({ version: 'v1', auth: oauth2 });
+        const gmail = gmailApi({ version: 'v1', auth: oauth2 });
         const profile = await gmail.users.getProfile({ userId: 'me' });
         const email = profile.data.emailAddress;
         if (!email) throw new Error('Could not read account email address');
@@ -57,7 +57,7 @@ function oauthConnect(clientId: string, clientSecret: string): Promise<{ tokens:
     server.on('error', reject);
     server.listen(0, '127.0.0.1', () => {
       const port = (server.address() as AddressInfo).port;
-      oauth2 = new google.auth.OAuth2(clientId, clientSecret, `http://127.0.0.1:${port}`);
+      oauth2 = new auth.OAuth2(clientId, clientSecret, `http://127.0.0.1:${port}`);
       const authUrl = oauth2.generateAuthUrl({ access_type: 'offline', prompt: 'consent', scope: [SCOPE] });
       openUrl(authUrl);
     });
@@ -76,9 +76,9 @@ async function gmailFor(ctx: ToolCtx, email: string): Promise<gmail_v1.Gmail> {
   const raw = await ctx.secrets.get(`gmail:${email}`);
   if (!raw) throw new Error(`No stored token for ${email} — run gmail connect first`);
   const { clientId, clientSecret } = oauthConfig();
-  const oauth2 = new google.auth.OAuth2(clientId, clientSecret);
+  const oauth2 = new auth.OAuth2(clientId, clientSecret);
   oauth2.setCredentials(JSON.parse(raw));
-  return google.gmail({ version: 'v1', auth: oauth2 });
+  return gmailApi({ version: 'v1', auth: oauth2 });
 }
 
 function header(headers: gmail_v1.Schema$MessagePartHeader[] | undefined, name: string): string {
