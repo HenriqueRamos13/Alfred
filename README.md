@@ -324,9 +324,16 @@ OAuth client:
 3. **OAuth consent screen** → External → add yourself as a test user.
 4. **Credentials → Create credentials → OAuth client ID** → *Desktop app*.
 5. Copy the client ID and secret into `.env`
-   (`GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET`).
-6. In Alfred, ask it to *connect Gmail*; it runs the OAuth flow and stores the
-   token in your Keychain. The token never touches disk.
+   (`GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET`) and **restart Alfred**
+   so it picks up the new env.
+6. In Alfred, ask it to *connect Gmail* (or click **+ Conectar Gmail** in the
+   Accounts card); it runs the OAuth flow and stores the token in your Keychain.
+   The token never touches disk.
+
+If the client ID/secret are missing or still a placeholder, Alfred **won't open
+the browser** — it validates the config first (the id must end in
+`.apps.googleusercontent.com`) and shows a clear error in the UI instead of a
+Google `invalid_client` error page.
 
 ## Security & governance model
 

@@ -20,11 +20,12 @@ import {
   denialError,
 } from '../src/main/core/governance.ts';
 import { readJsonLines } from '../src/main/core/stt.ts';
-import { classifyWakeExit, WAKE_MAX_FAST_FAILS, wakeStreamEvent } from '../src/main/core/wakeword.ts';
+import { classifyWakeExit, WAKE_MAX_FAST_FAILS, wakeStreamEvent, parseVoiceIntent } from '../src/main/core/wakeword.ts';
 import { shell } from '../src/main/tools/shell.ts';
 import { filesystem } from '../src/main/tools/filesystem.ts';
 import { browser } from '../src/main/tools/browser.ts';
 import { delegate } from '../src/main/tools/delegate.ts';
+import { gmailConfigured } from '../src/main/tools/gmail-config.ts';
 import {
   dayKey,
   makeBudget,
@@ -871,6 +872,52 @@ test('wakeStreamEvent — wake enters listening, command reuses the mic path', (
   assert.equal(wakeStreamEvent({}, 's'), null);
 });
 
+// ── wakeword: voice-command intent parser ────────────────────────────────────
+
+test('parseVoiceIntent — hide keyword (pt + en), first word, accent/case-insensitive', () => {
+  for (const cmd of ['esconder', 'esconde', 'Esconde', 'ESCONDER', 'ocultar', 'oculta', 'hide', 'Hide']) {
+    assert.deepEqual(parseVoiceIntent(cmd), { kind: 'hide' }, cmd);
+  }
+  // trailing text after a hide keyword is discarded (hide takes no text)
+  assert.deepEqual(parseVoiceIntent('esconde isto agora'), { kind: 'hide' });
+  // trailing punctuation on the keyword still matches
+  assert.deepEqual(parseVoiceIntent('Esconde!'), { kind: 'hide' });
+});
+
+test('parseVoiceIntent — show keyword (pt + en)', () => {
+  for (const cmd of ['aparecer', 'aparece', 'mostrar', 'mostra', 'voltar', 'volta', 'show', 'MOSTRA']) {
+    assert.deepEqual(parseVoiceIntent(cmd), { kind: 'show' }, cmd);
+  }
+  assert.deepEqual(parseVoiceIntent('mostra de novo'), { kind: 'show' });
+});
+
+test('parseVoiceIntent — send carries the trailing text; bare send has empty text', () => {
+  assert.deepEqual(parseVoiceIntent('enviar olá joão'), { kind: 'send', text: 'olá joão' });
+  assert.deepEqual(parseVoiceIntent('envia mensagem para o time'), {
+    kind: 'send',
+    text: 'mensagem para o time',
+  });
+  assert.deepEqual(parseVoiceIntent('send the report'), { kind: 'send', text: 'the report' });
+  assert.deepEqual(parseVoiceIntent('submit'), { kind: 'send', text: '' });
+  // bare "enviar" → submit the current input (empty text)
+  assert.deepEqual(parseVoiceIntent('enviar'), { kind: 'send', text: '' });
+  assert.deepEqual(parseVoiceIntent('Envia,'), { kind: 'send', text: '' });
+  // accented keyword ("envía") normalises to a send too
+  assert.deepEqual(parseVoiceIntent('envía isto'), { kind: 'send', text: 'isto' });
+});
+
+test('parseVoiceIntent — anything else is dictation, preserving the full text', () => {
+  assert.deepEqual(parseVoiceIntent('abre o safari'), { kind: 'dictate', text: 'abre o safari' });
+  assert.deepEqual(parseVoiceIntent('qual é a bateria'), { kind: 'dictate', text: 'qual é a bateria' });
+  // a keyword mid-sentence does NOT trigger (must be the FIRST word)
+  assert.deepEqual(parseVoiceIntent('por favor esconde'), { kind: 'dictate', text: 'por favor esconde' });
+  // hyphenated word is not the bare keyword
+  assert.deepEqual(parseVoiceIntent('mostra-me as notas'), { kind: 'dictate', text: 'mostra-me as notas' });
+  // empty / whitespace → dictation with empty text (wake with no command)
+  assert.deepEqual(parseVoiceIntent(''), { kind: 'dictate', text: '' });
+  assert.deepEqual(parseVoiceIntent('   '), { kind: 'dictate', text: '' });
+});
+
 // ── wakeword: fatal-exit / respawn-backoff classifier ────────────────────────
 
 test('classifyWakeExit — non-zero exit is fatal (no respawn), any elapsed', () => {
@@ -1018,4 +1065,56 @@ test('mcpCliArgs — empty (fallback) when no bridge or disabled by env', () => 
   assert.deepEqual(mcpCliArgs({}, null), []);
   const bridge = { url: 'http://127.0.0.1:9/mcp', token: 't', tools: ['system'] };
   assert.deepEqual(mcpCliArgs({ ALFRED_MCP_BRIDGE: 'off' }, bridge), []);
+});
+
+test('gmailConfigured — accepts a real Desktop-app client', () => {
+  assert.equal(
+    gmailConfigured({
+      GOOGLE_OAUTH_CLIENT_ID: '123-abc.apps.googleusercontent.com',
+      GOOGLE_OAUTH_CLIENT_SECRET: 'GOCSPX-realsecretvalue',
+    }),
+    true,
+  );
+  // surrounding whitespace is tolerated
+  assert.equal(
+    gmailConfigured({
+      GOOGLE_OAUTH_CLIENT_ID: '  123-abc.apps.googleusercontent.com  ',
+      GOOGLE_OAUTH_CLIENT_SECRET: '  GOCSPX-x  ',
+    }),
+    true,
+  );
+});
+
+test('gmailConfigured — rejects missing / placeholder / malformed values', () => {
+  assert.equal(gmailConfigured({}), false, 'both missing');
+  assert.equal(gmailConfigured({ GOOGLE_OAUTH_CLIENT_ID: '', GOOGLE_OAUTH_CLIENT_SECRET: '' }), false, 'empty');
+  assert.equal(
+    gmailConfigured({ GOOGLE_OAUTH_CLIENT_ID: 'x.apps.googleusercontent.com' }),
+    false,
+    'secret missing',
+  );
+  assert.equal(
+    gmailConfigured({
+      GOOGLE_OAUTH_CLIENT_ID: 'your-client-id.apps.googleusercontent.com',
+      GOOGLE_OAUTH_CLIENT_SECRET: 'your-client-secret',
+    }),
+    false,
+    'your-client-id placeholder',
+  );
+  assert.equal(
+    gmailConfigured({
+      GOOGLE_OAUTH_CLIENT_ID: 'xxxx.apps.googleusercontent.com',
+      GOOGLE_OAUTH_CLIENT_SECRET: 'GOCSPX-real',
+    }),
+    false,
+    'xxxx placeholder',
+  );
+  assert.equal(
+    gmailConfigured({
+      GOOGLE_OAUTH_CLIENT_ID: '123-abc',
+      GOOGLE_OAUTH_CLIENT_SECRET: 'GOCSPX-real',
+    }),
+    false,
+    'wrong id shape',
+  );
 });

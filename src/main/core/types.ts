@@ -254,6 +254,10 @@ export type StreamEvent =
   | { kind: 'stt.partial'; sessionId: string; text: string }
   | { kind: 'stt.final'; sessionId: string; text: string }
   | { kind: 'wake.detected'; sessionId: string }
+  // A wake command was recognised as an ACTION (not dictation). hide/show are
+  // already applied in main; 'send' with no text asks the renderer to submit the
+  // current input; text (when present) is what was sent, for the log.
+  | { kind: 'voice.command'; sessionId: string; action: 'hide' | 'show' | 'send'; text?: string }
   | { kind: 'tool.start'; sessionId: string; toolName: string; args: unknown; tier: RiskTier }
   | { kind: 'tool.end'; sessionId: string; toolName: string; status: AuditStatus; error?: string }
   | { kind: 'approval.request'; request: ApprovalRequest }

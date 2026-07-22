@@ -25,6 +25,7 @@ import { reassignDisplayCards } from './core/layout.ts';
 import { listBrains, resolveActiveBrainId } from './core/providers.ts';
 import { registerIpc, registerWindowIpc, type Orchestrator } from './ipc.ts';
 import { DisplayManager } from './displays.ts';
+import { hideAllWindows, showAllWindows, toggleAllWindows } from './windows.ts';
 import type { AlfredConfig, StreamEvent } from './core/types.ts';
 
 const TOGGLE_SHORTCUT = 'CommandOrControl+Shift+A';
@@ -272,7 +273,15 @@ function boot(): void {
     }
   }
 
-  const core = createOrchestrator({ config, db, emit, dataDir: data }) as Orchestrator;
+  // Wake-word voice commands ("Alfred, esconder / mostrar") act on the windows
+  // from MAIN, so they work even while the overlay is hidden.
+  const core = createOrchestrator({
+    config,
+    db,
+    emit,
+    dataDir: data,
+    windowControl: { hide: hideAllWindows, show: showAllWindows },
+  }) as Orchestrator;
   registerIpc(core, emit);
   registerWindowIpc();
   // Displays for the renderer's "move card to next monitor" control.
@@ -305,19 +314,8 @@ app.whenReady().then(() => {
   boot();
 
   // Global toggle so EVERY overlay window can be summoned/dismissed at once.
-  const toggle = () => {
-    const wins = BrowserWindow.getAllWindows();
-    const anyVisible = wins.some((w) => w.isVisible());
-    for (const w of wins) {
-      if (anyVisible) w.hide();
-      else {
-        w.show();
-        w.focus();
-      }
-    }
-  };
-  globalShortcut.register(TOGGLE_SHORTCUT, toggle);
-  globalShortcut.register(TOGGLE_SHORTCUT_H, toggle);
+  globalShortcut.register(TOGGLE_SHORTCUT, toggleAllWindows);
+  globalShortcut.register(TOGGLE_SHORTCUT_H, toggleAllWindows);
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) boot();

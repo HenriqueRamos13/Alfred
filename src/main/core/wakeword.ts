@@ -77,6 +77,43 @@ export function wakeStreamEvent(msg: Record<string, unknown>, sessionId: string)
 }
 
 /**
+ * A voice command's intent, parsed from a wake command transcript. `hide`/`show`
+ * act on Alfred's windows; `send` submits (with the trailing text, or the current
+ * input when empty); `dictate` is the default — fill the input, user confirms.
+ */
+export type VoiceIntent = { kind: 'hide' | 'show' | 'send' | 'dictate'; text?: string };
+
+// Leading keyword → action (pt + en). hide/show discard any trailing text;
+// send/dictate keep it.
+const HIDE_WORDS = ['esconder', 'esconde', 'ocultar', 'oculta', 'hide'];
+const SHOW_WORDS = ['aparecer', 'aparece', 'mostrar', 'mostra', 'voltar', 'volta', 'show'];
+const SEND_WORDS = ['enviar', 'envia', 'mandar', 'manda', 'send', 'submit'];
+
+/** Lowercase + strip diacritics so "Envia"/"envía"/"ENVIAR" all match. */
+function norm(s: string): string {
+  return s.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
+}
+
+/**
+ * PURE — classify a wake command transcript by its FIRST word (case- and
+ * accent-insensitive, pt + en). `send`/`dictate` carry the remaining text:
+ *   "esconde" → hide · "mostra de novo" → show
+ *   "enviar olá joão" → send "olá joão" · "enviar" → send "" (submit current input)
+ *   "abre o safari" → dictate "abre o safari" (fill the input, user confirms)
+ */
+export function parseVoiceIntent(command: string): VoiceIntent {
+  const raw = command.trim();
+  if (!raw) return { kind: 'dictate', text: '' };
+  const m = raw.match(/^(\S+)(?:\s+([\s\S]*))?$/)!;
+  const first = norm(m[1]).replace(/[.,!?;:]+$/, ''); // drop trailing punctuation on the keyword
+  const rest = (m[2] ?? '').trim();
+  if (HIDE_WORDS.includes(first)) return { kind: 'hide' };
+  if (SHOW_WORDS.includes(first)) return { kind: 'show' };
+  if (SEND_WORDS.includes(first)) return { kind: 'send', text: rest };
+  return { kind: 'dictate', text: raw };
+}
+
+/**
  * Start the always-on wake listener. No-op if already running or if the native
  * helper isn't compiled (graceful disable). Long-running: it only exits when
  * stopWakeword() (SIGINT) is called or the process crashes.

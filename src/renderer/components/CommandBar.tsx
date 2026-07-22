@@ -26,6 +26,8 @@ export interface CommandBarProps {
   onMic?: () => void;
   /** A settled transcript to drop into the input; appended when `seq` changes. */
   dictation?: { text: string; seq: number };
+  /** Bumped by a bare voice "enviar" command → submit the current input value. */
+  submitSignal?: number;
 }
 
 const STATUS_COLOR: Record<AgentStatus, string> = {
@@ -50,6 +52,7 @@ export function CommandBar({
   partial,
   onMic,
   dictation,
+  submitSignal,
 }: CommandBarProps) {
   const [value, setValue] = useState('');
 
@@ -68,6 +71,16 @@ export function CommandBar({
     onSubmit(text);
     setValue('');
   };
+
+  // A bare "Alfred, enviar" voice command submits whatever is in the input now.
+  const lastSubmit = useRef(0);
+  useEffect(() => {
+    if (submitSignal === undefined || submitSignal === lastSubmit.current) return;
+    lastSubmit.current = submitSignal;
+    submit();
+    // submit() reads the latest `value`/`killed` via closure on this render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [submitSignal]);
 
   const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Enter' && !e.shiftKey) {

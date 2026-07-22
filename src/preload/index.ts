@@ -15,6 +15,7 @@ import type {
   DisplayInfo,
 } from '../main/core/types.ts';
 import type { BrainInfo } from '../main/core/providers.ts';
+import { gmailConfigured } from '../main/tools/gmail-config.ts';
 
 /** Read a `--key=value` flag from additionalArguments (per-window: --display-id/--primary/--overlay). */
 function arg(key: string): string {
@@ -36,8 +37,8 @@ const api = {
   setInteractive: (on: boolean): void => ipcRenderer.send('overlay:setInteractive', on === true),
   /** Physical displays (for the "move card to next monitor" control). */
   listDisplays: (): Promise<DisplayInfo[]> => ipcRenderer.invoke('alfred:listDisplays'),
-  /** Whether Google OAuth is configured — drives the "connect Gmail" hint in the UI. */
-  gmailConfigured: !!(process.env.GOOGLE_OAUTH_CLIENT_ID && process.env.GOOGLE_OAUTH_CLIENT_SECRET),
+  /** Whether Google OAuth is validly configured (not empty/placeholder) — drives the "connect Gmail" hint. */
+  gmailConfigured: gmailConfigured(process.env),
   /** Send a user command / chat turn to the orchestrator. */
   send: (text: string): Promise<void> => ipcRenderer.invoke('alfred:send', text),
   /** Load recent persisted chat history to repopulate the conversation on open. */

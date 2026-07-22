@@ -135,7 +135,10 @@ type Op =
   | 'caffeinate'
   | 'lock'
   | 'sleep'
-  | 'screenshot';
+  | 'screenshot'
+  | 'window_hide'
+  | 'window_show'
+  | 'window_toggle';
 
 interface Args {
   op: Op;
@@ -203,7 +206,8 @@ export const system: Tool<Args> = {
   name: 'system',
   description:
     'See and control the Mac: battery, volume, brightness, displays, Wi-Fi, running apps, ' +
-    'notifications, clipboard, keep-awake, screen lock/sleep and screenshots. One `op` per call. ' +
+    'notifications, clipboard, keep-awake, screen lock/sleep and screenshots. Also hide/show/toggle ' +
+    "Alfred's own overlay windows (window_hide/window_show/window_toggle). One `op` per call. " +
     'macOS privacy (TCC) permissions some ops may prompt for: ' +
     'app_quit/app_frontmost/apps_running(fallback)/sleep use AppleScript → Automation permission; ' +
     'screenshot uses screencapture → Screen Recording permission. ' +
@@ -233,6 +237,9 @@ export const system: Tool<Args> = {
           'lock',
           'sleep',
           'screenshot',
+          'window_hide',
+          'window_show',
+          'window_toggle',
         ],
         description: 'Which capability to invoke.',
       },
@@ -263,6 +270,9 @@ export const system: Tool<Args> = {
       case 'clipboard_write':
       case 'caffeinate':
       case 'screenshot':
+      case 'window_hide':
+      case 'window_show':
+      case 'window_toggle':
         return 'T1';
       default:
         return 'T0';
@@ -447,6 +457,23 @@ export const system: Tool<Args> = {
                 'screencapture failed — grant Screen Recording (System Settings → Privacy & Security → Screen Recording) to the app running Alfred.',
             };
           return { ok: true, result: { path: out } };
+        }
+
+        case 'window_hide': {
+          const { hideAllWindows } = await import('../windows.ts');
+          hideAllWindows();
+          return { ok: true, result: { visible: false } };
+        }
+
+        case 'window_show': {
+          const { showAllWindows } = await import('../windows.ts');
+          showAllWindows();
+          return { ok: true, result: { visible: true } };
+        }
+
+        case 'window_toggle': {
+          const { toggleAllWindows } = await import('../windows.ts');
+          return { ok: true, result: { visible: toggleAllWindows() } };
         }
 
         default:

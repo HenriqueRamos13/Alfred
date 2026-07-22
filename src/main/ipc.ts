@@ -9,6 +9,7 @@
  * plus a couple of read queries.
  */
 import { app, BrowserWindow, ipcMain } from 'electron';
+import { hideAllWindows, toggleAllWindows } from './windows.ts';
 import type {
   ApprovalDecision,
   ProjectRecord,
@@ -216,13 +217,9 @@ export function registerIpc(core: Orchestrator, emit: (e: StreamEvent) => void):
  * click-through when it leaves, so empty desktop stays clickable behind Alfred.
  */
 export function registerWindowIpc(): void {
-  const all = () => BrowserWindow.getAllWindows();
-  ipcMain.on('window:hide', () => all().forEach((w) => w.hide()));
+  ipcMain.on('window:hide', () => hideAllWindows());
   ipcMain.on('window:quit', () => app.quit());
-  ipcMain.on('window:toggle', () => {
-    const anyVisible = all().some((w) => w.isVisible());
-    all().forEach((w) => (anyVisible ? w.hide() : w.show()));
-  });
+  ipcMain.on('window:toggle', () => toggleAllWindows());
   ipcMain.on('overlay:setInteractive', (e, interactive: unknown) => {
     const win = BrowserWindow.fromWebContents(e.sender);
     // forward:true keeps move events flowing so the renderer can detect the

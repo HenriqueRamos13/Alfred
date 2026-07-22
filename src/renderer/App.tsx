@@ -89,6 +89,8 @@ export default function App() {
   const [listening, setListening] = useState(false);
   const [partial, setPartial] = useState('');
   const [dictation, setDictation] = useState<{ text: string; seq: number }>({ text: '', seq: 0 });
+  // Bumped by a bare "Alfred, enviar" voice command → CommandBar submits its input.
+  const [submitSeq, setSubmitSeq] = useState(0);
 
   const [bounds, setBounds] = useState<Bounds | null>(null);
   const [displays, setDisplays] = useState<DisplayInfo[]>([]);
@@ -336,6 +338,17 @@ export default function App() {
           setPartial('');
           pushLog({ tag: 'WAKE', tone: 'cyan', msg: 'ouvi “Alfred” — a captar comando' });
           break;
+        case 'voice.command': {
+          // An action command (hide/show already applied in main). Leave the
+          // "listening" state and log what was recognised.
+          setListening(false);
+          setPartial('');
+          const label = e.action === 'hide' ? 'esconder' : e.action === 'show' ? 'mostrar' : 'enviar';
+          pushLog({ tag: 'WAKE', tone: 'lime', msg: `comando de voz: ${label}${e.text ? ` — “${e.text}”` : ''}` });
+          // Bare "enviar" → submit whatever the input already holds.
+          if (e.action === 'send' && !e.text) setSubmitSeq((n) => n + 1);
+          break;
+        }
         case 'tool.start':
           pushLog({ tag: e.toolName, tone: 'cyan', msg: summarize(e.args) });
           break;
@@ -747,6 +760,7 @@ export default function App() {
           partial={partial}
           onMic={toggleMic}
           dictation={dictation}
+          submitSignal={submitSeq}
         />
       </div>
 

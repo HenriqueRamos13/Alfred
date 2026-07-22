@@ -396,6 +396,12 @@ export interface CreateOrchestratorOpts {
   emit: (event: StreamEvent) => void;
   /** App data dir; the persistent browser profile lives under it. */
   dataDir: string;
+  /**
+   * Window controls (injected by the shell so core stays Electron-free). Used by
+   * the wake-word voice commands so "esconder"/"mostrar" work from MAIN even
+   * while the overlay is hidden. Optional — omitted in tests / headless.
+   */
+  windowControl?: { hide(): void; show(): void };
 }
 
 export interface OrchestratorHandle {
@@ -531,8 +537,39 @@ export function createOrchestrator(opts: CreateOrchestratorOpts): OrchestratorHa
   };
   const startWake = (): void => {
     if (wakeSuppressed || !wakeEnabled()) return;
-    wakeword.startWakeword(emit, sessionId);
+    wakeword.startWakeword(wakeEmit, sessionId);
   };
+
+  // Wake commands: a {final} from the wake helper is first checked for an ACTION
+  // intent (esconder/mostrar/enviar). Only 'dictate' falls through to fill the
+  // input (the existing behaviour); everything else is consumed here.
+  const wakeEmit = (e: StreamEvent): void => {
+    if (e.kind === 'stt.final' && handleVoiceIntent(e.text)) return;
+    emit(e);
+  };
+  function handleVoiceIntent(transcript: string): boolean {
+    const intent = wakeword.parseVoiceIntent(transcript);
+    switch (intent.kind) {
+      case 'hide':
+        opts.windowControl?.hide();
+        emit({ kind: 'voice.command', sessionId, action: 'hide' });
+        return true;
+      case 'show':
+        opts.windowControl?.show();
+        emit({ kind: 'voice.command', sessionId, action: 'show' });
+        return true;
+      case 'send': {
+        const body = intent.text?.trim() ?? '';
+        // Text after "enviar" → a new turn straight away. Bare "enviar" → let the
+        // renderer submit whatever is already in the input (the last dictation).
+        emit({ kind: 'voice.command', sessionId, action: 'send', text: body || undefined });
+        if (body) void send(body);
+        return true;
+      }
+      default:
+        return false; // dictate → stt.final flows through, fills the input
+    }
+  }
 
   let active: Orchestrator | null = null;
 
@@ -669,11 +706,10 @@ export function createOrchestrator(opts: CreateOrchestratorOpts): OrchestratorHa
     emit({ kind: 'agent.status', sessionId, status: 'done' });
   }
 
-  // Arm the wake listener at startup when enabled (no-op without the binary).
-  startWake();
-
-  return {
-    async send(text) {
+  // The single turn entry point: IPC `alfred:send` and the wake "enviar <text>"
+  // command both route through here. A function declaration so the wake handler
+  // (defined above) can call it.
+  async function send(text: string): Promise<void> {
       gov.resetTrifecta();
       // A new turn cancels a pending curator sweep — never organise mid-task.
       if (curatorTimer) {
@@ -739,7 +775,13 @@ export function createOrchestrator(opts: CreateOrchestratorOpts): OrchestratorHa
         active = null;
         scheduleCurator();
       }
-    },
+  }
+
+  // Arm the wake listener at startup when enabled (no-op without the binary).
+  startWake();
+
+  return {
+    send,
     async runCurator() {
       return runCuratorNow();
     },
@@ -790,7 +832,9 @@ export function createOrchestrator(opts: CreateOrchestratorOpts): OrchestratorHa
       const gmailTool = tools.find((t) => t.name === 'gmail');
       if (!gmailTool) return null;
       const out = await gmailTool.execute({ op: 'connect' }, ctx);
-      if (!out.ok) return null;
+      // Surface the tool error (e.g. "Gmail não configurado…") so the IPC guard
+      // emits it as a UI alert instead of a silent null.
+      if (!out.ok) throw new Error(out.error ?? 'Gmail connect failed');
       const email = (out.result as { email?: string } | undefined)?.email;
       return queryAccounts().find((a) => a.email === email) ?? null;
     },

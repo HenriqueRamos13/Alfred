@@ -32,5 +32,15 @@ top bar and the orchestrator wires it to the turn. macOS only. Sources:
   the user re-arms (manual mic or toggle) — no audio capture after an emergency
   stop.
 
+## Wake commands (action intents)
+A wake transcript is classified by its **first word** (case/accent-insensitive,
+pt + en) before it reaches the input — `parseVoiceIntent` in `wakeword.ts`:
+- **hide** — `esconder/esconde/ocultar/oculta/hide` → hide all windows.
+- **show** — `aparecer/aparece/mostrar/mostra/voltar/volta/show` → show them.
+- **send** — `enviar/envia/mandar/manda/send/submit` → submit: trailing text
+  starts a new turn; bare (no text) submits whatever is in the input.
+- anything else → **dictate**: fills the input, the user confirms with Enter.
+Hide/show run in the main process, so they work even while the window is hidden.
+
 ## Prefer English
 `ALFRED_STT_LOCALE=en-US`, `ALFRED_TTS_ENGINE=kokoro`, `ALFRED_TTS_VOICE=af_heart`.

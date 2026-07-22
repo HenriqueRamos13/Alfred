@@ -5,6 +5,7 @@ import { randomUUID } from 'node:crypto';
 import { gmail as gmailApi, auth } from '@googleapis/gmail';
 import type { gmail_v1 } from '@googleapis/gmail';
 import { denialError } from '../core/governance.ts';
+import { gmailConfigured, GMAIL_NOT_CONFIGURED } from './gmail-config.ts';
 import type { Tool, ToolCtx } from './types.ts';
 
 type OAuth2Client = InstanceType<typeof auth.OAuth2>;
@@ -12,11 +13,13 @@ type OAuth2Client = InstanceType<typeof auth.OAuth2>;
 const SCOPE = 'https://www.googleapis.com/auth/gmail.readonly';
 
 function oauthConfig(): { clientId: string; clientSecret: string } {
-  const clientId = process.env.GOOGLE_OAUTH_CLIENT_ID;
-  const clientSecret = process.env.GOOGLE_OAUTH_CLIENT_SECRET;
-  if (!clientId || !clientSecret)
-    throw new Error('GOOGLE_OAUTH_CLIENT_ID / GOOGLE_OAUTH_CLIENT_SECRET are not set (see README).');
-  return { clientId, clientSecret };
+  // Guard before any OAuth flow: a missing/placeholder client would just open a
+  // Google "invalid_client" error page. Fail loud and actionable instead.
+  if (!gmailConfigured(process.env)) throw new Error(GMAIL_NOT_CONFIGURED);
+  return {
+    clientId: process.env.GOOGLE_OAUTH_CLIENT_ID!.trim(),
+    clientSecret: process.env.GOOGLE_OAUTH_CLIENT_SECRET!.trim(),
+  };
 }
 
 function openUrl(url: string): void {
