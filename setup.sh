@@ -71,7 +71,9 @@ fi
 #     xcrun pins the correct macOS SDK/toolchain; a bare `swiftc` can fail to
 #     resolve CoreFoundation on a half-configured Command Line Tools install.
 #     Source is committed; binary is gitignored.
-say "Compiling the voice-input helper (native/alfred-stt)"
+# The helper now also has a --wake mode (always-on "Alfred" wake word); this
+# recompile is what ships it — re-run ./setup.sh after updating to pick it up.
+say "Compiling the voice-input + wake-word helper (native/alfred-stt)"
 stt_voice_warning() {
   cat >&2 <<'WARN'
 

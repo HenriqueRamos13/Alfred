@@ -59,6 +59,9 @@ const api = {
   /** Voice input (push-to-talk): start/stop the STT helper; transcript arrives via stt.partial/stt.final stream events. */
   startListening: (): void => ipcRenderer.send('alfred:startListening'),
   stopListening: (): void => ipcRenderer.send('alfred:stopListening'),
+  /** Wake word ("Alfred", always-on) toggle — persisted; read on mount. */
+  getWakeword: (): Promise<boolean> => ipcRenderer.invoke('alfred:getWakeword'),
+  setWakeword: (on: boolean): Promise<boolean> => ipcRenderer.invoke('alfred:setWakeword', on),
   /** Overlay window controls (frameless HUD). */
   hideWindow: (): void => ipcRenderer.send('window:hide'),
   quitWindow: (): void => ipcRenderer.send('window:quit'),

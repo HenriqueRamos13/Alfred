@@ -222,6 +222,7 @@ export type StreamEvent =
   | { kind: 'chat.message'; message: ChatMessage }
   | { kind: 'stt.partial'; sessionId: string; text: string }
   | { kind: 'stt.final'; sessionId: string; text: string }
+  | { kind: 'wake.detected'; sessionId: string }
   | { kind: 'tool.start'; sessionId: string; toolName: string; args: unknown; tier: RiskTier }
   | { kind: 'tool.end'; sessionId: string; toolName: string; status: AuditStatus; error?: string }
   | { kind: 'approval.request'; request: ApprovalRequest }

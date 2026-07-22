@@ -22,7 +22,7 @@ import type { StreamEvent } from './types.ts';
 let proc: ChildProcess | null = null;
 
 /** Locate the compiled helper: dev (cwd/native) or packaged (Resources/native). */
-function findBinary(): string | null {
+export function findSttBinary(): string | null {
   const rel = join('native', 'alfred-stt');
   const resources = (process as { resourcesPath?: string }).resourcesPath;
   const candidates = [join(process.cwd(), rel), resources ? join(resources, rel) : ''];
@@ -37,7 +37,7 @@ function findBinary(): string | null {
 export function startListening(emit: (e: StreamEvent) => void, sessionId: string): void {
   if (proc) return;
 
-  const bin = findBinary();
+  const bin = findSttBinary();
   if (!bin) {
     emit({
       kind: 'error',

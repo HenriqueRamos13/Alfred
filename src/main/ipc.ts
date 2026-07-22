@@ -58,6 +58,9 @@ export interface Orchestrator {
   /** Voice input (push-to-talk): start/stop the native STT helper. */
   startListening(): void;
   stopListening(): void;
+  /** Wake word ("Alfred", always-on): read/set, persisted. */
+  getWakeword(): boolean | Promise<boolean>;
+  setWakeword(on: boolean): boolean | Promise<boolean>;
 }
 
 /** Trust boundary: keep only well-formed numeric/boolean fields from the renderer. */
@@ -163,6 +166,16 @@ export function registerIpc(core: Orchestrator, emit: (e: StreamEvent) => void):
       fail('stop listening', err);
     }
   });
+  ipcMain.handle('alfred:getWakeword', guard('get wakeword', () => core.getWakeword(), false));
+  ipcMain.handle('alfred:setWakeword', async (_e, on: unknown) => {
+    try {
+      return await core.setWakeword(on === true);
+    } catch (err) {
+      fail('set wakeword', err);
+      return false;
+    }
+  });
+
   ipcMain.on('alfred:resolveApproval', (_e, id: unknown, decision: unknown, remember: unknown) => {
     // Trust boundary: only forward well-formed decisions.
     if (typeof id !== 'string') return;

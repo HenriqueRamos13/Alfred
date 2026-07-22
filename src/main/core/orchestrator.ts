@@ -55,6 +55,7 @@ import { dayKey } from './budget.ts';
 import { spawnClaudeCli } from './claudeSpawn.ts';
 import * as tts from './tts.ts';
 import * as stt from './stt.ts';
+import * as wakeword from './wakeword.ts';
 import { tools, createBrowserHandle } from '../tools/index.ts';
 
 type AlfredDb = import('better-sqlite3').Database;
@@ -74,6 +75,11 @@ Governance you must respect:
 - Every tool call is risk-tiered. T0 (read/search/list) and T1 (reversible
   workspace writes) run freely; T2 (delete/send/install/egress/delegation) and
   T3 (money/credentials) require the human's approval, which the host enforces.
+- The HOST handles all approvals. NEVER ask the user for permission or
+  confirmation in text (no "posso abrir o navegador?", "may I proceed?", "preciso
+  da tua aprovação"). Just CALL the tool — if an approval is needed the host
+  shows the prompt itself. Opening/navigating the browser is T0: no approval, so
+  do it without asking.
 - You can delegate a self-contained autonomous task to a full Claude Code agent
   via delegate_to_claude_code (headless \`claude -p\`); it needs approval.
 - Never print, echo, or log secret values — mask them.
@@ -274,6 +280,11 @@ export class Orchestrator {
   private async buildSystem(): Promise<string> {
     const { ctx } = this.deps;
     let sys = ALFRED_IDENTITY;
+    // Read per-turn so toggling the button takes effect on the next turn.
+    if (getSetting(ctx.db, 'dangerous_mode') === '1') {
+      sys +=
+        '\n\nDANGEROUS MODE is ON: all approvals are bypassed — never ask for permission or confirmation, just execute.';
+    }
     const mem = await readStable(ctx.workspace).catch(() => '');
     if (mem.trim()) sys += `\n\n# Stable memory (honour these)\n${mem}`;
     const recent = await recentMemoryText(ctx.workspace).catch(() => '');
@@ -471,6 +482,9 @@ export interface OrchestratorHandle {
   /** Voice input (push-to-talk): spawn/stop the native STT helper; streams stt.partial/stt.final. */
   startListening(): void;
   stopListening(): void;
+  /** Wake word ("Alfred", always-on): read/toggle, persisted. Default: on if the STT binary exists. */
+  getWakeword(): boolean;
+  setWakeword(on: boolean): boolean;
 }
 
 export function createOrchestrator(opts: CreateOrchestratorOpts): OrchestratorHandle {
@@ -535,6 +549,21 @@ export function createOrchestrator(opts: CreateOrchestratorOpts): OrchestratorHa
   };
 
   void ensureScaffold(config.workspace).catch(() => {});
+
+  // ── Wake word ("Alfred", always-on) ────────────────────────────────────────
+  // Default: enabled when the native STT binary exists (needs no account). The
+  // kill switch suppresses it until the user re-arms it (manual mic or toggle),
+  // so no audio is captured after an emergency stop.
+  let wakeSuppressed = false;
+  const wakeEnabled = (): boolean => {
+    const raw = getSetting(db, 'wakeword_enabled');
+    if (raw === undefined) return wakeword.isWakeAvailable();
+    return raw === '1';
+  };
+  const startWake = (): void => {
+    if (wakeSuppressed || !wakeEnabled()) return;
+    wakeword.startWakeword(emit, sessionId);
+  };
 
   let active: Orchestrator | null = null;
 
@@ -643,6 +672,9 @@ export function createOrchestrator(opts: CreateOrchestratorOpts): OrchestratorHa
     emit({ kind: 'agent.status', sessionId, status: 'done' });
   }
 
+  // Arm the wake listener at startup when enabled (no-op without the binary).
+  startWake();
+
   return {
     async send(text) {
       gov.resetTrifecta();
@@ -706,7 +738,12 @@ export function createOrchestrator(opts: CreateOrchestratorOpts): OrchestratorHa
     stop() {
       active?.abort();
       tts.stop();
-      stt.stopListening(); // kill switch also stops the mic — no audio capture after an emergency stop
+      // Kill switch also silences every mic owner — no audio capture after an
+      // emergency stop. wakeSuppressed keeps wake from auto-restarting on the
+      // stt.final that stopping the manual session emits.
+      wakeSuppressed = true;
+      wakeword.stopWakeword();
+      stt.stopListening();
     },
     resolveApproval({ id, decision, remember }) {
       gov.resolveApproval(id, decision, remember);
@@ -785,10 +822,31 @@ export function createOrchestrator(opts: CreateOrchestratorOpts): OrchestratorHa
       return on;
     },
     startListening() {
-      stt.startListening(emit, sessionId);
+      // Single mic owner: free the wake listener, run the manual session, then
+      // restart wake when that session ends (its own stt.final flows through the
+      // wrapped emit below — the wake helper's finals do not, so no double-start).
+      wakeSuppressed = false;
+      wakeword.stopWakeword();
+      stt.startListening((e) => {
+        emit(e);
+        if (e.kind === 'stt.final') startWake();
+      }, sessionId);
     },
     stopListening() {
       stt.stopListening();
+    },
+    getWakeword() {
+      return wakeEnabled();
+    },
+    setWakeword(on) {
+      setSetting(db, 'wakeword_enabled', on ? '1' : '0');
+      if (on) {
+        wakeSuppressed = false;
+        startWake();
+      } else {
+        wakeword.stopWakeword();
+      }
+      return wakeEnabled();
     },
   };
 }

@@ -120,6 +120,27 @@ helper fails to build, `setup.sh` warns and continues, and Alfred still runs
 (text input and voice output keep working). If you see *"voice input helper not
 found"*, re-run `./setup.sh`.
 
+### Wake word ("Alfred", always-on)
+
+Toggle **👂 WAKE** in the top bar to have Alfred listen continuously for the
+wake word — say *"Alfred, …"* and the command that follows is dropped into the
+input (you still press Enter, exactly like the mic button). It is **local and
+account-free**: it reuses the same Apple `SFSpeechRecognizer` helper in a
+continuous `--wake` mode (the ~1min request limit is worked around by recycling
+the recognition task automatically). The wake word is `alfred` (also matches the
+common ASR mishearing *"alfredo"*); override with `ALFRED_WAKEWORD`. Locale is
+the shared `ALFRED_STT_LOCALE` (default `pt-BR`).
+
+- **The helper gained a `--wake` mode, so recompile** — `./setup.sh` already does
+  this; just re-run it after updating.
+- Default: **on** when the STT helper is compiled (it needs no account); off
+  otherwise. The choice is persisted.
+- **CPU note:** always-on recognition uses noticeably more CPU than push-to-talk,
+  and its reliability is **lower than a dedicated wake-word engine** (e.g.
+  Porcupine) — it is a best-effort local option, not a precision trigger.
+- Single mic owner: pressing the 🎙 mic pauses the wake listener for the manual
+  dictation, then resumes it. The kill switch stops both.
+
 ### Troubleshooting: CoreFoundation / Swift build
 
 If the Swift compile fails (e.g. *"failed to load module CoreFoundation"*), the

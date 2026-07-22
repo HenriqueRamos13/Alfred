@@ -84,6 +84,7 @@ export default function App() {
   const [cards, setCards] = useState<CardLayout[]>([]);
   const [dangerous, setDangerous] = useState(false);
   const [tts, setTts] = useState(false);
+  const [wake, setWake] = useState(false);
   const [listening, setListening] = useState(false);
   const [partial, setPartial] = useState('');
   const [dictation, setDictation] = useState<{ text: string; seq: number }>({ text: '', seq: 0 });
@@ -260,6 +261,8 @@ export default function App() {
     alfred.getDangerousMode().then(setDangerous).catch(() => {});
     // Reflect the persisted voice-output toggle.
     alfred.getTts().then(setTts).catch(() => {});
+    // Reflect the persisted wake-word toggle (default on when the STT binary exists).
+    alfred.getWakeword().then(setWake).catch(() => {});
     const off = alfred.onStream((e: StreamEvent) => {
       switch (e.kind) {
         case 'chat.delta':
@@ -276,6 +279,9 @@ export default function App() {
           setListening(false);
           setPartial('');
           if (e.text.trim()) setDictation((d) => ({ text: e.text, seq: d.seq + 1 }));
+          break;
+        case 'wake.detected':
+          pushLog({ tag: 'WAKE', tone: 'cyan', msg: 'ouvi “Alfred” — a captar comando' });
           break;
         case 'tool.start':
           pushLog({ tag: e.toolName, tone: 'cyan', msg: summarize(e.args) });
@@ -393,6 +399,17 @@ export default function App() {
     setTts(next); // optimistic
     alfred.setTts(next).then(setTts).catch(() => setTts(!next));
     pushLog({ tag: 'VOICE', tone: next ? 'lime' : 'dim', msg: next ? 'voice output on' : 'voice output off' });
+  };
+
+  const toggleWake = () => {
+    const next = !wake;
+    setWake(next); // optimistic
+    alfred.setWakeword(next).then(setWake).catch(() => setWake(!next));
+    pushLog({
+      tag: 'WAKE',
+      tone: next ? 'lime' : 'dim',
+      msg: next ? 'wake word on — diz “Alfred …”' : 'wake word off',
+    });
   };
 
   const toggleMic = () => {
@@ -584,16 +601,10 @@ export default function App() {
   const hidden = cards.filter((c) => !c.visible);
 
   return (
-    <div className={`app${dangerous ? ' dangerous' : ''}`}>
+    <div className="app">
       <div className="scanline">
         <div />
       </div>
-
-      {dangerous && (
-        <div className="danger-banner" role="alert">
-          ⚠ DANGEROUS MODE — approvals off · every action auto-runs
-        </div>
-      )}
 
       {/* Always-visible hint that the strip lives at the top edge; fades out once revealed. */}
       <div className={`top-hint${stripOpen ? ' hidden' : ''}`} aria-hidden />
@@ -628,6 +639,18 @@ export default function App() {
           </button>
           <button
             type="button"
+            className={`topbar-btn no-drag${wake ? ' on' : ''}`}
+            onClick={toggleWake}
+            title={
+              wake
+                ? 'Wake word on — say “Alfred …” to dictate a command (local, no account). Click to disable.'
+                : 'Wake word off — click to listen for “Alfred” (needs the STT helper compiled)'
+            }
+          >
+            {wake ? '👂 WAKE ON' : '👂 WAKE OFF'}
+          </button>
+          <button
+            type="button"
             className="topbar-btn no-drag"
             onClick={resetApprovals}
             title="Clear all saved auto-approve rules (start asking again)"
@@ -636,7 +659,7 @@ export default function App() {
           </button>
           <button
             type="button"
-            className={`topbar-btn danger no-drag${dangerous ? ' on' : ''}`}
+            className={`topbar-btn no-drag${dangerous ? ' on' : ''}`}
             onClick={toggleDangerous}
             title="Bypass ALL approvals (T2/T3 auto-run). Persisted. Use with care."
           >
