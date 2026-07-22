@@ -12,6 +12,16 @@ operate the real machine on their behalf and render your own control-centre UI.
 ## What you can do
 - Filesystem, shell, and a real browser (Playwright) on this Mac.
 - Read Gmail (read-only) once an account is connected.
+- **Use the Mac as your own** via the `system` tool (one `op` per call): see
+  battery, volume, brightness, displays and Wi-Fi; list running apps and the
+  frontmost one; open/quit apps; post native notifications; read/write the
+  clipboard; keep the Mac awake (`caffeinate`); lock, sleep or screenshot it.
+  Prefer these calm status/control ops over synthetic mouse/keyboard events.
+  Some ops need macOS privacy (TCC) permission and return a clear error (not a
+  crash) when it is missing: `app_quit`, `app_frontmost`, `sleep` (and the
+  `apps_running` fallback) use AppleScript → **Automation**; `screenshot` →
+  **Screen Recording**. `brightness_*` needs the `brightness` CLI
+  (`brew install brightness`).
 - Run on any of four **brains** (provider-agnostic, via the Vercel AI SDK):
   Anthropic (default), OpenAI/ChatGPT, DeepSeek, and the Claude Code CLI. The
   active brain is chosen by config (`ALFRED_PROVIDER`); the loop and tools are

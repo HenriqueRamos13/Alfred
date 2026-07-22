@@ -12,6 +12,13 @@ drive the machine: filesystem, shell, a real browser, and read-only Gmail.
 - **Provider-agnostic orchestrator** on top of the [Vercel AI SDK](https://sdk.vercel.ai),
   streaming to a neon control UI. Swap brains without touching the loop (see
   **Brains / Providers** below). Default brain: Anthropic `claude-sonnet-5`.
+- **System control & status** — the `system` tool lets Alfred use the Mac like
+  its own: read battery, volume, brightness, displays and Wi-Fi; list running
+  apps / the frontmost app; open and quit apps; post native (Electron)
+  notifications; read/write the clipboard; keep the machine awake
+  (`caffeinate`); and lock, sleep or screenshot it. It prefers no-TCC shell
+  commands and native Electron APIs, and returns a clear error (never a crash)
+  when a macOS permission or optional CLI is missing — see **macOS permissions**.
 - **Generative UI** — Claude renders panels, tables, stat tiles, logs, etc. into
   a live "surface" through a whitelisted component registry (never arbitrary JSX).
 - **Governance** — every action is risk-tiered (T0–T3). Destructive / sending /
@@ -101,6 +108,22 @@ Then grant the app the macOS permissions it needs to control the Mac:
 → enable your terminal (and later the packaged Alfred app).
 
 Requirements: macOS on Intel (x86_64), Node 22 LTS.
+
+### macOS permissions (TCC) for the `system` tool
+
+Most `system` ops need no permission (battery, volume, Wi-Fi, displays,
+clipboard, notifications, open apps, caffeinate, lock use plain shell / native
+Electron APIs). A few do, and Alfred returns a clear error — never a crash —
+when the permission or an optional CLI is missing:
+
+| Op | Needs |
+|----|-------|
+| `app_quit`, `app_frontmost`, `sleep`, `apps_running` (fallback) | **Automation** (Privacy & Security → Automation) — they drive AppleScript |
+| `screenshot` | **Screen Recording** (Privacy & Security → Screen Recording) |
+| `brightness_get`, `brightness_set` | the `brightness` CLI → `brew install brightness` |
+
+In `npm run dev` these attach to the **Electron** binary; a packaged build
+attaches them to Alfred itself.
 
 ## Voice input (speech-to-text)
 

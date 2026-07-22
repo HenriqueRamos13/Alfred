@@ -46,6 +46,17 @@ import {
   truncateHead,
   formatTranscript,
 } from '../src/main/core/memory.ts';
+import {
+  parseBattery,
+  parseVolume,
+  parseBrightness,
+  parseWifiSsid,
+  parseWifiPower,
+  parseAppsRunning,
+  parseProcessList,
+  parseDisplays,
+  system,
+} from '../src/main/tools/system.ts';
 
 test('classifyAction — read/list/search are T0 autopilot', () => {
   assert.equal(classifyAction('fs_read', { path: '/a' }), 'T0');
@@ -350,4 +361,103 @@ test('resolveActiveBrainId — persisted → env → first enabled (claude-code 
   assert.equal(resolveActiveBrainId(undefined, {}, onlyCc), 'claude-code');
   // nothing enabled → null
   assert.equal(resolveActiveBrainId('openai', {}, brains.map((b) => ({ ...b, enabled: false }))), null);
+});
+
+// ── system tool: pure parsers ────────────────────────────────────────────────
+
+test('parseBattery — discharging with time estimate', () => {
+  const out =
+    "Now drawing from 'Battery Power'\n" +
+    ' -InternalBattery-0 (id=4325091)\t87%; discharging; 3:42 remaining present: true';
+  assert.deepEqual(parseBattery(out), { percent: 87, charging: false, timeRemaining: '3:42' });
+});
+
+test('parseBattery — charging / charged / no-estimate', () => {
+  const charging =
+    "Now drawing from 'AC Power'\n -InternalBattery-0 (id=4325091)\t54%; charging; 1:05 remaining present: true";
+  assert.deepEqual(parseBattery(charging), { percent: 54, charging: true, timeRemaining: '1:05' });
+
+  const charged =
+    "Now drawing from 'AC Power'\n -InternalBattery-0 (id=4325091)\t100%; charged; 0:00 remaining present: true";
+  assert.deepEqual(parseBattery(charged), { percent: 100, charging: true, timeRemaining: null });
+
+  const noEst =
+    "Now drawing from 'AC Power'\n -InternalBattery-0 (id=4325091)\t45%; finishing charge; (no estimate) present: true";
+  assert.deepEqual(parseBattery(noEst), { percent: 45, charging: true, timeRemaining: null });
+});
+
+test('parseVolume — reads level + muted from "get volume settings"', () => {
+  assert.deepEqual(parseVolume('output volume:42, input volume:75, alert volume:100, output muted:false'), {
+    volume: 42,
+    muted: false,
+  });
+  assert.deepEqual(parseVolume('output volume:0, input volume:75, alert volume:100, output muted:true'), {
+    volume: 0,
+    muted: true,
+  });
+});
+
+test('parseBrightness — first float from `brightness -l`', () => {
+  const out =
+    'display 0: main, active, awake, online, built-in, ID 0x4280a40\ndisplay 0: brightness 0.849998\n';
+  assert.equal(parseBrightness(out), 0.849998);
+  assert.equal(parseBrightness('no brightness here'), null);
+});
+
+test('parseWifi — ssid + power', () => {
+  assert.equal(parseWifiSsid('Current Wi-Fi Network: HomeNet-5G'), 'HomeNet-5G');
+  assert.equal(parseWifiSsid('You are not associated with an AirPort network.'), null);
+  assert.equal(parseWifiPower('Wi-Fi Power (en0): On'), true);
+  assert.equal(parseWifiPower('Wi-Fi Power (en0): Off'), false);
+});
+
+test('parseAppsRunning — names from `lsappinfo list`, de-duped', () => {
+  const out =
+    '    1) "Finder" ASN:0x0-0x3003:\n' +
+    '        bringForward: denied\n' +
+    '    2) "Safari" ASN:0x0-0x1e01e:\n' +
+    '    3) "Finder" ASN:0x0-0x3003:\n';
+  assert.deepEqual(parseAppsRunning(out), ['Finder', 'Safari']);
+});
+
+test('parseProcessList — comma-separated osascript output', () => {
+  assert.deepEqual(parseProcessList('Finder, Safari, Terminal, Electron'), [
+    'Finder',
+    'Safari',
+    'Terminal',
+    'Electron',
+  ]);
+  assert.deepEqual(parseProcessList(''), []);
+});
+
+test('system.risk — reads T0, reversible controls T1, destructive T2', () => {
+  const risk = (op: string) => system.risk!({ op } as never);
+  // reads → T0
+  for (const op of ['battery', 'volume_get', 'brightness_get', 'displays', 'wifi', 'apps_running', 'app_frontmost', 'clipboard_read'])
+    assert.equal(risk(op), 'T0', `${op} should be T0`);
+  // reversible controls → T1
+  for (const op of ['volume_set', 'brightness_set', 'app_open', 'notify', 'clipboard_write', 'caffeinate', 'screenshot'])
+    assert.equal(risk(op), 'T1', `${op} should be T1`);
+  // destructive / disruptive → T2
+  for (const op of ['app_quit', 'lock', 'sleep']) assert.equal(risk(op), 'T2', `${op} should be T2`);
+});
+
+test('parseDisplays — resolution + main flag, never throws on garbage', () => {
+  const json = JSON.stringify({
+    SPDisplaysDataType: [
+      {
+        _name: 'Intel Iris',
+        spdisplays_ndrvs: [
+          { _name: 'Color LCD', _spdisplays_resolution: '2880 x 1800', spdisplays_main: 'spdisplays_yes' },
+          { _name: 'DELL U2720Q', _spdisplays_resolution: '3840 x 2160' },
+        ],
+      },
+    ],
+  });
+  assert.deepEqual(parseDisplays(json), [
+    { name: 'Color LCD', resolution: '2880 x 1800', main: true },
+    { name: 'DELL U2720Q', resolution: '3840 x 2160', main: false },
+  ]);
+  assert.deepEqual(parseDisplays('not json'), []);
+  assert.deepEqual(parseDisplays('{}'), []);
 });

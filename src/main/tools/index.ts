@@ -17,10 +17,11 @@ import { renderUi } from './renderUi.ts';
 import { memory } from './memory.ts';
 import { delegate } from './delegate.ts';
 import { uiLayout } from './uiLayout.ts';
+import { system } from './system.ts';
 
 export { createBrowserHandle } from './browser.ts';
 
-export const tools: Tool[] = [filesystem, shell, browser, project, gmail, renderUi, memory, delegate, uiLayout];
+export const tools: Tool[] = [filesystem, shell, browser, project, gmail, renderUi, memory, delegate, uiLayout, system];
 
 /** Lookup by tool name (for the orchestrator's tool-use dispatch). */
 export const toolsByName: Record<string, Tool> = Object.fromEntries(tools.map((t) => [t.name, t]));
