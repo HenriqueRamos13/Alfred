@@ -19,6 +19,8 @@ import { ApprovalPrompt } from './components/ApprovalPrompt.tsx';
 import { DraggableCard } from './components/DraggableCard.tsx';
 import { ReferenceChat } from './components/ReferenceChat.tsx';
 import { GraphCard } from './components/GraphCard.tsx';
+import { ScheduledTasksCard } from './components/ScheduledTasksCard.tsx';
+import { WidgetCard } from './components/WidgetCard.tsx';
 import type { ReferenceTarget } from '../main/core/reference.ts';
 import { clampBox, tileLayout, cardOnDisplay, nextDisplayId, type Bounds } from '../main/core/layout.ts';
 import { initialDictation, dictationReduce } from '../main/core/dictation.ts';
@@ -35,6 +37,7 @@ import type {
   ChatMessage,
   CostSnapshot,
   DisplayInfo,
+  Job,
   ProjectRecord,
   StreamEvent,
   UiNode,
@@ -105,6 +108,11 @@ export default function App() {
   const [agentCfg, setAgentCfg] = useState<AgentConfigMap | null>(null);
   const [catalog, setCatalog] = useState<Record<ProviderId, CatalogModel[]> | null>(null);
   const [cards, setCards] = useState<CardLayout[]>([]);
+  // Scheduled jobs — drives the "Scheduled Tasks" card meta + the Tier-1 widget
+  // layer. Widget geometry is session-local (not persisted in the layout store).
+  const [jobs, setJobs] = useState<Job[]>([]);
+  const [widgetBoxes, setWidgetBoxes] = useState<Record<string, { x: number; y: number; w: number; h: number }>>({});
+  const [hiddenWidgets, setHiddenWidgets] = useState<Set<string>>(new Set());
   const [dangerous, setDangerous] = useState(false);
   const [grill, setGrill] = useState(true); // GRILL-ME defaults ON
   // Factory-reset modal: null = closed; the info object = open, listing what will be erased.
@@ -340,6 +348,10 @@ export default function App() {
     alfred.listProjects().then(setProjects).catch(() => {});
   };
 
+  const refreshJobs = () => {
+    alfred.listJobs().then(setJobs).catch(() => {});
+  };
+
   const refreshAccounts = () => {
     alfred.listAccounts().then(setAccounts).catch(() => {});
   };
@@ -366,6 +378,7 @@ export default function App() {
     refreshProjects();
     refreshBrains();
     refreshAccounts();
+    refreshJobs();
     // Reload the persisted conversation so history survives restarts.
     alfred.getHistory().then(setMessages).catch(() => {});
     alfred.getLayout().then(setCards).catch(() => {});
@@ -487,9 +500,16 @@ export default function App() {
           if (e.status === 'done' || e.status === 'idle') {
             refreshProjects();
             refreshBrains();
+            refreshJobs(); // a turn may have created/edited a job via the schedule tool
             // The agent may have flipped GRILL-ME via the system tool — reflect it.
             alfred.getGrillMe().then(setGrill).catch(() => {});
           }
+          break;
+        case 'job.data':
+        case 'job.approval':
+          // A run refreshed / an approval changed → resync the jobs (card meta +
+          // widget layer). WidgetCard patches its own live value from job.data too.
+          refreshJobs();
           break;
         case 'budget':
           setBudget(e.state);
@@ -895,6 +915,11 @@ export default function App() {
           meta: <span className="panel-meta">notes + projects · live</span>,
           body: <GraphCard onReference={openReference} />,
         };
+      case 'jobs':
+        return {
+          meta: <span className="panel-meta">{jobs.length} tasks · live</span>,
+          body: <ScheduledTasksCard />,
+        };
       case 'activity':
         return {
           meta: <span className="panel-meta">live tail —f · memory on</span>,
@@ -916,6 +941,9 @@ export default function App() {
   };
 
   const hidden = cards.filter((c) => !c.visible);
+
+  // Tier-1 jobs get a floating data widget; the user can dismiss one (session-only).
+  const widgetJobs = jobs.filter((j) => j.render?.tier === 1 && !hiddenWidgets.has(j.id));
 
   // WAKE button face: the toggle says whether it's ARMED; the live status says
   // what it's actually doing right now, so a stuck/failed mic is visible at a glance.
@@ -1037,6 +1065,17 @@ export default function App() {
             type="button"
             className="topbar-btn no-drag"
             onClick={() => {
+              patchCard('jobs', { visible: true });
+              focusCard('jobs');
+            }}
+            title="Scheduled Tasks — manage jobs (pause/resume/delete) and pending approvals"
+          >
+            ⏱ SCHEDULED
+          </button>
+          <button
+            type="button"
+            className="topbar-btn no-drag"
+            onClick={() => {
               patchCard('settings', { visible: true });
               focusCard('settings');
             }}
@@ -1123,6 +1162,33 @@ export default function App() {
                 onMoveDisplay={displays.length > 1 ? () => moveToNextDisplay(c) : undefined}
               >
                 {body}
+              </DraggableCard>
+            );
+          })}
+
+        {/* Tier-1 job widgets — floating data cards placed by job.placement.
+            Session-local geometry (not persisted), rendered on the primary window. */}
+        {(isPrimary || !myDisplayId) &&
+          bounds &&
+          widgetJobs.map((job, i) => {
+            const box = widgetBoxes[job.id] ?? widgetCornerBox(job.placement?.corner, i, bounds);
+            const view: CardLayout = {
+              id: `widget:${job.id}`,
+              title: job.title,
+              ...clampBox(box, bounds),
+              z: 40 + i,
+              visible: true,
+              displayId: myDisplayId || 'main',
+            };
+            return (
+              <DraggableCard
+                key={view.id}
+                card={view}
+                onChange={(patch) => setWidgetBoxes((prev) => ({ ...prev, [job.id]: { ...box, ...patch } }))}
+                onFocus={() => {}}
+                onHide={() => setHiddenWidgets((prev) => new Set(prev).add(job.id))}
+              >
+                <WidgetCard job={job} />
               </DraggableCard>
             );
           })}
@@ -1258,6 +1324,21 @@ export default function App() {
       )}
     </div>
   );
+}
+
+/** First-placement box for a Tier-1 widget from its corner, staggered by index. */
+function widgetCornerBox(corner: string | undefined, idx: number, b: Bounds): { x: number; y: number; w: number; h: number } {
+  const W = 220;
+  const H = 160;
+  const m = 24;
+  const off = idx * (H + 12);
+  const c = corner ?? 'tr';
+  const left = c[1] === 'l';
+  const top = c[0] === 't';
+  const x = left ? m : Math.max(m, b.w - W - m);
+  // Top corners clear the ~118px command strip; stagger down (top) or up (bottom).
+  const y = top ? 122 + off : Math.max(122, b.h - H - m - off);
+  return { x, y, w: W, h: H };
 }
 
 const AGENT_HINT: Record<AgentId, string> = {

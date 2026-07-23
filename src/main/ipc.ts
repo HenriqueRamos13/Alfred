@@ -109,6 +109,14 @@ export interface Orchestrator {
   listPendingApprovals(jobId?: string): JobApproval[] | Promise<JobApproval[]>;
   /** Resolve a queued job approval; approve executes the stored action through normal governance. */
   resolveJobApproval(id: string, approved: boolean): Promise<JobApproval | undefined>;
+  /** One job by id (management-card refresh after a mutation). */
+  getJob(id: string): Job | undefined | Promise<Job | undefined>;
+  /** Pause a job (disable + disarm) from the management card. */
+  pauseJob(id: string): Job | undefined | Promise<Job | undefined>;
+  /** Resume a paused job (re-enable + re-arm) from the management card. */
+  resumeJob(id: string): Job | undefined | Promise<Job | undefined>;
+  /** Delete a job (+ runs/approvals) and disarm it. */
+  deleteJob(id: string): void | Promise<void>;
   /** Stop the in-app job scheduler (clears its timers) on shutdown. */
   stopScheduler(): void;
 }
@@ -337,6 +345,33 @@ export function registerIpc(core: Orchestrator, emit: (e: StreamEvent) => void):
     } catch (err) {
       fail('resolve job approval', err);
       return null;
+    }
+  });
+  // Job management from the "Scheduled Tasks" card. Data-only mutations; the id
+  // is validated at this trust boundary (createJob is NOT exposed — jobs are made
+  // by command/tool). Each returns the fresh job (or null) so the card can patch.
+  const jobMutate =
+    (label: string, run: (id: string) => Job | undefined | Promise<Job | undefined>) =>
+    async (_e: unknown, id: unknown): Promise<Job | null> => {
+      if (typeof id !== 'string' || !id) return null;
+      try {
+        return (await run(id)) ?? null;
+      } catch (err) {
+        fail(label, err);
+        return null;
+      }
+    };
+  ipcMain.handle('alfred:getJob', jobMutate('get job', (id) => core.getJob(id)));
+  ipcMain.handle('alfred:pauseJob', jobMutate('pause job', (id) => core.pauseJob(id)));
+  ipcMain.handle('alfred:resumeJob', jobMutate('resume job', (id) => core.resumeJob(id)));
+  ipcMain.handle('alfred:deleteJob', async (_e, id: unknown): Promise<boolean> => {
+    if (typeof id !== 'string' || !id) return false;
+    try {
+      await core.deleteJob(id);
+      return true;
+    } catch (err) {
+      fail('delete job', err);
+      return false;
     }
   });
 

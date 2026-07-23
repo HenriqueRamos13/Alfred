@@ -129,6 +129,14 @@ const api = {
   /** Resolve a queued job approval; approve executes the stored action through normal governance. */
   resolveJobApproval: (id: string, approved: boolean): Promise<JobApproval | null> =>
     ipcRenderer.invoke('alfred:resolveJobApproval', id, approved),
+  /** One job by id — refresh a single card after a mutation. */
+  getJob: (id: string): Promise<Job | null> => ipcRenderer.invoke('alfred:getJob', id),
+  /** Pause a job (disable + disarm) from the "Scheduled Tasks" card. Resolves with the fresh job. */
+  pauseJob: (id: string): Promise<Job | null> => ipcRenderer.invoke('alfred:pauseJob', id),
+  /** Resume a paused job (re-enable + re-arm). Resolves with the fresh job. */
+  resumeJob: (id: string): Promise<Job | null> => ipcRenderer.invoke('alfred:resumeJob', id),
+  /** Delete a job (+ its runs/approvals). Resolves true on success. */
+  deleteJob: (id: string): Promise<boolean> => ipcRenderer.invoke('alfred:deleteJob', id),
   /** Overlay window controls (frameless HUD). */
   hideWindow: (): void => ipcRenderer.send('window:hide'),
   quitWindow: (): void => ipcRenderer.send('window:quit'),

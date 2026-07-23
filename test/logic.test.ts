@@ -68,6 +68,12 @@ import {
   isOutboundAction,
   nextApprovalStatus,
 } from '../src/main/core/jobs-pure.ts';
+import {
+  humanizeSchedule,
+  relativeTime,
+  formatBudget,
+  describeApproval,
+} from '../src/main/core/jobs-format-pure.ts';
 import type { Job } from '../src/main/core/types.ts';
 import { confirmMatches, factoryResetPaths } from '../src/main/core/reset.ts';
 import { grillMeEnabled } from '../src/main/core/settings-pure.ts';
@@ -2083,4 +2089,55 @@ test('validateJobSpec — title and kind are required', () => {
 test('validateJobSpec — agent job requires a prompt', () => {
   const r = validateJobSpec({ title: 't', kind: 'agent', schedule: { type: 'daily', at: '08:30' } });
   assert.equal(r.ok, false);
+});
+
+// ── jobs-format-pure: the "Scheduled Tasks" card display formatters (stage 3) ──
+
+test('humanizeSchedule — interval picks the largest sensible unit; daily shows the clock time', () => {
+  assert.equal(humanizeSchedule({ type: 'interval', everyMs: 30_000 }), 'cada 30 s');
+  assert.equal(humanizeSchedule({ type: 'interval', everyMs: 5 * 60_000 }), 'cada 5 min');
+  assert.equal(humanizeSchedule({ type: 'interval', everyMs: 2 * 3_600_000 }), 'cada 2 h');
+  assert.equal(humanizeSchedule({ type: 'interval', everyMs: 3 * 86_400_000 }), 'cada 3 d');
+  assert.equal(humanizeSchedule({ type: 'daily', at: '09:00' }), 'às 09:00');
+});
+
+test('relativeTime — past / future / now / missing', () => {
+  const now = 1_000_000_000;
+  assert.equal(relativeTime(now, now), 'agora');
+  assert.equal(relativeTime(now - 2 * 60_000, now), 'há 2 min');
+  assert.equal(relativeTime(now + 3 * 60_000, now), 'em 3 min');
+  assert.equal(relativeTime(now - 2 * 3_600_000, now), 'há 2 h');
+  assert.equal(relativeTime(now + 2 * 86_400_000, now), 'em 2 d');
+  assert.equal(relativeTime(undefined, now), '—');
+});
+
+test('formatBudget — with and without a limit', () => {
+  assert.equal(formatBudget(12_000, 100_000), '12k / 100k');
+  assert.equal(formatBudget(500, 100_000), '500 / 100k');
+  assert.equal(formatBudget(12_500, 100_000), '12.5k / 100k');
+  assert.equal(formatBudget(12_000, undefined), '12k / ∞');
+  assert.equal(formatBudget(undefined, undefined), '0 / ∞');
+});
+
+test('describeApproval — human sentence per sensitive tool + masked arg summary', () => {
+  const send = describeApproval('gmail_send', { to: 'bob@x.com', subject: 'Hi' });
+  assert.match(send, /^Enviar mensagem · gmail_send \(/);
+  assert.match(send, /to: bob@x.com/);
+  assert.match(describeApproval('shell', { command: 'rm -rf /tmp/x' }), /^Executar comando de shell · shell/);
+  assert.match(describeApproval('filesystem', { op: 'delete', path: '/a' }), /^Apagar ou sobrescrever dados/);
+  assert.match(describeApproval('secrets_get', { key: 'openai' }), /^Aceder a credenciais/);
+  // No args → phrase + tool only, no trailing parens.
+  assert.equal(describeApproval('gmail_send', undefined), 'Enviar mensagem · gmail_send');
+});
+
+test('describeApproval — never renders a message body in clear (only its length)', () => {
+  const secret = 'Meeting notes: acquire NewCo for 4.2M, do not forward';
+  const out = describeApproval('gmail_send', { to: 'bob@x.com', subject: 'Re', body: secret });
+  assert.ok(!out.includes('acquire NewCo'), 'body content must not appear on screen');
+  assert.ok(!out.includes(secret.slice(0, 20)), 'not even a truncated prefix of the body');
+  assert.match(out, /to: bob@x\.com/); // identifying fields stay visible for consent
+  assert.match(out, /body: \[\d+ car\.\]/); // only the length is shown
+  // Other content-y keys are redacted the same way.
+  assert.match(describeApproval('memory_write', { text: secret }), /text: \[\d+ car\.\]/);
+  assert.match(describeApproval('http_post', { url: 'https://x', payload: secret }), /payload: \[\d+ car\.\]/);
 });

@@ -66,7 +66,15 @@ import {
 } from './modelCatalog.ts';
 import type { AgentConfig, AgentConfigMap, AgentId, ProviderId, CatalogModel } from './modelCatalog.ts';
 import { getSetting, setSetting, insertMessage, getRecentMessages } from './db.ts';
-import { JobScheduler, listJobs, listPendingApprovals, resolveApproval as resolveJobApprovalDb } from './jobs.ts';
+import {
+  JobScheduler,
+  listJobs,
+  listPendingApprovals,
+  resolveApproval as resolveJobApprovalDb,
+  getJob as getJobDb,
+  updateJob as updateJobDb,
+  deleteJob as deleteJobDb,
+} from './jobs.ts';
 import { grillMeEnabled } from './settings-pure.ts';
 import { dayKey } from './budget.ts';
 import { spawnClaudeCli, dangerousArgs } from './claudeSpawn.ts';
@@ -560,6 +568,14 @@ export interface OrchestratorHandle {
   listPendingApprovals(jobId?: string): JobApproval[];
   /** Resolve a queued job approval; approve EXECUTES the stored action through normal governance. */
   resolveJobApproval(id: string, approved: boolean): Promise<JobApproval | undefined>;
+  /** One job by id (management card detail / refresh after a mutation). */
+  getJob(id: string): Job | undefined;
+  /** Pause a job (disable + disarm its timer); the card can resume it later. */
+  pauseJob(id: string): Job | undefined;
+  /** Resume a paused job: re-enable, clear any pausedReason, re-arm the timer. */
+  resumeJob(id: string): Job | undefined;
+  /** Delete a job (+ its runs/approvals) and disarm its timer. */
+  deleteJob(id: string): void;
   /** Stop the in-app job scheduler (clears its timers) on shutdown. */
   stopScheduler(): void;
 }
@@ -1259,6 +1275,33 @@ export function createOrchestrator(opts: CreateOrchestratorOpts): OrchestratorHa
       // Approve executes the stored tool+args through NORMAL governance (the user
       // is present now): the real ctx, the real tool registry, system notify.
       return resolveJobApprovalDb(db, id, approved, { ctx, tools, notify: opts.notify });
+    },
+    getJob(id) {
+      return getJobDb(db, id);
+    },
+    pauseJob(id) {
+      // Pause = disable; reschedule() won't arm a disabled job (disarms it now).
+      const cur = getJobDb(db, id);
+      if (!cur) return undefined;
+      const updated = updateJobDb(db, id, { enabled: false });
+      scheduler.reschedule(id);
+      return updated;
+    },
+    resumeJob(id) {
+      // Resume = re-enable + clear any pausedReason (budget/error/approval) and the
+      // stale nextRunTs so reschedule() recomputes a fresh fire time and re-arms.
+      const cur = getJobDb(db, id);
+      if (!cur) return undefined;
+      const updated = updateJobDb(db, id, {
+        enabled: true,
+        runtime: { ...cur.runtime, pausedReason: null, nextRunTs: undefined },
+      });
+      scheduler.reschedule(id);
+      return updated;
+    },
+    deleteJob(id) {
+      deleteJobDb(db, id);
+      scheduler.reschedule(id); // gone → disarms
     },
     stopScheduler() {
       scheduler.stop();
