@@ -251,6 +251,12 @@ export interface ChatMessage {
 export type StreamEvent =
   | { kind: 'chat.delta'; sessionId: string; text: string }
   | { kind: 'chat.message'; message: ChatMessage }
+  // Reference agent — an ISOLATED side-thread over one note/node. Scoped by
+  // threadId so it never mixes with the main chat.* stream and is never persisted.
+  | { kind: 'reference.delta'; threadId: string; text: string }
+  | { kind: 'reference.message'; threadId: string; message: ChatMessage }
+  | { kind: 'reference.done'; threadId: string }
+  | { kind: 'reference.error'; threadId: string; message: string }
   | { kind: 'stt.partial'; sessionId: string; text: string }
   | { kind: 'stt.final'; sessionId: string; text: string }
   | { kind: 'wake.detected'; sessionId: string }

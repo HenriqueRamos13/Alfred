@@ -22,6 +22,7 @@ import type {
 } from './core/types.ts';
 import type { BrainInfo } from './core/providers.ts';
 import type { FactoryResetInfo } from './core/orchestrator.ts';
+import type { ReferenceRequest } from './core/reference.ts';
 import {
   AGENT_IDS,
   isProviderId,
@@ -57,6 +58,8 @@ export interface Orchestrator {
   factoryReset(): Promise<void>;
   /** Manually run the memory curator (drain inbox → notes, rebuild MOCs/backlinks). */
   runCurator(): Promise<unknown>;
+  /** Reference agent: one isolated, read-only turn over a note/node (streams reference.*). */
+  askReference(req: ReferenceRequest): Promise<void>;
   listProjects(): ProjectRecord[] | Promise<ProjectRecord[]>;
   listAccounts(): AccountRecord[] | Promise<AccountRecord[]>;
   /** Brain availability for the UI. */
@@ -277,6 +280,38 @@ export function registerIpc(core: Orchestrator, emit: (e: StreamEvent) => void):
     }
   });
   ipcMain.handle('alfred:runCurator', guard('run curator', () => core.runCurator(), null as unknown));
+
+  // Reference agent — validate the whole payload at the boundary before it reaches
+  // core. A missing threadId means we can't scope the stream, so drop silently.
+  ipcMain.handle('alfred:askReference', async (_e, payload: unknown) => {
+    const p = (payload ?? {}) as Record<string, unknown>;
+    if (typeof p.threadId !== 'string' || !p.threadId) return;
+    const t = (p.target ?? {}) as Record<string, unknown>;
+    const target = {
+      note: typeof t.note === 'string' ? t.note : undefined,
+      project: typeof t.project === 'string' ? t.project : undefined,
+      file: typeof t.file === 'string' ? t.file : undefined,
+    };
+    const history = Array.isArray(p.history)
+      ? p.history
+          .filter((h): h is Record<string, unknown> => !!h && typeof h === 'object')
+          .map((h) => ({
+            role: h.role === 'assistant' ? ('assistant' as const) : ('user' as const),
+            content: typeof h.content === 'string' ? h.content : '',
+          }))
+          .filter((h) => h.content.trim())
+      : [];
+    try {
+      await core.askReference({
+        threadId: p.threadId,
+        target,
+        question: typeof p.question === 'string' ? p.question : '',
+        history,
+      });
+    } catch (err) {
+      fail('ask reference', err);
+    }
+  });
 }
 
 /**

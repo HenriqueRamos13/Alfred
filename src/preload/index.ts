@@ -16,6 +16,7 @@ import type {
 } from '../main/core/types.ts';
 import type { BrainInfo } from '../main/core/providers.ts';
 import type { FactoryResetInfo } from '../main/core/orchestrator.ts';
+import type { ReferenceRequest } from '../main/core/reference.ts';
 import type {
   AgentId,
   AgentConfig,
@@ -72,6 +73,8 @@ const api = {
   factoryReset: (): Promise<void> => ipcRenderer.invoke('alfred:factoryReset'),
   /** Manually run the memory curator (drain inbox → notes, rebuild MOCs/backlinks). */
   runCurator: (): Promise<unknown> => ipcRenderer.invoke('alfred:runCurator'),
+  /** Reference agent: ask one isolated, read-only question about a note/node. Streams reference.* events. */
+  askReference: (payload: ReferenceRequest): Promise<void> => ipcRenderer.invoke('alfred:askReference', payload),
   listProjects: (): Promise<ProjectRecord[]> => ipcRenderer.invoke('alfred:listProjects'),
   listAccounts: (): Promise<AccountRecord[]> => ipcRenderer.invoke('alfred:listAccounts'),
   /** Brain availability (enabled/disabled) for the UI. */

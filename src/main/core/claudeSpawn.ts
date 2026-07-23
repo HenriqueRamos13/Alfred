@@ -59,12 +59,15 @@ function subscriptionEnv(): NodeJS.ProcessEnv {
   return env;
 }
 
-export function spawnClaudeCli(args: string[], opts: { cwd: string }): Promise<ClaudeCliResult> {
+export function spawnClaudeCli(args: string[], opts: { cwd: string; bridge?: boolean }): Promise<ClaudeCliResult> {
   return new Promise((resolve) => {
     // Attach the in-process Alfred MCP bridge (both spawn paths — the claude-code
     // brain and the delegate tool — route through here, so both gain Alfred's
     // tools). Empty when no bridge is live or ALFRED_MCP_BRIDGE disabled it.
-    const child = spawn('claude', [...args, ...mcpCliArgs(process.env)], {
+    // The reference agent opts OUT (bridge:false): it is read-only and must not
+    // reach Alfred's governed tools.
+    const bridgeArgs = opts.bridge === false ? [] : mcpCliArgs(process.env);
+    const child = spawn('claude', [...args, ...bridgeArgs], {
       cwd: opts.cwd,
       env: subscriptionEnv(),
       stdio: ['ignore', 'pipe', 'pipe'], // stdin=EOF immediately (== < /dev/null)

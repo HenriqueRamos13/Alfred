@@ -85,6 +85,13 @@ import {
 import type { Note } from '../src/main/core/memory.ts';
 import { pickCuratorSpec } from '../src/main/core/curator.ts';
 import {
+  clip,
+  toNoteSlug,
+  selectNeighbors,
+  buildReferenceContext,
+  buildReferencePrompt,
+} from '../src/main/core/reference.ts';
+import {
   parseBattery,
   parseVolume,
   parseBrightness,
@@ -1337,4 +1344,64 @@ test('agentClaudeModel — main Claude model for delegation, else the default', 
   // non-Claude main → fall back to the default Claude model
   assert.equal(agentClaudeModel(JSON.stringify({ main: { provider: 'deepseek', model: 'deepseek-v4-flash' } })), 'claude-sonnet-5');
   assert.equal(agentClaudeModel(undefined), 'claude-sonnet-5');
+});
+
+// ── reference agent (Phase 2): focused-context helpers ────────────────────────
+
+test('toNoteSlug — accepts title, slug, or path; strips .md', () => {
+  assert.equal(toNoteSlug('My Note'), 'my-note');
+  assert.equal(toNoteSlug('my-note'), 'my-note');
+  assert.equal(toNoteSlug('memory/notes/my-note.md'), 'my-note');
+  assert.equal(toNoteSlug('My-Note.MD'), 'my-note');
+});
+
+test('clip — keeps the head and marks the cut only when over the cap', () => {
+  assert.equal(clip('short', 100), 'short');
+  const out = clip('x'.repeat(50), 10);
+  assert.ok(out.startsWith('x'.repeat(10)));
+  assert.ok(out.includes('truncated'));
+});
+
+test('selectNeighbors — outgoing wikilinks + incoming backlinks, self excluded, capped', () => {
+  const alpha = { title: 'Alpha', relations: [{ target: 'Beta' }], observations: [{ text: 'see [[Gamma]] now' }] };
+  const beta = { title: 'Beta', relations: [], observations: [] };
+  const gamma = { title: 'Gamma', relations: [], observations: [] };
+  const delta = { title: 'Delta', relations: [{ target: 'Alpha' }], observations: [] }; // backlink → Alpha
+  const other = { title: 'Other', relations: [], observations: [] };
+  const all = [
+    { slug: 'alpha', note: alpha },
+    { slug: 'beta', note: beta },
+    { slug: 'gamma', note: gamma },
+    { slug: 'delta', note: delta },
+    { slug: 'other', note: other },
+  ];
+  const slugs = selectNeighbors('Alpha', alpha, all).map((n) => n.slug).sort();
+  assert.deepEqual(slugs, ['beta', 'delta', 'gamma']); // outgoing beta/gamma + incoming delta
+  assert.ok(!slugs.includes('alpha')); // self excluded
+  assert.ok(!slugs.includes('other')); // unrelated excluded
+  assert.equal(selectNeighbors('Alpha', alpha, all, 1).length, 1); // cap honoured
+});
+
+test('buildReferenceContext — labels the target and is size-capped', () => {
+  const ctx = buildReferenceContext(
+    { title: 'T', body: 'x'.repeat(100) },
+    [{ title: 'N', body: 'y'.repeat(100) }],
+    { maxChars: 50, perNeighborChars: 10 },
+  );
+  assert.ok(ctx.includes('Target note: T'));
+  assert.ok(ctx.length <= 50 + '\n…(truncated)'.length);
+});
+
+test('buildReferencePrompt — folds context + history + question; drops empty history', () => {
+  const p = buildReferencePrompt('CTX', 'Q?', [
+    { role: 'user', content: 'hi' },
+    { role: 'assistant', content: 'yo' },
+  ]);
+  assert.ok(p.includes('# Reference context'));
+  assert.ok(p.includes('CTX'));
+  assert.ok(p.includes('user: hi'));
+  assert.ok(p.includes('assistant: yo'));
+  assert.ok(p.includes('# Question'));
+  assert.ok(p.includes('Q?'));
+  assert.ok(!buildReferencePrompt('CTX', 'Q?').includes('Conversation so far'));
 });

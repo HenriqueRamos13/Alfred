@@ -17,6 +17,8 @@ import { ChatLog } from './components/ChatLog.tsx';
 import { ProjectList } from './components/ProjectList.tsx';
 import { ApprovalPrompt } from './components/ApprovalPrompt.tsx';
 import { DraggableCard } from './components/DraggableCard.tsx';
+import { ReferenceChat } from './components/ReferenceChat.tsx';
+import type { ReferenceTarget } from '../main/core/reference.ts';
 import { clampBox, tileLayout, cardOnDisplay, nextDisplayId, type Bounds } from '../main/core/layout.ts';
 import { initialDictation, dictationReduce } from '../main/core/dictation.ts';
 import { confirmMatches } from '../main/core/reset-pure.ts';
@@ -119,6 +121,17 @@ export default function App() {
   const dictation = dict.commit;
   // Bumped by a bare "Alfred, enviar" voice command → CommandBar submits its input.
   const [submitSeq, setSubmitSeq] = useState(0);
+
+  // Reference agent — an ISOLATED side-thread over one note/node. Ephemeral: the
+  // thread lives only in these states and is cleared on close; history is passed
+  // back to main on each ask. refThreadRef scopes the reference.* stream (the
+  // onStream closure is set once on mount, so it reads the live id via the ref).
+  const [refTarget, setRefTarget] = useState<ReferenceTarget | null>(null);
+  const [refTitle, setRefTitle] = useState('');
+  const [refMessages, setRefMessages] = useState<ChatMessage[]>([]);
+  const [refStreaming, setRefStreaming] = useState('');
+  const [refBusy, setRefBusy] = useState(false);
+  const refThreadRef = useRef('');
 
   const [bounds, setBounds] = useState<Bounds | null>(null);
   const [displays, setDisplays] = useState<DisplayInfo[]>([]);
@@ -471,6 +484,27 @@ export default function App() {
           // Everything Alfred knew is gone; reload into the blank factory state.
           window.location.reload();
           break;
+        // Reference agent — scoped by threadId so a stale/other thread never bleeds
+        // into the open panel. Never persisted; lives only in the panel's state.
+        case 'reference.delta':
+          if (e.threadId === refThreadRef.current) setRefStreaming((s) => s + e.text);
+          break;
+        case 'reference.message':
+          if (e.threadId === refThreadRef.current) {
+            setRefMessages((m) => [...m, e.message]);
+            setRefStreaming('');
+          }
+          break;
+        case 'reference.done':
+          if (e.threadId === refThreadRef.current) setRefBusy(false);
+          break;
+        case 'reference.error':
+          if (e.threadId === refThreadRef.current) {
+            setRefBusy(false);
+            setRefStreaming('');
+            pushLog({ tag: 'REFERENCE', tone: 'red', msg: e.message });
+          }
+          break;
         case 'error':
           pushLog({ tag: 'ERROR', tone: 'red', msg: e.message });
           pushAlert(e.message);
@@ -610,6 +644,53 @@ export default function App() {
     setListening(true);
     alfred.startListening();
     pushLog({ tag: 'VOICE', tone: 'cyan', msg: 'listening…' });
+  };
+
+  /**
+   * Open the isolated Reference panel for a target (a note/node, or a project).
+   * Phase 3's graph calls this with a node; here it is directly invokable/testable.
+   * Starts a fresh ephemeral thread (new threadId, empty history).
+   */
+  const openReference = (target: ReferenceTarget, title?: string) => {
+    const threadId = `ref-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    refThreadRef.current = threadId;
+    setRefTarget(target);
+    setRefTitle(title || target.note || target.project || 'Reference');
+    setRefMessages([]);
+    setRefStreaming('');
+    setRefBusy(false);
+  };
+
+  const closeReference = () => {
+    refThreadRef.current = ''; // ignore any late stream events for this thread
+    setRefTarget(null);
+    setRefMessages([]);
+    setRefStreaming('');
+    setRefBusy(false);
+  };
+
+  const askReference = (question: string) => {
+    if (!refTarget) return;
+    const threadId = refThreadRef.current;
+    const userMsg: ChatMessage = {
+      id: `rq-${Date.now()}`,
+      sessionId: threadId,
+      role: 'user',
+      content: question,
+      ts: Date.now(),
+    };
+    // History = the settled thread so far (exclude the in-flight message).
+    const history = refMessages.map((m) => ({
+      role: m.role === 'assistant' ? ('assistant' as const) : ('user' as const),
+      content: m.content,
+    }));
+    setRefMessages((m) => [...m, userMsg]);
+    setRefStreaming('');
+    setRefBusy(true);
+    alfred.askReference({ threadId, target: refTarget, question, history }).catch((err) => {
+      setRefBusy(false);
+      pushLog({ tag: 'REFERENCE', tone: 'red', msg: err instanceof Error ? err.message : String(err) });
+    });
   };
 
   /** Right-of-header meta + scrollable body for each card, keyed by id. */
@@ -902,6 +983,17 @@ export default function App() {
           </button>
           <button
             type="button"
+            className={`topbar-btn no-drag${refTarget ? ' on' : ''}`}
+            onClick={() => {
+              const note = window.prompt('Reference — nota do grafo (slug ou título):');
+              if (note && note.trim()) openReference({ note: note.trim() });
+            }}
+            title="Open the isolated Reference panel for a note (Phase 3: the graph opens this per node)"
+          >
+            ◈ REFERENCE
+          </button>
+          <button
+            type="button"
             className="topbar-btn no-drag"
             onClick={() => {
               patchCard('settings', { visible: true });
@@ -999,6 +1091,18 @@ export default function App() {
         <div className="overlay">
           <ApprovalPrompt request={approval} onResolve={onResolve} />
         </div>
+      )}
+
+      {refTarget && (
+        <ReferenceChat
+          target={refTarget}
+          title={refTitle}
+          messages={refMessages}
+          streaming={refStreaming}
+          busy={refBusy}
+          onAsk={askReference}
+          onClose={closeReference}
+        />
       )}
 
       {factoryInfo && (

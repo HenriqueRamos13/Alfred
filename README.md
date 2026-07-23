@@ -125,7 +125,7 @@ setting.
 | Agent | Role | Default |
 |-------|------|---------|
 | **main** | the chat brain | derived from `ALFRED_PROVIDER` (e.g. `anthropic` → `claude-api` + `claude-sonnet-5`) |
-| **reference** | reference brain (used in a later phase) | DeepSeek V4 Flash |
+| **reference** | isolated read-only Q&A over one vault note/node (◈ REFERENCE panel) | DeepSeek V4 Flash |
 | **curator** | the memory curator | DeepSeek V4 Flash |
 
 **The two Claudes.** The catalogue exposes Anthropic under **two providers that

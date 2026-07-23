@@ -45,6 +45,8 @@ import { getProject, listProjects } from './projects.ts';
 import { factoryResetPaths } from './reset.ts';
 import { resolveProvider, listBrains, resolveActiveBrainId } from './providers.ts';
 import type { BrainInfo } from './providers.ts';
+import { askReference as runReferenceTurn } from './reference.ts';
+import type { ReferenceRequest } from './reference.ts';
 import {
   parseAgentConfig,
   coerceAgent,
@@ -475,6 +477,11 @@ export interface OrchestratorHandle {
   factoryReset(): Promise<void>;
   /** Manually run the memory curator (drain inbox → notes, rebuild MOCs/backlinks). */
   runCurator(): Promise<unknown>;
+  /**
+   * Reference agent: one ISOLATED, read-only turn over a note/node. Streams
+   * reference.* events scoped by threadId; never touches the main chat/session.
+   */
+  askReference(req: ReferenceRequest): Promise<void>;
   listProjects(): ProjectRecord[];
   listAccounts(): AccountRecord[];
   /** Brain availability (enabled/disabled) for the UI. */
@@ -896,6 +903,25 @@ export function createOrchestrator(opts: CreateOrchestratorOpts): OrchestratorHa
     send,
     async runCurator() {
       return runCuratorNow();
+    },
+    async askReference(req) {
+      // Isolated side-thread: uses the reference agent's config; never the main
+      // brain's session/history. emit is the same sink but reference.* is not
+      // persisted (only chat.message is — see the emit choke point above).
+      return runReferenceTurn(
+        {
+          db,
+          workspace: config.workspace,
+          sessionId,
+          dailyTokenBudget: config.dailyTokenBudget,
+          stepCap: config.stepCap,
+          dailyUsdBudget: config.dailyUsdBudget,
+          reference: getAgentConfig().reference,
+          emit,
+          env: process.env,
+        },
+        req,
+      );
     },
     getHistory(limit) {
       return getRecentMessages(db, limit ?? 100) as ChatMessage[];
