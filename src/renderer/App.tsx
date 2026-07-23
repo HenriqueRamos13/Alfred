@@ -115,6 +115,7 @@ export default function App() {
   // `jobs` here only supplies each widget's live content + title.
   const [jobs, setJobs] = useState<Job[]>([]);
   const [dangerous, setDangerous] = useState(false);
+  const [spawnPaused, setSpawnPaused] = useState(false); // SPAWN kill-switch (freeze new fan-out)
   const [grill, setGrill] = useState(true); // GRILL-ME defaults ON
   // Factory-reset modal: null = closed; the info object = open, listing what will be erased.
   const [factoryInfo, setFactoryInfo] = useState<FactoryResetInfo | null>(null);
@@ -423,6 +424,8 @@ export default function App() {
     alfred.getModelCatalog().then(setCatalog).catch(() => {});
     // Reflect the persisted DANGEROUS-mode state in the toggle + visuals.
     alfred.getDangerousMode().then(setDangerous).catch(() => {});
+    // Reflect the persisted SPAWN kill-switch (default off).
+    alfred.getSpawnPaused().then(setSpawnPaused).catch(() => {});
     // Reflect the persisted GRILL-ME toggle (default on).
     alfred.getGrillMe().then(setGrill).catch(() => {});
     // Reflect the persisted voice-output toggle.
@@ -660,6 +663,17 @@ export default function App() {
       tag: 'KERNEL',
       tone: next ? 'red' : 'lime',
       msg: next ? '!! DANGEROUS MODE ON — approvals bypassed' : 'dangerous mode off — approvals restored',
+    });
+  };
+
+  const toggleSpawnPaused = () => {
+    const next = !spawnPaused;
+    setSpawnPaused(next); // optimistic
+    alfred.setSpawnPaused(next).then(setSpawnPaused).catch(() => setSpawnPaused(!next));
+    pushLog({
+      tag: 'KERNEL',
+      tone: next ? 'red' : 'lime',
+      msg: next ? '‖ SPAWN PAUSED — new delegations/studies refused (running children finish)' : 'spawn resumed — fan-out allowed again',
     });
   };
 
@@ -1177,6 +1191,14 @@ export default function App() {
             }
           >
             {grill ? '◆ GRILL ON' : '◇ GRILL'}
+          </button>
+          <button
+            type="button"
+            className={`topbar-btn no-drag${spawnPaused ? ' on' : ''}`}
+            onClick={toggleSpawnPaused}
+            title="Kill-switch: freeze NEW fan-out (delegate_to_agent, delegate_to_claude_code, scheduled studies). Running children finish. Persisted."
+          >
+            {spawnPaused ? '‖ SPAWN PAUSED' : '⛛ PAUSE SPAWN'}
           </button>
           <button
             type="button"

@@ -25,7 +25,17 @@ import { randomUUID } from 'node:crypto';
 import { streamText, tool, jsonSchema, stepCountIs } from 'ai';
 import type { ToolSet } from 'ai';
 import { getAgent, loadAgentContext } from '../core/team.ts';
-import { resolveTeamModel, agentBudgetDecision } from '../core/team-pure.ts';
+import {
+  resolveTeamModel,
+  agentBudgetDecision,
+  blockedToolsForRole,
+  restrictGrantForRole,
+  canSpawn,
+  DEFAULT_MAX_SPAWN_DEPTH,
+  DEFAULT_MAX_CONCURRENT_CHILDREN,
+  type DelegationRole,
+  type SpawnLimits,
+} from '../core/team-pure.ts';
 import { grantAllows, jobActionDecision, escalateForTrifecta, type JobRunState } from '../core/jobs-pure.ts';
 import { resolveProvider } from '../core/providers.ts';
 import { agentToSpec, modelSupportsVision, buildToolModelOutput } from '../core/modelCatalog.ts';
@@ -38,6 +48,44 @@ interface Args {
   agentId: string;
   task: string;
   model?: string;
+}
+
+/**
+ * Per-parent active-children counter (concurrency ceiling, Phase 6 stage 2).
+ * Process-wide and in-process — a delegate_to_agent call runs its child inline,
+ * so this bounds how many children one parent has in flight at once.
+ * ponytail: in-process Map — a multi-process fan-out would need a shared store;
+ * there is exactly one orchestrator process, so a Map is the right ceiling.
+ */
+const activeByParent = new Map<string, number>();
+function activeChildren(parentKey: string): number {
+  return activeByParent.get(parentKey) ?? 0;
+}
+function enterChild(parentKey: string): void {
+  activeByParent.set(parentKey, activeChildren(parentKey) + 1);
+}
+function exitChild(parentKey: string): void {
+  const n = activeChildren(parentKey) - 1;
+  if (n <= 0) activeByParent.delete(parentKey);
+  else activeByParent.set(parentKey, n);
+}
+
+/** Spawn limits from env (defaults 2 / 3). */
+function spawnLimits(): SpawnLimits {
+  return {
+    maxSpawnDepth: Number(process.env.ALFRED_MAX_SPAWN_DEPTH) || DEFAULT_MAX_SPAWN_DEPTH,
+    maxConcurrentChildren: Number(process.env.ALFRED_MAX_CONCURRENT_CHILDREN) || DEFAULT_MAX_CONCURRENT_CHILDREN,
+  };
+}
+
+/** Kill-switch (Phase 6 stage 2): is NEW spawn/fan-out paused? (setting spawn_paused='1'). */
+function spawnPaused(db: ToolCtx['db']): boolean {
+  return (db.prepare("SELECT value FROM settings WHERE key = 'spawn_paused'").get() as { value?: string } | undefined)?.value === '1';
+}
+
+/** DANGEROUS-mode read (inline, so this file stays strip-types-testable). */
+function isDangerous(db: ToolCtx['db']): boolean {
+  return (db.prepare("SELECT value FROM settings WHERE key = 'dangerous_mode'").get() as { value?: string } | undefined)?.value === '1';
 }
 
 /** Budget config for the global kill-switch, read from env (mirrors loadConfig). */
@@ -81,19 +129,49 @@ export const delegateToAgent: Tool<Args> = {
     const agent = getAgent(ctx.db, a.agentId);
     if (!agent) return { ok: false, error: `no roster agent with id "${a.agentId}" (create one with the team tool, or op=list to see them)` };
 
-    const model = resolveTeamModel(a.model, agent);
-    const context = await loadAgentContext(ctx.workspace, agent);
+    // Spawn bounds + kill-switch (Phase 6 stage 2). `depth` is the CURRENT runner's
+    // depth (0 = top-level, attended Alfred). The child runs at depth+1. Refuse —
+    // EXPLICITLY, never silently — when paused, too deep, or over the concurrent
+    // children ceiling. Applies to top-level and nested delegations alike.
+    const depth = ctx.delegationDepth ?? 0;
+    const parentKey = ctx.sessionId;
+    const decision = canSpawn(depth, activeChildren(parentKey), spawnLimits(), spawnPaused(ctx.db));
+    if (!decision.ok) {
+      ctx.emit({ kind: 'tool.start', sessionId: ctx.sessionId, toolName: 'delegate_to_agent', args: maskSecrets({ agentId: a.agentId }), tier: 'T2' });
+      ctx.emit({ kind: 'tool.end', sessionId: ctx.sessionId, toolName: 'delegate_to_agent', status: 'blocked', error: decision.reason });
+      return { ok: false, error: decision.reason };
+    }
+    // Reserve the slot SYNCHRONOUSLY, right after the check — before any `await`.
+    // Otherwise parallel delegate_to_agent tool calls in one model step all read
+    // activeChildren=0, all pass canSpawn, then all enterChild → the concurrency
+    // ceiling is bypassed (TOCTOU). Reserving here serialises them correctly.
+    enterChild(parentKey);
+    try {
+      const model = resolveTeamModel(a.model, agent);
+      const context = await loadAgentContext(ctx.workspace, agent);
 
-    if (agent.provider === 'claude-cli') return runClaudeCli(ctx, context, a.task.trim(), model);
-    return runAgentTurn(ctx, {
-      agentId: agent.id,
-      provider: agent.provider,
-      model,
-      grant: agent.grant,
-      dailyTokenBudget: agent.dailyTokenBudget,
-      system: context,
-      task: a.task.trim(),
-    });
+      // A NESTED spawn (this call itself runs inside a delegated child, depth ≥ 1)
+      // is UNATTENDED — no human watches a fan-out — so the child runs FAIL-CLOSED
+      // (sensitive actions denied/parked, never auto-run, never inheriting the
+      // parent's interactive approval). A TOP-LEVEL delegate (Alfred, depth 0)
+      // stays ATTENDED (the normal approval path).
+      const nested = depth >= 1;
+      if (agent.provider === 'claude-cli') return await runClaudeCli(ctx, context, a.task.trim(), model);
+      return await runAgentTurn(ctx, {
+        agentId: agent.id,
+        provider: agent.provider,
+        model,
+        grant: agent.grant,
+        delegationRole: agent.delegationRole,
+        delegationDepth: depth + 1,
+        dailyTokenBudget: agent.dailyTokenBudget,
+        system: context,
+        task: a.task.trim(),
+        unattended: nested ? { dangerous: isDangerous(ctx.db), queue: () => {} } : undefined,
+      });
+    } finally {
+      exitChild(parentKey);
+    }
   },
 };
 
@@ -113,6 +191,10 @@ export interface AgentTurnSpec {
   provider: Parameters<typeof agentToSpec>[0]['provider'];
   model: string;
   grant: Capability[];
+  /** PRIVILEGE role — bounds the model-visible toolset + the effective grant. Default 'leaf'. */
+  delegationRole?: DelegationRole;
+  /** This runner's delegation depth (child of a delegate call). Threaded to its own sub-tools. Default 0. */
+  delegationDepth?: number;
   dailyTokenBudget?: number;
   system: string;
   task: string;
@@ -168,6 +250,11 @@ async function runClaudeCli(ctx: ToolCtx, context: string, task: string, model: 
  */
 export async function runAgentTurn(ctx: ToolCtx, spec: AgentTurnSpec): Promise<AgentTurnResult> {
   const { agentId, provider, model, grant, system, task, unattended } = spec;
+  const delegationRole: DelegationRole = spec.delegationRole ?? 'leaf';
+  const delegationDepth = spec.delegationDepth ?? 0;
+  // Role-floored effective grant: a leaf may never message the user (notify/send
+  // stripped), regardless of how its grant was configured.
+  const effGrant = restrictGrantForRole(delegationRole, grant);
   let resolved: ReturnType<typeof resolveProvider>;
   try {
     resolved = resolveProvider(agentToSpec({ name: agentId, provider, model }), process.env);
@@ -197,21 +284,28 @@ export async function runAgentTurn(ctx: ToolCtx, spec: AgentTurnSpec): Promise<A
   // Fail-closed governance for the UNATTENDED path: no human to approve, so an
   // execute-time sensitive sub-op is DENIED (mirrors the JobScheduler's job ctx).
   const runState: JobRunState = { readUntrusted: false };
+  // Sub-tool execution ctx carries this runner's OWN depth, so a nested
+  // delegate_to_agent (orchestrator only) spawns its child at depth+1.
+  const baseCtx: ToolCtx = { ...ctx, delegationDepth };
   const unattendedCtx: ToolCtx = unattended
     ? {
-        ...ctx,
+        ...baseCtx,
         governance: {
           classify: classifyAction,
-          requestApproval: async () => ({ id: randomUUID(), decision: 'deny', note: 'unattended study — no human to approve' }),
+          requestApproval: async () => ({ id: randomUUID(), decision: 'deny', note: 'unattended child — no human to approve' }),
           markTrifecta: () => {},
           trifecta: () => ({ readUntrusted: false, hasPrivate: false, canEgress: false }),
         } satisfies Governance,
       }
-    : ctx;
+    : baseCtx;
 
   const { tools: allTools } = (await import('./index.ts')) as { tools: Tool[] };
-  // No trivial self-recursion: a delegated/studying agent can't spawn more delegations or studies.
-  const subTools = allTools.filter((t) => t.name !== 'delegate_to_agent' && t.name !== 'agent_study');
+  // Role blocklist (Phase 6 stage 2): strip the tools this privilege role may
+  // never use BEFORE the model sees them — spawn/scheduling/roster/shared-vault
+  // for a leaf; the same minus delegate_to_agent for an orchestrator (it may
+  // spawn a bounded child). This subsumes the old no-self-recursion filter.
+  const blocked = new Set(blockedToolsForRole(delegationRole));
+  const subTools = allTools.filter((t) => !blocked.has(t.name));
   const brainHasVision = modelSupportsVision(provider, model);
 
   const controller = new AbortController();
@@ -224,7 +318,7 @@ export async function runAgentTurn(ctx: ToolCtx, spec: AgentTurnSpec): Promise<A
       execute: async (args: unknown) => {
         if (unattended) {
           // UNATTENDED: sensitive → queue/deny (pierces dangerous), in-grant benign → allow.
-          let decision = jobActionDecision({ grant, dangerous: unattended.dangerous, unattended: true }, t.name, args);
+          let decision = jobActionDecision({ grant: effGrant, dangerous: unattended.dangerous, unattended: true }, t.name, args);
           decision = escalateForTrifecta(decision, runState, t.name, args);
           if (decision === 'deny') {
             ctx.emit({ kind: 'tool.start', sessionId: ctx.sessionId, toolName: t.name, args: maskSecrets(args), tier: classifyAction(t.name, args) });
@@ -243,12 +337,12 @@ export async function runAgentTurn(ctx: ToolCtx, spec: AgentTurnSpec): Promise<A
         }
         // ATTENDED: a capability outside the agent's grant is refused to the model —
         // NOT auto-allowed by dangerous mode (dangerous bypasses approvals, not the grant).
-        if (!grantAllows(grant, t.name, args)) {
+        if (!grantAllows(effGrant, t.name, args)) {
           ctx.emit({ kind: 'tool.start', sessionId: ctx.sessionId, toolName: t.name, args: maskSecrets(args), tier: classifyAction(t.name, args) });
           ctx.emit({ kind: 'tool.end', sessionId: ctx.sessionId, toolName: t.name, status: 'blocked', error: 'out of agent grant' });
-          return { ok: false, error: `not permitted by ${agentId}'s grant: ${t.name}` };
+          return { ok: false, error: `not permitted by ${agentId}'s grant/role: ${t.name}` };
         }
-        return runGovernedTool(t, args, ctx);
+        return runGovernedTool(t, args, baseCtx);
       },
       toModelOutput: ({ output }) => buildToolModelOutput(output, brainHasVision),
     });

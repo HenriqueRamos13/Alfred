@@ -52,6 +52,14 @@ export const delegate: Tool<Args> = {
   async execute(a, ctx) {
     if (!a.task || !a.task.trim()) return { ok: false, error: 'task is required' };
 
+    // Spawn kill-switch (Phase 6 stage 2): when PAUSE SPAWN is on, refuse any NEW
+    // fan-out — spawning a headless claude -p is a spawn. Running children finish.
+    const spawnPaused =
+      (ctx.db.prepare("SELECT value FROM settings WHERE key = 'spawn_paused'").get() as { value?: string } | undefined)?.value === '1';
+    if (spawnPaused) {
+      return { ok: false, error: 'criação de subagentes em pausa (kill-switch "PAUSE SPAWN" ativo) — retoma para delegar' };
+    }
+
     // Keep cwd inside the workspace (defence in depth; relative paths resolve there).
     const cwd = a.cwd ? (path.isAbsolute(a.cwd) ? a.cwd : path.resolve(ctx.workspace, a.cwd)) : ctx.workspace;
     if (!cwd.startsWith(ctx.workspace)) {

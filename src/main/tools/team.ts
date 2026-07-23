@@ -22,6 +22,8 @@ interface Args {
   model?: string;
   /** Optional per-agent autonomy grant (default read+notify). */
   grant?: string[];
+  /** Optional PRIVILEGE role: "leaf" (default, no spawn) | "orchestrator" (may spawn, bounded). */
+  delegationRole?: string;
   /** Optional per-agent daily token cap for autonomous runs (default unlimited beyond the global kill-switch). */
   dailyTokenBudget?: number;
   /** delete target agent id. */
@@ -36,7 +38,9 @@ export const team: Tool<Args> = {
     'create {name, role?, provider, model, grant?} — persists the agent, scaffolds agents/<id>/knowledge/ + a seed role note, ' +
     'and updates the shared who-knows-what index; the model can be ANY id in the catalog (e.g. provider "claude-cli" + ' +
     'model "claude-opus-4-8" = Opus 4.8, or "claude-sonnet-5"); an unknown provider/model is rejected. grant is the agent\'s ' +
-    'autonomy allowlist when delegated to (default ["read","notify"]). dailyTokenBudget is an optional per-agent daily token cap ' +
+    'autonomy allowlist when delegated to (default ["read","notify"]). delegationRole is the PRIVILEGE role: "leaf" (default, ' +
+    'cannot spawn/schedule/manage-roster/write-vault/message-user) or "orchestrator" (may spawn children, bounded). ' +
+    'dailyTokenBudget is an optional per-agent daily token cap ' +
     'for autonomous runs (delegate/study); omitted → unlimited beyond the global kill-switch. ' +
     'list — enumerate the roster. delete {id} — remove the agent (its folder is left on disk; the index drops it). ' +
     'This tool creates/persists agents; RUN one with delegate_to_agent. create/delete are T2; list is T0.',
@@ -52,6 +56,14 @@ export const team: Tool<Args> = {
         type: 'array',
         items: { type: 'string', enum: ['read', 'notify', 'write', 'browse', 'shell', 'send', 'delete', 'money', 'secrets'] },
         description: 'op=create (optional): the agent\'s autonomy allowlist when delegated to. Default ["read","notify"].',
+      },
+      delegationRole: {
+        type: 'string',
+        enum: ['leaf', 'orchestrator'],
+        description:
+          'op=create (optional): PRIVILEGE role (distinct from the free-text "role" specialty). "leaf" (default) cannot ' +
+          'spawn/delegate, schedule jobs, manage the roster, write the shared vault, or message the user. "orchestrator" ' +
+          'may spawn children (delegate_to_agent), bounded by max spawn depth + concurrent children.',
       },
       dailyTokenBudget: {
         type: 'number',

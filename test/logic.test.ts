@@ -1564,6 +1564,11 @@ import {
   composeStudyNote,
   addTopicToIndex,
   agentBudgetDecision,
+  blockedToolsForRole,
+  restrictGrantForRole,
+  canSpawn,
+  DEFAULT_MAX_SPAWN_DEPTH,
+  DEFAULT_MAX_CONCURRENT_CHILDREN,
 } from '../src/main/core/team-pure.ts';
 
 test('catalog — listModels/findModel/priceOf, Anthropic shared by both Claude providers', () => {
@@ -2577,6 +2582,7 @@ test('validateAgentSpec — ok, defaults role, rejects bad provider/model/name',
     provider: 'claude-cli',
     model: 'claude-opus-4-8',
     grant: ['read', 'notify'],
+    delegationRole: 'leaf', // omitted → leaf (default-deny privilege role, Phase 6 stage 2)
     dailyTokenBudget: undefined, // omitted → unlimited (global kill-switch only)
   });
   // a per-agent daily budget passes through; a non-positive value is rejected
@@ -2781,6 +2787,84 @@ test('validateJobSpec — study job requires agentId + topic + a well-formed sch
     assert.deepEqual(ok.spec.study, { agentId: 'coder', topic: 'Rust async' });
     assert.deepEqual(ok.spec.schedule, { type: 'daily', at: '09:00' });
   }
+});
+
+// ── Phase 6 stage 2: delegation roles + spawn bounds + kill-switch ───────────
+
+test('validateAgentSpec — delegationRole defaults to leaf, accepts orchestrator, rejects junk', () => {
+  const base = { name: 'X', provider: 'deepseek' as const, model: 'deepseek-v4-flash' };
+  // absent → default leaf
+  const def = validateAgentSpec(base);
+  assert.ok(def.ok && def.spec.delegationRole === 'leaf');
+  // explicit orchestrator passes through
+  const orch = validateAgentSpec({ ...base, delegationRole: 'orchestrator' });
+  assert.ok(orch.ok && orch.spec.delegationRole === 'orchestrator');
+  // explicit leaf passes through
+  const leaf = validateAgentSpec({ ...base, delegationRole: 'leaf' });
+  assert.ok(leaf.ok && leaf.spec.delegationRole === 'leaf');
+  // an unknown role is rejected (not silently coerced)
+  assert.equal(validateAgentSpec({ ...base, delegationRole: 'admin' }).ok, false);
+});
+
+test('blockedToolsForRole — leaf blocks spawn/scheduling/vault; orchestrator keeps delegate_to_agent', () => {
+  const leaf = blockedToolsForRole('leaf');
+  // spawn / delegation
+  assert.ok(leaf.includes('delegate_to_claude_code'));
+  assert.ok(leaf.includes('delegate_to_agent'));
+  assert.ok(leaf.includes('agent_study'));
+  // scheduling / roster management (create jobs / spawn more agents)
+  assert.ok(leaf.includes('schedule'));
+  assert.ok(leaf.includes('team'));
+  // shared vault (its read needs are served by the pre-loaded context)
+  assert.ok(leaf.includes('memory'));
+
+  const orch = blockedToolsForRole('orchestrator');
+  // an orchestrator MAY spawn a child (delegate_to_agent), bounded by depth/concurrency
+  assert.ok(!orch.includes('delegate_to_agent'));
+  // …but still cannot spin up claude -p, schedule jobs, manage the roster, or write the shared vault
+  assert.ok(orch.includes('delegate_to_claude_code'));
+  assert.ok(orch.includes('schedule'));
+  assert.ok(orch.includes('team'));
+  assert.ok(orch.includes('memory'));
+  assert.ok(orch.includes('agent_study'));
+});
+
+test('restrictGrantForRole — leaf cannot message the user (send/notify stripped), orchestrator unchanged', () => {
+  // leaf: send + notify dropped; read/write/shell/browse kept (grant still gates them)
+  assert.deepEqual(restrictGrantForRole('leaf', ['read', 'notify', 'send', 'write', 'browse']), ['read', 'write', 'browse']);
+  // the default read+notify grant collapses to read-only for a leaf
+  assert.deepEqual(restrictGrantForRole('leaf', ['read', 'notify']), ['read']);
+  // orchestrator keeps its full grant (a distinct array, not the input reference)
+  const g = ['read', 'notify', 'send'] as const;
+  const orch = restrictGrantForRole('orchestrator', [...g]);
+  assert.deepEqual(orch, ['read', 'notify', 'send']);
+});
+
+test('canSpawn — within depth+concurrency allows; past either limit denies with a reason', () => {
+  const limits = { maxSpawnDepth: DEFAULT_MAX_SPAWN_DEPTH, maxConcurrentChildren: DEFAULT_MAX_CONCURRENT_CHILDREN };
+  assert.equal(DEFAULT_MAX_SPAWN_DEPTH, 2);
+  assert.equal(DEFAULT_MAX_CONCURRENT_CHILDREN, 3);
+  // top-level (depth 0) and a first-level orchestrator (depth 1) may spawn
+  assert.equal(canSpawn(0, 0, limits).ok, true);
+  assert.equal(canSpawn(1, 2, limits).ok, true); // 1 < 2 depth, 2 < 3 children
+  // depth ceiling: a depth-2 runner cannot spawn a depth-3 grandchild
+  const deep = canSpawn(2, 0, limits);
+  assert.equal(deep.ok, false);
+  if (!deep.ok) assert.match(deep.reason, /profundidade/i);
+  // concurrency ceiling: the 4th concurrent child is denied
+  const busy = canSpawn(0, 3, limits);
+  assert.equal(busy.ok, false);
+  if (!busy.ok) assert.match(busy.reason, /concorrent|filho/i);
+});
+
+test('canSpawn — the kill-switch (spawn_paused) refuses ANY new spawn, before any limit', () => {
+  const limits = { maxSpawnDepth: DEFAULT_MAX_SPAWN_DEPTH, maxConcurrentChildren: DEFAULT_MAX_CONCURRENT_CHILDREN };
+  // paused wins even when depth+concurrency are well within bounds
+  const paused = canSpawn(0, 0, limits, true);
+  assert.equal(paused.ok, false);
+  if (!paused.ok) assert.match(paused.reason, /pausa|kill-switch|PAUSE SPAWN/i);
+  // not paused with room → allowed
+  assert.equal(canSpawn(0, 0, limits, false).ok, true);
 });
 
 // ─────────────────────────────────────────────────────────────────────────────

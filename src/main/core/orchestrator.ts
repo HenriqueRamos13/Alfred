@@ -602,6 +602,13 @@ export interface OrchestratorHandle {
   /** DANGEROUS mode (bypass all approvals): read/toggle, persisted. */
   getDangerousMode(): boolean;
   setDangerousMode(on: boolean): boolean;
+  /**
+   * SPAWN kill-switch (Phase 6 stage 2): when ON, any NEW fan-out (delegate_to_agent,
+   * delegate_to_claude_code, a scheduled study) is refused; children already running
+   * finish. Read/set, persisted, default OFF.
+   */
+  getSpawnPaused(): boolean;
+  setSpawnPaused(on: boolean): boolean;
   /** GRILL-ME (interview to lock the plan before acting): read/toggle, persisted, default ON. */
   getGrillMe(): boolean;
   setGrillMe(on: boolean): boolean;
@@ -1225,6 +1232,13 @@ export function createOrchestrator(opts: CreateOrchestratorOpts): OrchestratorHa
     setDangerousMode(on) {
       setSetting(db, 'dangerous_mode', on ? '1' : '0');
       return isDangerous();
+    },
+    getSpawnPaused() {
+      return getSetting(db, 'spawn_paused') === '1';
+    },
+    setSpawnPaused(on) {
+      setSetting(db, 'spawn_paused', on ? '1' : '0');
+      return on;
     },
     getGrillMe() {
       return grillMeEnabled(getSetting(db, 'grill_me_enabled'));

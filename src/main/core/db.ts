@@ -156,6 +156,7 @@ CREATE TABLE IF NOT EXISTS team_agents (
   provider    TEXT NOT NULL,
   model       TEXT NOT NULL,
   grant_json  TEXT,                              -- per-agent autonomy allowlist; null → default read+notify
+  delegation_role TEXT NOT NULL DEFAULT 'leaf',  -- PRIVILEGE role: 'leaf' (default-deny) | 'orchestrator' (may spawn, bounded)
   daily_token_budget INTEGER,                    -- per-agent daily token cap; null → unlimited (global kill-switch only)
   created_ts  INTEGER NOT NULL
 );
@@ -187,6 +188,12 @@ export function openDb(dbPath: string): AlfredDb {
     (c) => c.name === 'daily_token_budget',
   );
   if (!hasAgentBudget) db.exec('ALTER TABLE team_agents ADD COLUMN daily_token_budget INTEGER');
+  // Idempotent migration: `team_agents.delegation_role` (privilege role, Phase 6 stage 2).
+  // Rows written before it existed default to 'leaf' (default-deny); rowToAgent tolerates null too.
+  const hasDelegationRole = (db.prepare('PRAGMA table_info(team_agents)').all() as { name: string }[]).some(
+    (c) => c.name === 'delegation_role',
+  );
+  if (!hasDelegationRole) db.exec("ALTER TABLE team_agents ADD COLUMN delegation_role TEXT NOT NULL DEFAULT 'leaf'");
   // Idempotent migration: `scheduled_jobs.study` (study-job params, Phase 5 stage 4).
   const hasStudy = (db.prepare('PRAGMA table_info(scheduled_jobs)').all() as { name: string }[]).some(
     (c) => c.name === 'study',

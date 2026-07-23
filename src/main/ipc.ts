@@ -49,6 +49,9 @@ export interface Orchestrator {
   /** DANGEROUS mode (bypass all approvals): read/toggle, persisted. */
   getDangerousMode(): boolean | Promise<boolean>;
   setDangerousMode(on: boolean): boolean | Promise<boolean>;
+  /** SPAWN kill-switch (freeze new fan-out): read/toggle, persisted, default OFF. */
+  getSpawnPaused(): boolean | Promise<boolean>;
+  setSpawnPaused(on: boolean): boolean | Promise<boolean>;
   /** GRILL-ME (plan-clarity interview): read/toggle, persisted, default ON. */
   getGrillMe(): boolean | Promise<boolean>;
   setGrillMe(on: boolean): boolean | Promise<boolean>;
@@ -312,6 +315,15 @@ export function registerIpc(core: Orchestrator, emit: (e: StreamEvent) => void):
       return await core.setDangerousMode(on === true);
     } catch (err) {
       fail('set dangerous mode', err);
+      return false;
+    }
+  });
+  ipcMain.handle('alfred:getSpawnPaused', guard('get spawn paused', () => core.getSpawnPaused(), false));
+  ipcMain.handle('alfred:setSpawnPaused', async (_e, on: unknown) => {
+    try {
+      return await core.setSpawnPaused(on === true);
+    } catch (err) {
+      fail('set spawn paused', err);
       return false;
     }
   });

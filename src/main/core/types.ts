@@ -496,6 +496,13 @@ export interface ToolCtx {
   emit(event: StreamEvent): void;
   /** Push a generative-UI tree to the renderer. */
   sendUi(payload: RenderUiPayload): void;
+  /**
+   * Delegation depth of the CURRENT runner (Phase 6 stage 2). 0/undefined = the
+   * top-level, attended Alfred turn; a delegated child runs at ≥ 1. delegate_to_agent
+   * reads this to enforce spawn depth, to mark a nested spawn as an unattended
+   * (fail-closed) child, and to pass depth+1 down to its own child.
+   */
+  delegationDepth?: number;
 }
 
 export interface Tool<A = any> {

@@ -13,7 +13,7 @@
 
 import { mkdir, writeFile, readFile, readdir } from 'node:fs/promises';
 import { join } from 'node:path';
-import { agentIdFromName, buildAgentsIndex, buildAgentContext, parseGrant, composeStudyNote, studyNoteSlug, addTopicToIndex, type AgentNote, type AgentSpec, type TeamAgent } from './team-pure.ts';
+import { agentIdFromName, buildAgentsIndex, buildAgentContext, parseGrant, composeStudyNote, studyNoteSlug, addTopicToIndex, DELEGATION_ROLES, DEFAULT_DELEGATION_ROLE, type AgentNote, type AgentSpec, type DelegationRole, type TeamAgent } from './team-pure.ts';
 import { dayKey } from './jobs-pure.ts';
 
 type DB = import('better-sqlite3').Database;
@@ -25,6 +25,7 @@ interface Row {
   provider: string;
   model: string;
   grant_json: string | null;
+  delegation_role: string | null;
   daily_token_budget: number | null;
   created_ts: number;
 }
@@ -38,6 +39,10 @@ function rowToAgent(r: Row): TeamAgent {
     model: r.model,
     // Tolerant of rows written before the grant_json column existed.
     grant: parseGrant(r.grant_json),
+    // Tolerant of rows written before delegation_role existed → default-deny (leaf).
+    delegationRole: DELEGATION_ROLES.includes(r.delegation_role as DelegationRole)
+      ? (r.delegation_role as DelegationRole)
+      : DEFAULT_DELEGATION_ROLE,
     dailyTokenBudget: r.daily_token_budget ?? undefined,
     createdTs: r.created_ts,
   };
@@ -67,7 +72,7 @@ export async function createAgent(db: DB, workspace: string, spec: AgentSpec, no
   const id = agentIdFromName(spec.name, listAgents(db).map((a) => a.id));
   const agent: TeamAgent = { id, ...spec, createdTs: now.getTime() };
   db.prepare(
-    'INSERT INTO team_agents (id, name, role, provider, model, grant_json, daily_token_budget, created_ts) VALUES (@id, @name, @role, @provider, @model, @grant, @dailyTokenBudget, @createdTs)',
+    'INSERT INTO team_agents (id, name, role, provider, model, grant_json, delegation_role, daily_token_budget, created_ts) VALUES (@id, @name, @role, @provider, @model, @grant, @delegationRole, @dailyTokenBudget, @createdTs)',
   ).run({ ...agent, grant: JSON.stringify(agent.grant), dailyTokenBudget: agent.dailyTokenBudget ?? null });
 
   const knowledgeDir = join(workspace, 'agents', id, 'knowledge');

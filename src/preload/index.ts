@@ -64,6 +64,9 @@ const api = {
   /** DANGEROUS mode (bypass all approvals) — persisted; read on mount. */
   getDangerousMode: (): Promise<boolean> => ipcRenderer.invoke('alfred:getDangerousMode'),
   setDangerousMode: (on: boolean): Promise<boolean> => ipcRenderer.invoke('alfred:setDangerousMode', on),
+  /** SPAWN kill-switch (freeze new fan-out) — persisted; read on mount. Default OFF. */
+  getSpawnPaused: (): Promise<boolean> => ipcRenderer.invoke('alfred:getSpawnPaused'),
+  setSpawnPaused: (on: boolean): Promise<boolean> => ipcRenderer.invoke('alfred:setSpawnPaused', on),
   /** GRILL-ME (interview to lock the plan before acting) — persisted; read on mount. Default ON. */
   getGrillMe: (): Promise<boolean> => ipcRenderer.invoke('alfred:getGrillMe'),
   setGrillMe: (on: boolean): Promise<boolean> => ipcRenderer.invoke('alfred:setGrillMe', on),

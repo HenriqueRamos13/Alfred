@@ -13,7 +13,7 @@ This tool **persists + scaffolds** an agent; you **run** one with
 ## Ops, args, output
 | op | args | output | risk |
 |----|------|--------|------|
-| `create` | `name`, `provider`, `model`, `role?`, `grant?`, `dailyTokenBudget?` | `{ agent }` | **T2** |
+| `create` | `name`, `provider`, `model`, `role?`, `grant?`, `delegationRole?`, `dailyTokenBudget?` | `{ agent }` | **T2** |
 | `list` | — | `{ agents: [...] }` | T0 |
 | `delete` | `id` | `{ deleted }` | **T2** |
 
@@ -35,6 +35,11 @@ T0.
   an array of capabilities (`read`, `notify`, `write`, `browse`, `shell`, `send`,
   `delete`, `money`, `secrets`). Defaults to `["read","notify"]`. Rows written
   before this column existed load with the default (tolerant `parseGrant`).
+- **`delegationRole`** (optional) — the **privilege role** (distinct from the
+  free-text `role` specialty above), `"leaf"` (default) or `"orchestrator"`. See
+  [Delegation roles + spawn bounds](#delegation-roles--spawn-bounds-phase-6-stage-2)
+  below. Omitted / a row written before this column existed → `"leaf"`
+  (default-deny; tolerant read).
 - **`dailyTokenBudget`** (optional) — a **per-agent daily token cap** for
   autonomous runs (`delegate_to_agent` + `agent_study` + scheduled `study`). A
   positive number; omitted → **unlimited** beyond the global kill-switch. Usage
@@ -47,7 +52,7 @@ T0.
   cap can't bite, same as the global kill-switch.)*
 
 On create it:
-1. persists a row in `team_agents` `{ id, name, role, provider, model, grant_json, daily_token_budget, created_ts }`;
+1. persists a row in `team_agents` `{ id, name, role, provider, model, grant_json, delegation_role, daily_token_budget, created_ts }`;
 2. scaffolds `<workspace>/agents/<id>/knowledge/` with a seed `role.md`;
 3. rebuilds the shared **who-knows-what** index `<workspace>/agents/index.md`
    (one line per agent, name → specialty), so Alfred can route a task to the right
@@ -64,6 +69,52 @@ may be worth keeping, and recursive removal is riskier than it's worth.
 ```json
 { "op": "create", "name": "Coder", "provider": "claude-cli", "model": "claude-opus-4-8", "role": "TypeScript/Node refactors", "grant": ["read", "write", "shell"] }
 ```
+
+## Delegation roles + spawn bounds (Phase 6 stage 2)
+
+Every roster agent has a **privilege role** — `delegationRole`, distinct from the
+free-text `role` specialty — that hard-bounds what it may do when run, **in code**,
+independent of (and on top of) its `grant`. Pure logic in `team-pure.ts`.
+
+**`leaf`** (default, default-deny) — a specialist that does the work and reports
+back to its parent. Its model-visible toolset has these **removed before the turn**
+(`blockedToolsForRole`): `delegate_to_agent`, `delegate_to_claude_code`,
+`agent_study` (no spawning), `schedule`, `team` (no scheduling / roster changes),
+and `memory` (no shared-vault access — a leaf's read needs are already served by
+its pre-assembled context). Its **effective grant** also has `notify` + `send`
+stripped (`restrictGrantForRole`) so it can never message the user directly. It
+**can** read, browse (if granted), and its research is persisted to its **own**
+knowledge folder by the trusted runner.
+
+**`orchestrator`** — may **spawn** a child agent via `delegate_to_agent` (the only
+tool added back vs. leaf; it still cannot `delegate_to_claude_code`, `schedule`,
+`team`, or write the shared vault). Spawning is bounded (`canSpawn`):
+- **`maxSpawnDepth`** (default **2**, env `ALFRED_MAX_SPAWN_DEPTH`) — at most 2
+  levels of nested delegated agents. A runner at depth ≥ the ceiling that tries to
+  spawn is **refused with an explicit error** (`limite de profundidade de
+  delegação`), never silently dropped.
+- **`maxConcurrentChildren`** (default **3**, env `ALFRED_MAX_CONCURRENT_CHILDREN`)
+  — a single parent's in-flight children; the (N+1)th is refused explicitly.
+
+**Effective toolset** of a run = `grant ∩ (tools not blocked by the role)`, applied
+in `runAgentTurn` before the model sees the tools (this subsumes the old
+no-self-recursion filter).
+
+**Fail-closed nested children.** A **top-level** `delegate_to_agent` (fired by
+Alfred/you) stays **attended** — sensitive actions take the normal approval path. A
+**nested** spawn (an orchestrator delegating deeper, depth ≥ 1) and any **scheduled
+study** are **unattended**: they run fail-closed (`jobActionDecision` + trifecta),
+default-deny for anything needing approval, never inheriting the parent's
+interactive approval. The delegation depth rides the run context (`ToolCtx.delegationDepth`).
+
+## Spawn kill-switch
+
+A persisted setting **`spawn_paused`** (toggle "PAUSE SPAWN" in the app strip;
+`getSpawnPaused` / `setSpawnPaused` on the orchestrator, over IPC + preload). When
+**on**, **any new fan-out** is refused with a clear message — `delegate_to_agent`
+(top-level and nested), `delegate_to_claude_code`, and a newly-firing scheduled
+`study`. Children **already running are not killed** — they finish. `canSpawn`
+checks the kill-switch **first**, before the depth/concurrency ceilings.
 
 ## delegate_to_agent (run an agent)
 
@@ -132,9 +183,11 @@ runner verbatim — same model, same assembled context, same per-tool grant
 enforcement, same attended governance, same per-run trifecta escalation, same
 **per-agent + global** daily token budgets — handing the agent a fixed research
 brief: *research the topic with the browser (read-only), then output the
-synthesis as the final message; do not save files*. To avoid recursion, a
-studying/delegated agent's toolset excludes both `delegate_to_agent` and
-`agent_study`.
+synthesis as the final message; do not save files*. A studying/delegated agent's
+toolset is bounded by its **privilege role** (see
+[Delegation roles](#delegation-roles--spawn-bounds-phase-6-stage-2)): a leaf never
+sees the spawn/scheduling tools, and even an orchestrator only regains
+`delegate_to_agent`, never `agent_study`.
 
 **Scheduled study (unattended).** `schedule` with `kind:"study"` and
 `study:{agentId, topic}` runs the SAME `runStudy` with `{ unattended:true }` on a

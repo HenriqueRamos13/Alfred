@@ -16,6 +16,17 @@ import type { Capability } from './types.ts';
 /** Every capability a per-agent grant may list (mirrors jobs-pure's ALL_CAPS). */
 const ALL_CAPS: readonly Capability[] = ['read', 'notify', 'write', 'browse', 'shell', 'send', 'delete', 'money', 'secrets'];
 
+/**
+ * PRIVILEGE role (Phase 6 stage 2) — distinct from `role` (the free-text
+ * specialty above). A **leaf** (default) is hard-restricted: it cannot spawn/
+ * delegate, create jobs, manage the roster, write the shared vault, or message
+ * the user. An **orchestrator** may spawn children (delegate_to_agent), bounded
+ * by maxSpawnDepth / maxConcurrentChildren. See blockedToolsForRole / canSpawn.
+ */
+export type DelegationRole = 'leaf' | 'orchestrator';
+export const DELEGATION_ROLES: readonly DelegationRole[] = ['leaf', 'orchestrator'];
+export const DEFAULT_DELEGATION_ROLE: DelegationRole = 'leaf';
+
 export interface TeamAgent {
   id: string;
   name: string;
@@ -25,6 +36,8 @@ export interface TeamAgent {
   model: string;
   /** Autonomy allowlist for a delegated run (default read+notify). */
   grant: Capability[];
+  /** PRIVILEGE role: leaf (default) may not spawn/schedule; orchestrator may spawn (bounded). */
+  delegationRole: DelegationRole;
   /** Per-agent daily token cap for autonomous runs. undefined → unlimited (only the global kill-switch applies). */
   dailyTokenBudget?: number;
   createdTs: number;
@@ -37,6 +50,7 @@ export interface AgentSpecInput {
   provider?: string;
   model?: string;
   grant?: unknown;
+  delegationRole?: unknown;
   dailyTokenBudget?: unknown;
 }
 
@@ -47,6 +61,7 @@ export interface AgentSpec {
   provider: ProviderId;
   model: string;
   grant: Capability[];
+  delegationRole: DelegationRole;
   dailyTokenBudget?: number;
 }
 
@@ -116,7 +131,83 @@ export function validateAgentSpec(spec: AgentSpecInput): { ok: true; spec: Agent
     }
     dailyTokenBudget = spec.dailyTokenBudget;
   }
-  return { ok: true, spec: { name, role: (spec.role ?? '').trim(), provider: spec.provider, model, grant, dailyTokenBudget } };
+  // Optional PRIVILEGE role. Absent → leaf (default-deny). An explicit value must be a known role.
+  let delegationRole: DelegationRole = DEFAULT_DELEGATION_ROLE;
+  if (spec.delegationRole !== undefined) {
+    if (!DELEGATION_ROLES.includes(spec.delegationRole as DelegationRole)) {
+      return { ok: false, error: `delegationRole must be one of: ${DELEGATION_ROLES.join(', ')}` };
+    }
+    delegationRole = spec.delegationRole as DelegationRole;
+  }
+  return { ok: true, spec: { name, role: (spec.role ?? '').trim(), provider: spec.provider, model, grant, delegationRole, dailyTokenBudget } };
+}
+
+// ── privilege role → tool blocklist + capability floor (Phase 6 stage 2) ─────
+
+/**
+ * Tool names a delegated agent of this role may NEVER use — removed from the
+ * model-visible toolset BEFORE the turn (in addition to the per-call grant
+ * check). The effective toolset of an agent = grant ∩ (tools not blocked here).
+ *
+ * LEAF (default): no spawning (delegate_to_agent / delegate_to_claude_code /
+ * agent_study), no scheduling / roster management (schedule / team), and no
+ * shared-vault access (memory — a leaf's read needs are already served by its
+ * pre-assembled context, so removing the whole tool is the clean way to forbid
+ * shared-vault WRITES). ORCHESTRATOR: same, MINUS delegate_to_agent — it may
+ * spawn a child, bounded by canSpawn (depth + concurrency).
+ */
+export function blockedToolsForRole(role: DelegationRole): string[] {
+  const base = ['delegate_to_claude_code', 'agent_study', 'team', 'schedule', 'memory'];
+  return role === 'orchestrator' ? base : ['delegate_to_agent', ...base];
+}
+
+/** Capabilities a leaf may never exercise, even if its grant lists them: messaging the user. */
+const LEAF_BLOCKED_CAPS: readonly Capability[] = ['notify', 'send'];
+
+/**
+ * Role-floored effective grant: an orchestrator keeps its full grant; a leaf has
+ * `notify` + `send` stripped (it reports back to its parent, never messages the
+ * user directly). This is enforced on top of the grant at every tool call, so a
+ * mis-configured leaf grant can't reach the notify/send path. Returns a fresh
+ * array (never the input reference). Pure.
+ */
+export function restrictGrantForRole(role: DelegationRole, grant: readonly Capability[]): Capability[] {
+  if (role === 'orchestrator') return [...grant];
+  return grant.filter((c) => !LEAF_BLOCKED_CAPS.includes(c));
+}
+
+// ── spawn bounds + kill-switch (Phase 6 stage 2) ─────────────────────────────
+
+/** Default max delegation depth: at most 2 levels of nested delegated agents. */
+export const DEFAULT_MAX_SPAWN_DEPTH = 2;
+/** Default max concurrent children a single parent may have in flight. */
+export const DEFAULT_MAX_CONCURRENT_CHILDREN = 3;
+
+export interface SpawnLimits {
+  maxSpawnDepth: number;
+  maxConcurrentChildren: number;
+}
+
+export type SpawnDecision = { ok: true } | { ok: false; reason: string };
+
+/**
+ * Whether a runner at `depth` (0 = top-level Alfred; a delegated child runs at
+ * depth ≥ 1) with `activeChildren` already in flight may spawn one more child.
+ * The kill-switch (`paused`) refuses ANY new spawn first (running children are
+ * untouched — they finish). Then the depth ceiling, then the concurrency
+ * ceiling — each with an explicit reason, never a silent drop. Pure.
+ */
+export function canSpawn(depth: number, activeChildren: number, limits: SpawnLimits, paused = false): SpawnDecision {
+  if (paused) {
+    return { ok: false, reason: 'criação de subagentes em pausa (kill-switch "PAUSE SPAWN" ativo) — filhos a correr continuam' };
+  }
+  if (depth >= limits.maxSpawnDepth) {
+    return { ok: false, reason: `limite de profundidade de delegação atingido (max ${limits.maxSpawnDepth})` };
+  }
+  if (activeChildren >= limits.maxConcurrentChildren) {
+    return { ok: false, reason: `limite de filhos concorrentes atingido (max ${limits.maxConcurrentChildren})` };
+  }
+  return { ok: true };
 }
 
 // ── per-agent daily budget (Phase 5, stage 4) ────────────────────────────────

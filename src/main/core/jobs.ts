@@ -613,6 +613,15 @@ export class JobScheduler {
       return;
     }
 
+    // Spawn kill-switch (Phase 6 stage 2): a scheduled study spins up an
+    // unattended agent run — a new fan-out — so PAUSE SPAWN refuses it. The job
+    // stays enabled (not paused); it simply skips this tick and logs it.
+    if (getSetting(this.db, 'spawn_paused') === '1') {
+      this.log(`study job ${job.id} "${job.title}" skipped: spawn paused (kill-switch)`);
+      logRun(this.db, { jobId: job.id, ts, ok: false, tokens: 0, error: 'spawn em pausa (kill-switch "PAUSE SPAWN" ativo)' });
+      return;
+    }
+
     // Global kill-switch on top of the per-agent budget (enforced inside runStudy).
     const tracker = new BudgetTracker(
       this.db,
