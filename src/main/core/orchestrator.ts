@@ -43,6 +43,7 @@ import { startMcpBridge, type McpBridgeHandle } from './mcpServer.ts';
 import { ensureClaudeMd, ensureScaffold, readStable, recentMemoryText, formatTranscript, readIndex, listInbox } from './memory.ts';
 import { CAPABILITY_MANIFEST } from './manifest.ts';
 import { runCurator } from './curator.ts';
+import { runAutoReview } from './auto-review.ts';
 import { createSecrets } from './secrets.ts';
 import { createSecretSource } from './secret-source.ts';
 import { getProject, listProjects } from './projects.ts';
@@ -908,16 +909,28 @@ export function createOrchestrator(opts: CreateOrchestratorOpts): OrchestratorHa
       curating = false;
     }
   }
+  async function runAutoReviewNow(): Promise<void> {
+    if (active) return;
+    try {
+      await runAutoReview(curatorDeps());
+    } catch (err) {
+      console.error('[alfred] auto-review run failed:', err instanceof Error ? err.message : err);
+    }
+  }
   function scheduleCurator(): void {
     if (curatorTimer) clearTimeout(curatorTimer);
     curatorTimer = setTimeout(() => {
       curatorTimer = null;
-      // Only spend a model call when there is something queued.
-      void listInbox(config.workspace)
-        .then((items) => {
-          if (items.length && !active) void runCuratorNow();
-        })
-        .catch(() => {});
+      if (active) return;
+      // Idle self-improvement sweep: auto-review first (it may STAGE a proposal
+      // handoff into the inbox), then the curator files any queued handoffs and
+      // rebuilds the derived indexes. Both are cheap-brain + budget-guarded and
+      // no-op when there is nothing to do.
+      void (async () => {
+        await runAutoReviewNow();
+        const items = await listInbox(config.workspace).catch(() => [] as string[]);
+        if (items.length && !active) void runCuratorNow();
+      })();
     }, 4000);
   }
 

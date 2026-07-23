@@ -33,7 +33,8 @@ One card per domain — *what it does · when to use · hard limit · full contr
 - **agents / models config** — three configurable agents (main chat · reference · curator), each `{name, provider, model}` from a hardcoded catalogue (`core/modelCatalog.ts`), set in the ⚙ SETTINGS card and persisted (`agent_config`). Two Claude providers share the Anthropic ids: `claude-api` (AI SDK) vs `claude-cli` (`claude -p --model`, subscription). The **main** agent's provider IS the active brain (BRAINS panel ⇄ Settings stay in sync); the **curator** agent overrides `ALFRED_CURATOR_MODEL`.
 - **reference agent** — an ISOLATED, read-only side-thread (◈ REFERENCE panel) that answers focused questions about ONE vault note/node using only a focused context (the target note + its direct neighbours via wikilinks/backlinks). It runs one turn on `agent_config.reference` (default DeepSeek V4 Flash) with NO Alfred tools; it never reads or writes the main conversation, is never persisted, and its thread is ephemeral (cleared on close). It streams its own `reference.*` events (scoped by `threadId`) and still counts against the daily token kill-switch. Not something the main brain invokes — it is a UI affordance (Phase 3: the memory graph opens it per node).
 - **knowledge graph** — a live, Obsidian-style force-directed graph card (KNOWLEDGE GRAPH, hidden by default → open from the top strip). Nodes = vault notes (cyan) + projects (magenta); edges = wikilinks/backlinks (note↔note) and membership (note↔project). It lights up in real time by observing the SAME `tool.start`/`tool.end` events (read = cyan pulse, write = amber, ok = green, error/denied = red) — ZERO extra AI cost, no new tools; a touched file/url not in the vault shows as a transient amber node that fades (or can be pinned). Click a node to focus it + its links and preview the note; the panel's ◈ Reference button opens the reference agent for that node. This is a UI affordance — not something the brain invokes.
-- **memory** — read/append/remember/recall/list/note/delete/handoff · persist facts+events, recall the past, capture notes when a task ends · `list` enumerates real vault notes so never guess a filename; `delete` is destructive (T2) · never invent memories; never edit the stable layer · [docs/tools/memory.md](docs/tools/memory.md)
+- **memory** — read/append/remember/recall/list/note/delete/handoff · persist facts+events, recall the past, capture notes when a task ends · `list` enumerates real vault notes so never guess a filename; `delete` is destructive (T2) · never invent memories; never edit the stable layer · every write (append/remember/note/handoff) is **security-scanned** (prompt-injection / credential-exfil / invisible-Unicode): **dangerous** text is refused, **suspicious** text is written with a warning · [docs/tools/memory.md](docs/tools/memory.md)
+- **recall_sessions** — zero-LLM full-text recall over the RAW conversation transcript (SQLite FTS5) — returns real past messages, **not** a summary · "what did we actually say weeks ago" (distinct from the curated `memory` vault) · **T0** read; three modes inferred from the args: **DISCOVERY** (`query` → top matching sessions, each with a snippet + a ±radius window + first/last bookends), **SCROLL** (`sessionId`+`aroundMessageId` → the re-anchored ±radius window, page by re-calling with an edge id), **BROWSE** (no args → recent sessions with first/last line); the query is sanitised so FTS5 operators/quotes can neither break the MATCH nor inject syntax · [docs/tools/recall-sessions.md](docs/tools/recall-sessions.md)
 - **ui_layout** — get_layout/move/resize/show/hide/arrange/reset your floating cards · tidy the control centre, incl. moving cards **between monitors** (get_layout returns a `displays[]` list of every screen; `move_card {displayId}` reassigns a card to another monitor) · get_layout tags each card `kind`: `panel` (fixed built-in card) vs `widget` (a scheduled **job's** own live-data card, id `widget:<jobId>`, titled with the job) — a job's data widget is a SEPARATE card from the `SCHEDULED TASKS` panel, and you move/resize/hide job widgets exactly like panels · T1, no approval; call get_layout first (the user drags cards too) · [docs/tools/ui_layout.md](docs/tools/ui_layout.md)
 - **gmail** — read-only Gmail: connect/list/search/read · triage & read mail · read-only (cannot send); connect is T2; reading marks the session private + untrusted · [docs/tools/gmail.md](docs/tools/gmail.md)
 - **delegate_to_claude_code** — hand a self-contained task to a headless `claude -p` agent · chunky autonomous sub-tasks (refactors, scaffolding) · T2 approval; cwd confined to the workspace; the delegated agent also gets Alfred's governed tools via the MCP bridge · optional `model` runs it on any Claude model (e.g. `claude-opus-4-8` = Opus 4.8, `claude-sonnet-5`), else the main agent's model · [docs/tools/models.md](docs/tools/models.md)
@@ -97,7 +98,8 @@ Details: [docs/governance/risk-tiers.md](docs/governance/risk-tiers.md) ·
 | Web research / scraping | `browser`, then `memory` op:note for findings |
 | Mac status / control | `system` |
 | Email triage | `gmail` |
-| Remember / recall the past | `memory` |
+| Remember / recall the past (curated vault) | `memory` |
+| Find what we literally said in an old session | `recall_sessions` (FTS5 transcript search) |
 | Rearrange the control centre | `ui_layout` |
 | Large autonomous coding sub-task | `delegate_to_claude_code` (optionally on a chosen Claude model) |
 | Live auto-refreshing widget / recurring task ("temp de Lisboa a cada 5 min", "check Gmail every 30 min") | `schedule` |
@@ -115,6 +117,14 @@ Details: [docs/governance/risk-tiers.md](docs/governance/risk-tiers.md) ·
   (one atomic idea + typed `[[wikilinks]]`), then `memory` op:`handoff` (a short
   summary + the note/file path). A curator files handoffs into the vault later —
   you just capture; you don't organise.
+- **Auto-review** (background, not a tool): when idle after a turn, a cheap brain
+  reviews a digest of the recent conversation and, if it finds something durable
+  (a user fact, a workflow lesson like "be terser"), **stages** a proposal as a
+  handoff for the curator to file — never fabricating a fact directly. Every such
+  proposal is security-scanned like any other memory write.
+- **Raw transcript recall**: `recall_sessions` full-text-searches the actual
+  stored messages (SQLite FTS5) — use it to quote what was really said, as
+  opposed to the curated notes `memory recall` returns.
 - **Finding / deleting notes**: run `memory` op:`list` to see the real notes
   (`{title, slug, relativePath}`) — never guess a slugified filename. `memory`
   op:`delete` (title OR slug) removes a note and recomputes the graph/backlinks;

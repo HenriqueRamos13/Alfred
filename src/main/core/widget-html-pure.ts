@@ -194,16 +194,21 @@ const DANGEROUS_PATTERNS: { re: RegExp; label: string }[] = [
   { re: /javascript\s*:/i, label: 'javascript: URI' },
 ];
 
+// Shared with the memory-text scanner (memory-scan-pure.ts) so both flag the same
+// hidden-character tricks from a single source of truth.
+/** Zero-width / bidi / BOM controls used to hide code or spoof text. */
+export const INVISIBLE_UNICODE_RE = /[\u200B-\u200F\u202A-\u202E\u2060-\u2064\uFEFF]/;
+/** Cyrillic / Greek letters in otherwise-Latin text = possible homoglyph spoof. */
+export const HOMOGLYPH_RE = /[\u0400-\u04FF\u0370-\u03FF]/;
+
 /** Suspicious patterns: sandboxed-but-noteworthy (storage, handlers, hidden chars). */
 const SUSPICIOUS_PATTERNS: { re: RegExp; label: string }[] = [
   { re: /\b(local|session)Storage\b/i, label: 'localStorage/sessionStorage access' },
   { re: /indexedDB/i, label: 'indexedDB access' },
   { re: /\son\w+\s*=\s*["']/i, label: 'inline on*= event handler with code' },
   { re: /<script(\s|>)/i, label: 'inline <script> block (declarative mode ignores it)' },
-  // Zero-width / bidi / BOM controls used to hide code or spoof text.
-  { re: /[\u200B-\u200F\u202A-\u202E\u2060-\u2064\uFEFF]/, label: 'invisible/bidi Unicode control characters' },
-  // Cyrillic / Greek letters in otherwise-Latin markup = possible homoglyph spoof.
-  { re: /[\u0400-\u04FF\u0370-\u03FF]/, label: 'Cyrillic/Greek homoglyph characters' },
+  { re: INVISIBLE_UNICODE_RE, label: 'invisible/bidi Unicode control characters' },
+  { re: HOMOGLYPH_RE, label: 'Cyrillic/Greek homoglyph characters' },
 ];
 
 /**

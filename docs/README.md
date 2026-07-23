@@ -38,6 +38,7 @@ Per-tool input/output/risk contracts. Registered tools live in `src/main/tools/`
   [ui_layout.md](tools/ui_layout.md) · [voice.md](tools/voice.md)
 - [models.md](tools/models.md) — the four brains + `delegate_to_claude_code` + MCP bridge.
 - [tool-disclosure.md](tools/tool-disclosure.md) — progressive disclosure + the `tool_search`/`tool_describe`/`tool_call` bridge, schema sanitizer, check_fn cache.
+- [recall-sessions.md](tools/recall-sessions.md) — zero-LLM FTS5 recall over the raw transcript (discovery / scroll / browse).
 
 ## Governance — [governance/](governance/)
 

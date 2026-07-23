@@ -33,6 +33,16 @@ note (union of observations/relations/tags — idempotent).
 - `note` → `{ slug, file }`.
 - `delete` → `{ deleted, slug, path, message }` (`deleted:false` when the note doesn't exist — never throws).
 - `handoff` → `{ file }`.
+- Any write flagged **suspicious** by the scan (below) also carries a `warning`.
+
+## Security scan (anti-poisoning)
+Every write (`append`/`remember`/`note`/`handoff`) is scanned by `scanMemoryText`
+before it lands, because memory flows back into the prompt. **dangerous** text
+(prompt-injection — "ignore previous instructions", forged `system:` markers — or
+credential-exfil — embedded API keys, "send the password to…") is **refused**
+(`{ ok:false, error }` listing the findings). **suspicious** text (invisible/bidi/
+homoglyph Unicode, stray `<script>`) is written with a `warning`. See
+[docs/memory/how-memory-works.md](../memory/how-memory-works.md#memory-security-scan-anti-poisoning).
 
 ## Rules
 - **Never invent memories.** If `recall` returns nothing, say so.

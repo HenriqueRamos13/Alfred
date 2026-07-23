@@ -14,6 +14,7 @@ import {
   writeHandoff,
 } from '../core/memory.ts';
 import type { Observation, Relation } from '../core/memory.ts';
+import { scanMemoryText } from '../core/memory-scan-pure.ts';
 
 type Op = 'read' | 'append' | 'remember' | 'recall' | 'list' | 'note' | 'delete' | 'handoff';
 interface Args {
@@ -112,16 +113,34 @@ export const memory: Tool<Args> = {
 
   async execute(a, ctx) {
     try {
+      // Anti-poisoning (§3): scan agent-authored text before it enters the vault
+      // (and thus, later, the prompt). dangerous → refuse with findings;
+      // suspicious → proceed but attach a `warning` to the result. Reads
+      // (read/recall/list/delete) carry no new text, so only writes are scanned.
+      let warning: string | undefined;
+      if (a.op === 'append' || a.op === 'remember' || a.op === 'note' || a.op === 'handoff') {
+        const text = [a.text, a.title, a.summary, ...(a.observations ?? []).map((o) => o.text)]
+          .filter((s): s is string => typeof s === 'string' && s.length > 0)
+          .join('\n');
+        const scan = scanMemoryText(text);
+        if (scan.risk === 'dangerous') {
+          return { ok: false, error: `memory write refused — dangerous content: ${scan.findings.join('; ')}` };
+        }
+        if (scan.risk === 'suspicious') {
+          warning = `memory written with a security warning: ${scan.findings.join('; ')}`;
+        }
+      }
+      const withWarn = <T extends object>(r: T): T & { warning?: string } => (warning ? { ...r, warning } : r);
       switch (a.op) {
         case 'read':
           return { ok: true, result: await readStable(ctx.workspace) };
         case 'append':
           if (!a.text) return { ok: false, error: 'text is required for append' };
           await appendWorking(ctx.workspace, ctx.sessionId, a.text);
-          return { ok: true, result: { appended: true } };
+          return { ok: true, result: withWarn({ appended: true }) };
         case 'remember':
           if (!a.text) return { ok: false, error: 'text is required for remember' };
-          return { ok: true, result: await remember(ctx.workspace, a.text, a.kind ?? 'episodic') };
+          return { ok: true, result: withWarn(await remember(ctx.workspace, a.text, a.kind ?? 'episodic')) };
         case 'recall':
           return { ok: true, result: await recall(ctx.workspace, { query: a.query, sinceDays: a.sinceDays }) };
         case 'list':
@@ -130,13 +149,15 @@ export const memory: Tool<Args> = {
           if (!a.title) return { ok: false, error: 'title is required for note' };
           return {
             ok: true,
-            result: await writeNote(ctx.workspace, {
-              title: a.title,
-              type: a.type,
-              tags: a.tags,
-              observations: a.observations,
-              relations: a.relations,
-            }),
+            result: withWarn(
+              await writeNote(ctx.workspace, {
+                title: a.title,
+                type: a.type,
+                tags: a.tags,
+                observations: a.observations,
+                relations: a.relations,
+              }),
+            ),
           };
         case 'delete': {
           if (!a.title) return { ok: false, error: 'title (or slug) is required for delete' };
@@ -153,11 +174,13 @@ export const memory: Tool<Args> = {
           if (!a.summary && !a.text) return { ok: false, error: 'summary is required for handoff' };
           return {
             ok: true,
-            result: await writeHandoff(ctx.workspace, {
-              summary: (a.summary ?? a.text)!,
-              notePath: a.notePath,
-              tags: a.tags,
-            }),
+            result: withWarn(
+              await writeHandoff(ctx.workspace, {
+                summary: (a.summary ?? a.text)!,
+                notePath: a.notePath,
+                tags: a.tags,
+              }),
+            ),
           };
         default:
           return { ok: false, error: `Unknown op: ${(a as Args).op}` };

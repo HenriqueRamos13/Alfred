@@ -45,3 +45,42 @@ ones by title), then regenerates `index.md`, `maps/`, and `.index/backlinks.json
 It is idempotent, never throws, respects the token kill-switch, and falls back to
 a verbatim note if the model is unavailable — a handoff is never lost. **You
 capture; the curator organises.**
+
+## Auto-review (background self-improvement)
+On the SAME idle sweep as the curator (debounced after a turn, never mid-task), a
+**cheap** brain reviews a **digest** of the recent transcript and decides whether
+there is one *durable* thing worth remembering — a stable user fact, or a
+workflow lesson ("be terser"). It is cheap by construction: a digest, not the
+whole conversation; **it does not run when nothing changed** since the last
+review (a persisted `auto_review:last_ts` watermark); it is budget-guarded.
+
+A positive decision is **not** committed as a fact directly. It is **staged** as
+an inbox handoff — the same propose→curate path an agent uses — so the governed
+librarian turns it into a well-formed note rather than a raw injected fact. The
+proposal is security-scanned (below) before it is staged; a `record: false`
+answer stages nothing (never fabricate). Pure decision logic:
+`src/main/core/auto-review-pure.ts` (`shouldRecord`, `parseReviewProposal`); IO
+shell: `auto-review.ts`.
+
+## Memory security scan (anti-poisoning)
+Because memory later flows back into the system prompt, a poisoned note is a
+prompt-injection vector. Every agent- or auto-review-authored write
+(`append`/`remember`/`note`/`handoff`) is scanned by `scanMemoryText`
+(`src/main/core/memory-scan-pure.ts`) **before** it lands:
+
+- **dangerous** (prompt-injection like "ignore previous instructions" / forged
+  `system:` role markers; credential-exfil like embedded API keys or "send the
+  password to…") → the write is **refused** with the findings.
+- **suspicious** (invisible/bidi/homoglyph Unicode, stray `<script>`) → written,
+  but the result carries a `warning`.
+- **ok** → silently written.
+
+It generalises the core of the widget scanner (`scanWidgetHtml`) and shares its
+invisible-Unicode/homoglyph patterns. Heuristic, not a boundary against an
+adversarial model — it breaks the poisoned-note → poisoned-prompt loop.
+
+## Raw-transcript recall vs the vault
+`recall`/`note` operate on the *curated* vault. To find what was **literally
+said** in an old session, the `recall_sessions` tool full-text-searches the raw
+`messages` transcript via SQLite FTS5 (discovery / scroll / browse; zero LLM).
+See [docs/tools/recall-sessions.md](../tools/recall-sessions.md).

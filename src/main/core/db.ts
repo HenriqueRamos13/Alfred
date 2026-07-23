@@ -85,6 +85,27 @@ CREATE TABLE IF NOT EXISTS messages (
 );
 CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, ts);
 
+-- Full-text search over the transcript (Phase 6 stage 4): zero-LLM "what did we
+-- say weeks ago" recall. Standalone FTS5 (not external-content) so the schema is
+-- self-contained; only content is indexed, the rest are UNINDEXED so they are
+-- returned verbatim. Kept in sync with messages by the triggers below, and
+-- backfilled idempotently on open (see openDb). better-sqlite3 ships FTS5.
+CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
+  id UNINDEXED, session_id UNINDEXED, role UNINDEXED, content, ts UNINDEXED
+);
+CREATE TRIGGER IF NOT EXISTS messages_fts_ai AFTER INSERT ON messages BEGIN
+  INSERT INTO messages_fts(id, session_id, role, content, ts)
+  VALUES (new.id, new.session_id, new.role, new.content, new.ts);
+END;
+CREATE TRIGGER IF NOT EXISTS messages_fts_ad AFTER DELETE ON messages BEGIN
+  DELETE FROM messages_fts WHERE id = old.id;
+END;
+CREATE TRIGGER IF NOT EXISTS messages_fts_au AFTER UPDATE ON messages BEGIN
+  DELETE FROM messages_fts WHERE id = old.id;
+  INSERT INTO messages_fts(id, session_id, role, content, ts)
+  VALUES (new.id, new.session_id, new.role, new.content, new.ts);
+END;
+
 -- Floating-card canvas layout. One row per card; geometry + visibility only
 -- (title is a fixed label supplied by core/layout.ts). Both the user's drags
 -- (via IPC) and the AI's ui_layout tool read/write this same table.
@@ -199,6 +220,16 @@ export function openDb(dbPath: string): AlfredDb {
     (c) => c.name === 'study',
   );
   if (!hasStudy) db.exec('ALTER TABLE scheduled_jobs ADD COLUMN study TEXT');
+  // Idempotent FTS5 backfill: index any pre-existing messages the triggers never
+  // saw (DBs created before messages_fts existed, or rows inserted while it was
+  // absent). Insert only the missing ids, so re-running on every boot is a no-op.
+  // ponytail: NOT IN subquery scans messages_fts; fine for a personal transcript,
+  // revisit only if history grows to millions of rows.
+  db.exec(
+    `INSERT INTO messages_fts(id, session_id, role, content, ts)
+     SELECT id, session_id, role, content, ts FROM messages
+     WHERE id NOT IN (SELECT id FROM messages_fts)`,
+  );
   return db;
 }
 

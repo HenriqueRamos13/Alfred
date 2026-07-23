@@ -15,7 +15,7 @@ Pure decision logic: `src/main/core/tool-disclosure-pure.ts` (unit-tested in
   `memory`, `ui_layout`.
 - **DEFERRABLE (everything else):** `browser`, `project`, `gmail`, `render_ui`,
   `delegate_to_claude_code`, `delegate_to_agent`, `agent_study`, `team`,
-  `schedule`, plus any MCP tools.
+  `schedule`, `recall_sessions`, plus any MCP tools.
 
 ## When it engages
 On each turn `shouldDefer(tools, budget)` estimates the token size of the
