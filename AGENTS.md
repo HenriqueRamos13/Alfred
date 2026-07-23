@@ -46,6 +46,26 @@ One card per domain — *what it does · when to use · hard limit · full contr
 Also available: **project** (ICM folder-as-context projects) and **render_ui**
 (whitelisted generative UI onto the surface). See the routing table.
 
+### DESIGN LANGUAGE (every UI you generate follows this)
+Whenever you generate UI — **`render_ui`** OR a **tier-2 `schedule` widget** — match
+the control-centre look so it reads as one HUD, not a bolt-on:
+- **Palette** (CSS vars, already available in both surfaces): `--acc` #59e8ff **ciano
+  = primary**, `--amb` #ffb45e **âmbar = accent**, `--mag` #c77bff **magenta =
+  secondary**, `--grn` #4dffa6 **= ok / active**, `--red` #ff5f6e **= danger**, `--dim`
+  #5b7a8a = muted. Surfaces: dark glass `--card` rgba(7,13,22,.88) on `--bg` #04070d
+  (dark background); text `--text` #cfe8f2. **Use the vars** (`color:var(--acc)`), never
+  hard-coded hexes.
+- **Typography**: **Rajdhani** for headers/labels — UPPERCASE with wide letter-spacing;
+  **Share Tech Mono** for data/numbers. (render_ui inherits the shell fonts; a tier-2
+  widget only gets the tokens — use mono for data, the exact fonts fall back to
+  monospace.)
+- **Chrome (sci-fi HUD)**: dark glass panels, thin neon border with a soft glow,
+  **L-shaped corner brackets** on cards, mono uppercase labels, a live dot (green =
+  active). Spare, instrument-like.
+- **Rule**: use `var(--acc)`/`var(--amb)`/… , mono for data, and the neon-HUD chrome —
+  coherent with the rest of the control centre. Full spec + a worked tier-2 example:
+  [docs/design-language.md](docs/design-language.md).
+
 ### Progressive tool disclosure (why you may not see every tool)
 To keep the tool array from blowing the context (Phase-5 roster + MCP tools), a
 small **CORE** set — `filesystem`, `shell`, `system`, `memory`, `ui_layout` — is

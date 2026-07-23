@@ -23,7 +23,10 @@ export const renderUi: Tool<Args> = {
   name: 'render_ui',
   description:
     'Render a generative UI tree onto the control-centre surface. ' +
-    `Each node is { component, props?, children? }; component must be one of: ${AI_COMPONENTS.join(', ')}.`,
+    `Each node is { component, props?, children? }; component must be one of: ${AI_COMPONENTS.join(', ')}. ` +
+    'Follow the DESIGN LANGUAGE (see the manifest / AGENTS.md): the neon-HUD look — use the CSS vars ' +
+    '(var(--acc) ciano primary, var(--amb) amber, var(--mag) magenta, var(--grn) ok, var(--red) danger) not raw hexes, ' +
+    'mono for data/numbers, UPPERCASE mono labels, dark glass + neon borders, so it stays coherent with the rest of the centre.',
   inputSchema: {
     type: 'object',
     properties: {

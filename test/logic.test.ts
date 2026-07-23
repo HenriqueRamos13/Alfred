@@ -86,7 +86,7 @@ import {
   describeApproval,
 } from '../src/main/core/jobs-format-pure.ts';
 import type { Job } from '../src/main/core/types.ts';
-import { wrapWidgetHtml, WIDGET_CSP, WIDGET_HTML_MAX_BYTES, WIDGET_RUNTIME, WIDGET_RUNTIME_SHA256, widgetResolvePath, WIDGET_CSP_JS, wrapWidgetHtmlJs, scanWidgetHtml, widgetCreateGuard, declarativeModeWarning } from '../src/main/core/widget-html-pure.ts';
+import { wrapWidgetHtml, WIDGET_CSP, WIDGET_HTML_MAX_BYTES, WIDGET_RUNTIME, WIDGET_RUNTIME_SHA256, widgetResolvePath, WIDGET_CSP_JS, wrapWidgetHtmlJs, scanWidgetHtml, widgetCreateGuard, declarativeModeWarning, WIDGET_THEME_CSS } from '../src/main/core/widget-html-pure.ts';
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -2557,6 +2557,36 @@ test('wrapWidgetHtmlJs — embeds the trusted runtime + model body + a defence-i
   // meta, so a dropped header can never leave the widget with no CSP (no network).
   assert.ok(out.includes(`content="${WIDGET_CSP_JS}"`), 'meta CSP equals WIDGET_CSP_JS');
   assert.ok(out.indexOf('Content-Security-Policy') < out.indexOf('<script>'), 'CSP meta precedes the runtime script');
+});
+
+// ── design-language tokens injected into the widget wrapper ──────────────────
+
+test('WIDGET_THEME_CSS carries the design-language tokens (color only, mono fallback)', () => {
+  assert.ok(WIDGET_THEME_CSS.includes(':root'), 'exposes CSS vars on :root');
+  assert.ok(WIDGET_THEME_CSS.includes('--acc:#59e8ff'), 'ciano accent token present');
+  assert.ok(/--amb:#ffb45e/.test(WIDGET_THEME_CSS) && /--mag:#c77bff/.test(WIDGET_THEME_CSS), 'amber + magenta tokens');
+  assert.ok(/--grn:#4dffa6/.test(WIDGET_THEME_CSS) && /--red:#ff5f6e/.test(WIDGET_THEME_CSS), 'ok + danger tokens');
+  assert.ok(WIDGET_THEME_CSS.includes('color-scheme:dark'), 'dark scheme');
+  assert.ok(/font-family:[^;]*monospace/.test(WIDGET_THEME_CSS), 'mono fallback (exact fonts are shell-only)');
+});
+
+test('wrapWidgetHtml — injects the theme tokens in the head, after the CSP, without touching the runtime hash', () => {
+  const out = wrapWidgetHtml('<div data-alfred="x" style="color:var(--acc)"></div>');
+  assert.ok(out.includes(WIDGET_THEME_CSS), 'the theme :root block is embedded');
+  assert.ok(out.includes('--acc:#59e8ff'), 'accent token available to var(--acc)');
+  const csp = out.indexOf('Content-Security-Policy');
+  const theme = out.indexOf(WIDGET_THEME_CSS);
+  assert.ok(csp > -1 && csp < theme, 'CSP meta still comes first');
+  assert.ok(theme < out.indexOf('<body>'), 'tokens live in the head, before the body');
+  assert.ok(out.includes(WIDGET_RUNTIME), 'the hash-pinned runtime text is untouched by the tokens');
+});
+
+test('wrapWidgetHtmlJs — injects the same theme tokens, CSP still first', () => {
+  const out = wrapWidgetHtmlJs('<div data-alfred="x"></div>');
+  assert.ok(out.includes(WIDGET_THEME_CSS), 'the theme :root block is embedded in the JS path too');
+  assert.ok(out.includes('--acc:#59e8ff'), 'accent token available');
+  assert.ok(out.indexOf(`content="${WIDGET_CSP_JS}"`) < out.indexOf(WIDGET_THEME_CSS), 'CSP meta precedes the tokens');
+  assert.ok(out.indexOf(WIDGET_THEME_CSS) < out.indexOf('<body>'), 'tokens in the head');
 });
 
 // ── widget security scanner (§2) ─────────────────────────────────────────────

@@ -27,6 +27,9 @@ renders its own control-centre HUD.
 - [CONTRIBUTING.md](../CONTRIBUTING.md) — prerequisites, run/test, layout, PR conventions.
 - [AGENTS.md](../AGENTS.md) — the runtime agent's always-loaded router
   (capability index, governance summary, task routing, memory pointers).
+- [design-language.md](design-language.md) — the neon-HUD visual language
+  (palette tokens, typography, chrome) every UI Alfred generates (`render_ui`
+  + tier-2 widgets) must follow.
 
 ## Tool contracts — [tools/](tools/)
 

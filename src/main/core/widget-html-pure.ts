@@ -124,6 +124,20 @@ export const WIDGET_RUNTIME = `(function(){
 export const WIDGET_RUNTIME_SHA256 = 'sha256-nHokzg6tLqDaJAsGcEuAKs7Y+LGAnMEaMQbDZ4g7zQg=';
 
 /**
+ * Design-language base injected into EVERY tier-2 widget (declarative + JS paths)
+ * so a widget's HTML can use `var(--acc)` etc. and land in the neon HUD palette,
+ * coherent with render_ui and the rest of the control centre. Same token VALUES as
+ * src/renderer/theme.css. It's an inline `<style>` (allowed by `style-src
+ * 'unsafe-inline'` in both widget CSPs) and NOT a `<script>`, so it never affects
+ * WIDGET_RUNTIME_SHA256 / the CSP hash. Colour + tokens travel; the exact fonts
+ * (Rajdhani / Share Tech Mono) live in the app shell only — widgets fall back to a
+ * generic monospace, so a widget should use the tokens for colour and mono for data.
+ */
+export const WIDGET_THEME_CSS =
+  ':root{--acc:#59e8ff;--amb:#ffb45e;--mag:#c77bff;--grn:#4dffa6;--red:#ff5f6e;--dim:#5b7a8a;--card:rgba(7,13,22,.88);--bg:#04070d;--text:#cfe8f2;color-scheme:dark;}' +
+  'body{background:transparent;color:var(--text);font-family:"Share Tech Mono",ui-monospace,monospace;}';
+
+/**
  * The one trusted widget CSP. `default-src 'none'` = zero network; scripts pinned to
  * the runtime hash (NOT `'unsafe-inline'`) so no model script can ever run.
  */
@@ -160,6 +174,7 @@ export function wrapWidgetHtmlJs(modelHtml: string): string {
     '<!doctype html><html><head>' +
     '<meta charset="utf-8">' +
     `<meta http-equiv="Content-Security-Policy" content="${WIDGET_CSP_JS}">` +
+    `<style>${WIDGET_THEME_CSS}</style>` +
     `<script>${WIDGET_RUNTIME}</script>` +
     '</head><body>' +
     body +
@@ -284,6 +299,7 @@ export function wrapWidgetHtml(modelHtml: string): string {
     '<!doctype html><html><head>' +
     '<meta charset="utf-8">' +
     `<meta http-equiv="Content-Security-Policy" content="${WIDGET_CSP}">` +
+    `<style>${WIDGET_THEME_CSS}</style>` +
     `<script>${WIDGET_RUNTIME}</script>` +
     '</head><body>' +
     body +

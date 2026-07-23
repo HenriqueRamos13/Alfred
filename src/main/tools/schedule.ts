@@ -92,7 +92,7 @@ export const schedule: Tool<Args> = {
     'For kind:"agent" pass prompt and grant (an allowlist of capabilities the unattended job may use). ' +
     'BEFORE creating an agent job you MUST ASK the user how much autonomy to grant (default ["read","notify"] — ' +
     'read + notify only); sensitive actions (send/pay/delete/secrets) never auto-run unattended regardless of grant. ' +
-    'render {tier,card} and placement are optional (sensible defaults). create/edit/delete/pause/resume are T2; list is T0.',
+    'render {tier,card} and placement are optional (sensible defaults). A tier:2 widget must follow the DESIGN LANGUAGE — the theme tokens (var(--acc) etc.) are injected, so use them + mono for data for a coherent neon-HUD look. create/edit/delete/pause/resume are T2; list is T0.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -148,7 +148,11 @@ export const schedule: Tool<Args> = {
           'A hash-pinned runtime fills your bindings on EVERY refresh: `data-alfred="path"` sets the element textContent ' +
           'to the value at that dot/bracket path (e.g. "current.temperature_2m"); `data-alfred-sparkline="path"` draws an ' +
           'inline-SVG sparkline of the numeric array at that path into the element; `data-alfred-attr="attr:path"` sets an ' +
-          'attribute. Example html: `<div style="font:600 40px system-ui;color:#35e5ff" data-alfred="current.temperature_2m"></div>` ' +
+          'attribute. FOLLOW THE DESIGN LANGUAGE (see the manifest / AGENTS.md / docs/design-language.md): the theme tokens are ' +
+          'INJECTED into every widget, so use the CSS vars — var(--acc) ciano primary, var(--amb) amber, var(--mag) magenta, ' +
+          'var(--grn) ok, var(--red) danger, on the dark var(--bg)/var(--card) glass — NOT raw hexes, and Share Tech Mono for ' +
+          'data/numbers (the exact shell fonts do not travel, but the colour tokens do). Aim for the neon-HUD look. ' +
+          'Example html: `<div style="font:40px \'Share Tech Mono\',monospace;color:var(--acc)" data-alfred="current.temperature_2m"></div>` ' +
           '— the runtime writes the latest temperature into it each refresh. Do NOT bake a fixed value into the markup, use a ' +
           'binding. No <script>, no <script src>, no external libraries. The data pipeline (fetch/agent) is unchanged — ' +
           'tier:2 only changes the render.',
