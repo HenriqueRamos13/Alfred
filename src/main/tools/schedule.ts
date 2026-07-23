@@ -98,14 +98,15 @@ export const schedule: Tool<Args> = {
           'extracted data is a scalar, and a live SPARKLINE when the extract returns a numeric ARRAY (e.g. the last 30 ' +
           'days of prices, or hourly temps). For a series/chart via tier:1 just make source.extract return an array of ' +
           'numbers — the card draws and re-draws the sparkline on every refresh automatically. ' +
-          'Use tier:2 ONLY for bespoke visuals the builtin card cannot do. JavaScript FULLY WORKS in tier:2 widgets — ' +
-          'any claim that "the build/CSP blocks JS in widgets" is FALSE (it was a data race, fixed in v1.9.3). ' +
-          'A tier:2 widget UPDATES ONLY IF its HTML calls `Alfred.onData(function(v){ /* mutate the DOM here */ })` and ' +
-          'renders from that callback. Static HTML/SVG with the value BAKED IN NEVER updates — NEVER embed a fixed value; ' +
-          'always render from onData. The page has NO network (a strict CSP blocks all fetch/xhr/ws and external ' +
-          'scripts/styles) and runs in a sandboxed iframe. Do NOT add external libraries or your own <script src>; use the ' +
-          'injected runtime: `Alfred.onData(cb)` fires on every refresh with the job value, `Alfred.sparkline(el, numberArray)` ' +
-          'draws a minimal line chart. Style with inline <style>/attributes. The data pipeline (fetch/agent) is unchanged — ' +
+          'Use tier:2 ONLY for bespoke visuals the builtin card cannot do. tier:2 is DECLARATIVE: you write pretty ' +
+          'HTML/CSS (any CSS/HTML you like) and mark the live parts with data-attributes; you do NOT write JavaScript ' +
+          '(a strict CSP hash-pins the trusted runtime and BLOCKS every model <script>) and you do NOT fetch (no network). ' +
+          'A hash-pinned runtime fills your bindings on EVERY refresh: `data-alfred="path"` sets the element textContent ' +
+          'to the value at that dot/bracket path (e.g. "current.temperature_2m"); `data-alfred-sparkline="path"` draws an ' +
+          'inline-SVG sparkline of the numeric array at that path into the element; `data-alfred-attr="attr:path"` sets an ' +
+          'attribute. Example html: `<div style="font:600 40px system-ui;color:#35e5ff" data-alfred="current.temperature_2m"></div>` ' +
+          '— the runtime writes the latest temperature into it each refresh. Do NOT bake a fixed value into the markup, use a ' +
+          'binding. No <script>, no <script src>, no external libraries. The data pipeline (fetch/agent) is unchanged — ' +
           'tier:2 only changes the render.',
         properties: {
           tier: { type: 'number', enum: [1, 2, 3] },

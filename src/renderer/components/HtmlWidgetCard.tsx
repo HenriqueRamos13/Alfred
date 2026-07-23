@@ -6,8 +6,9 @@
  * DOM-parent / cookie / storage access; NO allow-popups/forms/top-navigation).
  * The page has zero network (a strict CSP in the wrapper blocks it). Data flows
  * ONE way: we subscribe to the SAME `job.data` stream (filtered by jobId) and
- * `postMessage` each value into the frame, where the trusted runtime's
- * `Alfred.onData` delivers it. No IPC/preload channel ever crosses into the iframe.
+ * `postMessage` each value into the frame, where the trusted (hash-pinned) runtime
+ * fills the model's `data-alfred*` bindings. No IPC/preload channel ever crosses
+ * into the iframe, and the model authors no JS (its scripts are CSP-blocked).
  */
 import { useEffect, useRef, useState } from 'react';
 import { alfred } from '../lib/ipc.ts';

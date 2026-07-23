@@ -76,7 +76,10 @@ import {
   describeApproval,
 } from '../src/main/core/jobs-format-pure.ts';
 import type { Job } from '../src/main/core/types.ts';
-import { wrapWidgetHtml, WIDGET_CSP, WIDGET_HTML_MAX_BYTES } from '../src/main/core/widget-html-pure.ts';
+import { wrapWidgetHtml, WIDGET_CSP, WIDGET_HTML_MAX_BYTES, WIDGET_RUNTIME, WIDGET_RUNTIME_SHA256, widgetResolvePath } from '../src/main/core/widget-html-pure.ts';
+import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { confirmMatches, factoryResetPaths, factoryResetTables } from '../src/main/core/reset.ts';
 import { grillMeEnabled } from '../src/main/core/settings-pure.ts';
 import { enqueueTurn, TURN_QUEUE_MAX } from '../src/main/core/turn-queue-pure.ts';
@@ -2303,45 +2306,60 @@ test('wrapWidgetHtml — the trusted CSP meta is always present and precedes the
   assert.ok(WIDGET_CSP.startsWith("default-src 'none'"), 'CSP denies all network by default');
 });
 
-test('wrapWidgetHtml — the trusted Alfred runtime is injected', () => {
-  const out = wrapWidgetHtml('');
-  assert.ok(out.includes('window.Alfred'));
-  assert.ok(out.includes('onData'));
-  assert.ok(out.includes('sparkline'));
-  // runtime lives in the head we control, before the model body
-  assert.ok(out.indexOf('window.Alfred') < out.indexOf('<body>'));
+test('WIDGET_CSP pins the runtime by hash and does NOT allow unsafe-inline scripts', () => {
+  assert.ok(WIDGET_CSP.includes(`script-src '${WIDGET_RUNTIME_SHA256}'`), 'script-src pinned to the runtime hash');
+  assert.ok(!/script-src[^;]*unsafe-inline/.test(WIDGET_CSP), "no 'unsafe-inline' in script-src — model scripts blocked");
 });
 
-test('wrapWidgetHtml — the runtime buffers the last value and replays it on onData (order-independent delivery)', () => {
+test('WIDGET_RUNTIME_SHA256 matches sha256 of the runtime AND the hash in index.html', () => {
+  const digest = 'sha256-' + createHash('sha256').update(WIDGET_RUNTIME, 'utf8').digest('base64');
+  assert.equal(digest, WIDGET_RUNTIME_SHA256, 'exported hash matches the runtime bytes — refresh it if the runtime changed');
+  const indexHtml = readFileSync(fileURLToPath(new URL('../src/renderer/index.html', import.meta.url)), 'utf8');
+  assert.ok(indexHtml.includes(`'${WIDGET_RUNTIME_SHA256}'`), 'parent index.html allows exactly this runtime hash in script-src');
+});
+
+test('wrapWidgetHtml — the trusted binding runtime is injected in the head', () => {
   const out = wrapWidgetHtml('');
-  // message listener buffers the latest payload…
-  assert.ok(/last\s*=\s*ev\.data/.test(out), 'listener stores the last value');
+  // runtime lives in the head we control, before the model body
+  assert.ok(out.indexOf('data-alfred-sparkline') < out.indexOf('<body>'));
+  assert.ok(out.includes(WIDGET_RUNTIME), 'the exact hash-pinned runtime text is embedded');
+});
+
+test('wrapWidgetHtml — the runtime buffers the last value and re-applies on DOMContentLoaded (order-independent)', () => {
+  const out = wrapWidgetHtml('');
+  assert.ok(/last\s*=\s*ev\.data/.test(out), 'message listener stores the last value');
   assert.ok(out.includes('hasLast = true'), 'listener marks a value as buffered');
-  // …and onData replays it immediately if one already arrived (race fix).
-  assert.ok(out.includes('if (hasLast)'), 'onData checks the buffer');
-  assert.ok(/cb\(last\)/.test(out), 'onData replays the buffered value to a late subscriber');
+  assert.ok(/if\s*\(hasLast\)/.test(out), 'render only applies once a value has arrived');
+  assert.ok(out.includes("addEventListener('DOMContentLoaded', render)"), 'applies to the body once it exists');
 });
 
 test('wrapWidgetHtml — the runtime posts a ready-handshake to the parent after mount', () => {
   const out = wrapWidgetHtml('');
-  assert.ok(out.includes('__alfredWidgetReady'), 'ready signal present');
   assert.ok(/parent\.postMessage\(\{\s*__alfredWidgetReady:\s*1\s*\}/.test(out), 'posts the ready shape to the parent');
-  // handshake fires at the end of the IIFE, after Alfred is defined
-  assert.ok(out.indexOf('__alfredWidgetReady') > out.indexOf('window.Alfred'), 'ready is posted after the runtime is ready');
 });
 
-test('wrapWidgetHtml — a model CSP / external script cannot relax our default-src none', () => {
+test('widgetResolvePath — dot/bracket path resolution used by the bindings', () => {
+  const data = { current: { temperature_2m: 21.3 }, hourly: { temp: [10, 11, 12] } };
+  assert.equal(widgetResolvePath(data, 'current.temperature_2m'), 21.3);
+  assert.equal(widgetResolvePath(data, 'hourly.temp[0]'), 10);
+  assert.equal(widgetResolvePath(data, 'hourly.temp[2]'), 12);
+  assert.deepEqual(widgetResolvePath(data, 'hourly.temp'), [10, 11, 12]);
+  assert.equal(widgetResolvePath(data, 'current.nope'), undefined, 'missing path → undefined, no throw');
+  assert.equal(widgetResolvePath(null, 'a.b'), undefined);
+  assert.deepEqual(widgetResolvePath(data), data, 'no path → whole payload');
+  assert.equal(widgetResolvePath({ 'a.b': { c: 7 } }, "['a.b'].c"), 7, 'quoted bracket key with a dot is one key');
+});
+
+test('wrapWidgetHtml — a model CSP / external script cannot relax our policy', () => {
   const evil =
-    '<meta http-equiv="Content-Security-Policy" content="default-src *; connect-src http://evil">' +
+    '<meta http-equiv="Content-Security-Policy" content="default-src *; script-src \'unsafe-inline\'">' +
     '<script src="http://evil/x.js"></script><div>payload</div>';
   const out = wrapWidgetHtml(evil);
-  // Our restrictive meta is in the head and comes BEFORE anything the model wrote
-  // (multiple CSPs compose by intersection, so ours always holds).
   const ours = out.indexOf(`content="${WIDGET_CSP}"`);
   const theirs = out.indexOf('default-src *');
   assert.ok(ours > -1 && ours < out.indexOf('<body>'), 'our CSP is in the head');
   assert.ok(theirs > out.indexOf('<body>'), 'the model CSP is trapped in the body, after ours');
-  assert.ok(ours < theirs, 'ours precedes theirs');
+  assert.ok(ours < theirs, 'ours precedes theirs — intersection keeps only the runtime hash');
 });
 
 // ── jobs-format-pure: the "Scheduled Tasks" card display formatters (stage 3) ──

@@ -88,42 +88,37 @@ first). Set `render: { tier: 2, card: "html", html: "<…>" }`. The `html` is a 
 model writes; **the data pipeline is unchanged** (same `fetch`/`agent` refresh) — tier 2
 only replaces the render.
 
-> **JavaScript fully works in tier-2 widgets.** Any belief that "the build or CSP
-> blocks JS in widgets" is **FALSE** — that was a data race, fixed in v1.9.3. The CSP
-> allows `'unsafe-inline'` scripts; your `<script>` runs.
+> **Tier-2 is DECLARATIVE — you write NO JavaScript.** You write pretty HTML/CSS
+> (arbitrary CSS and markup — neither is blocked) and mark the **live** parts with
+> `data-alfred*` attributes. A strict CSP **hash-pins the trusted runtime and blocks
+> every model `<script>`** (and every external script), so any `<script>` you write
+> would simply never run. There is also **no network** — you cannot `fetch`.
 
-**A tier-2 widget updates ONLY IF its HTML subscribes to `Alfred.onData` and mutates
-the DOM from that callback.** Static HTML/SVG with the value **baked in** NEVER updates
-(the card's `srcdoc` is frozen at mount — the only way fresh data reaches the page is
-the `postMessage` that `Alfred.onData` delivers). So **never embed a fixed value**;
-always render from the callback:
+A **hash-pinned trusted runtime** (injected before your markup) fills your bindings on
+**every** refresh with the job's latest value (the extracted `fetch` value or the
+`agent` result, seeded from `runtime.lastResult` on load). Supported bindings:
 
-```html
-<div id="v"></div>
-<script>Alfred.onData(function(v){ document.getElementById('v').textContent = v })</script>
-```
+- `data-alfred="path"` — sets the element's **textContent** to the value at `path`
+  (a dot/bracket path like `current.temperature_2m` or `hourly.temp[0]`; the whole
+  payload if you omit the path with `data-alfred=""`). Objects are shown as JSON.
+- `data-alfred-sparkline="path"` — draws a minimal inline-SVG line chart of the
+  **numeric array** at `path` into the element.
+- `data-alfred-attr="attr:path"` — sets attribute `attr` to the value at `path`
+  (e.g. `data-alfred-attr="title:current.summary"`).
 
-**Runtime contract.** The page is wrapped by the app before display: a trusted
-`window.Alfred` runtime is injected *before* your markup. Use it — do **not** add
-external libraries or your own `<script src>` (there is no network; see below).
+**Never bake a fixed value into the markup** — an embedded literal is frozen at mount
+and never changes; use a binding so the runtime keeps it live.
 
-- `Alfred.onData(cb)` — registers `cb`; it fires on **every** refresh with the
-  job's latest value (the extracted `fetch` value or the `agent` result). Seeded
-  with `runtime.lastResult` on load. **This is the only way a tier-2 widget gets live
-  data** — a value written straight into the markup is static and never changes.
-- `Alfred.sparkline(el, numberArray)` — draws a minimal inline-SVG line chart of a
-  numeric array into `el`. No dependency.
-
-Minimal example:
+Minimal example (a big live temperature + a live sparkline, styled freely, no JS):
 
 ```json
 {
   "op": "create", "title": "Temp trend", "kind": "fetch",
   "schedule": { "type": "interval", "everyMs": 300000 },
-  "source": { "url": "https://api.open-meteo.com/v1/forecast?latitude=38.72&longitude=-9.14&hourly=temperature_2m", "extract": "hourly.temperature_2m" },
+  "source": { "url": "https://api.open-meteo.com/v1/forecast?latitude=38.72&longitude=-9.14&current=temperature_2m&hourly=temperature_2m", "extract": "" },
   "render": {
     "tier": 2, "card": "html",
-    "html": "<style>body{margin:0;color:#35e5ff;font:14px system-ui}</style><div id=\"c\"></div><script>Alfred.onData(function(v){Alfred.sparkline(document.getElementById('c'), v)})</script>"
+    "html": "<style>body{margin:0;font:14px system-ui;color:#35e5ff;background:#0b0f14;padding:12px}.big{font-size:40px;font-weight:600}</style><div class=\"big\"><span data-alfred=\"current.temperature_2m\"></span>°C</div><div data-alfred-sparkline=\"hourly.temperature_2m\"></div>"
   }
 }
 ```
@@ -136,13 +131,19 @@ prompt-injected page can only draw junk in its own card:
 - Rendered as the `srcdoc` of `<iframe sandbox="allow-scripts">` — **no**
   `allow-same-origin` (opaque origin: no access to the parent DOM, cookies, or
   storage), no `allow-popups`/`allow-forms`/`allow-top-navigation`.
-- The wrapper injects, **first** in a `<head>` the model can't precede, a strict
-  CSP: `default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:`.
-  **Zero network** — no `fetch`/XHR/WebSocket, no external script/style/font. A CSP
-  the model tries to add can only *intersect* (further restrict), never relax ours.
+- A `srcdoc` iframe **inherits the parent document's CSP**, and CSPs compose by
+  **intersection** (most restrictive wins). The parent ships `script-src 'self'` (no
+  `'unsafe-inline'`), so the trusted runtime is pinned in **both** policies by its
+  **SHA-256 hash**: the parent lists `'self' 'sha256-…'` and the widget's own `<head>`
+  meta lists `default-src 'none'; script-src 'sha256-…'; style-src 'unsafe-inline'; img-src data:`.
+  Only the runtime (matching hash) survives the intersection; **any model `<script>`
+  is blocked by both** (wrong hash, no `'unsafe-inline'`). **Zero network** — no
+  `fetch`/XHR/WebSocket, no external script/style/font.
 - Data enters **one way**, by `postMessage` from the parent card into the frame —
   no IPC/preload channel is ever exposed to the page. The trusted **runner**
-  (server-side) does all external fetching; the page never does.
+  (server-side) does all external fetching; the page never does. The runtime only
+  ever writes `textContent` / attributes / its own SVG (never `innerHTML` with your
+  data), so a hostile payload can't XSS even inside its own frame.
 
 ## `list` / result summary (per job)
 `{ id, title, kind, schedule, enabled, pausedReason, tokensToday,
