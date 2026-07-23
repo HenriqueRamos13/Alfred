@@ -28,6 +28,8 @@ import type {
   CardPatch,
   ChatMessage,
   CostSnapshot,
+  Job,
+  JobApproval,
   ProjectRecord,
   StreamEvent,
   Tool,
@@ -64,6 +66,7 @@ import {
 } from './modelCatalog.ts';
 import type { AgentConfig, AgentConfigMap, AgentId, ProviderId, CatalogModel } from './modelCatalog.ts';
 import { getSetting, setSetting, insertMessage, getRecentMessages } from './db.ts';
+import { JobScheduler, listJobs, listPendingApprovals, resolveApproval as resolveJobApprovalDb } from './jobs.ts';
 import { grillMeEnabled } from './settings-pure.ts';
 import { dayKey } from './budget.ts';
 import { spawnClaudeCli, dangerousArgs } from './claudeSpawn.ts';
@@ -461,6 +464,12 @@ export interface CreateOrchestratorOpts {
    * while the overlay is hidden. Optional — omitted in tests / headless.
    */
   windowControl?: { hide(): void; show(): void };
+  /**
+   * System notification sink (injected by the shell so core stays Electron-free).
+   * Used by the scheduled-jobs engine to alert the user when an unattended agent
+   * job queues a sensitive action or pauses on budget. Optional (tests/headless).
+   */
+  notify?: (title: string, body: string) => void;
 }
 
 /** Exactly what a factory reset erases — surfaced to the confirmation modal. */
@@ -544,6 +553,15 @@ export interface OrchestratorHandle {
   getMcpEndpoint(): { url: string; token: string } | null;
   /** Tear down the MCP bridge (release the port). */
   shutdownMcp(): Promise<void>;
+  // ── Scheduled jobs (Phase 4) ──
+  /** Every persisted scheduled job (management card / stage 3). */
+  listJobs(): Job[];
+  /** Pending sensitive-action approvals for unattended agent jobs (all jobs, or one). */
+  listPendingApprovals(jobId?: string): JobApproval[];
+  /** Resolve a queued job approval; approve EXECUTES the stored action through normal governance. */
+  resolveJobApproval(id: string, approved: boolean): Promise<JobApproval | undefined>;
+  /** Stop the in-app job scheduler (clears its timers) on shutdown. */
+  stopScheduler(): void;
 }
 
 export function createOrchestrator(opts: CreateOrchestratorOpts): OrchestratorHandle {
@@ -944,6 +962,26 @@ export function createOrchestrator(opts: CreateOrchestratorOpts): OrchestratorHa
       }
   }
 
+  // ── Scheduled-jobs engine (Phase 4) ─────────────────────────────────────────
+  // Owned here because the AGENT runner needs the governed ToolCtx + tool
+  // registry + brain resolution that only exist in this scope. Re-arms persisted
+  // jobs on boot; timers are .unref()'d so it never holds the process open.
+  const scheduler = new JobScheduler(db, {
+    emit,
+    agent: {
+      ctx,
+      tools,
+      dailyTokenBudget: config.dailyTokenBudget,
+      stepCap: config.stepCap,
+      dailyUsdBudget: config.dailyUsdBudget,
+      agentSpec: () => agentToSpec(getAgentConfig().main),
+      dangerous: isDangerous,
+      notify: opts.notify,
+      env: process.env,
+    },
+  });
+  scheduler.start();
+
   // Arm the wake listener at startup when enabled (no-op without the binary).
   startWake();
 
@@ -1210,6 +1248,20 @@ export function createOrchestrator(opts: CreateOrchestratorOpts): OrchestratorHa
     async shutdownMcp() {
       await mcpBridge?.shutdown();
       mcpBridge = null;
+    },
+    listJobs() {
+      return listJobs(db);
+    },
+    listPendingApprovals(jobId) {
+      return listPendingApprovals(db, jobId);
+    },
+    resolveJobApproval(id, approved) {
+      // Approve executes the stored tool+args through NORMAL governance (the user
+      // is present now): the real ctx, the real tool registry, system notify.
+      return resolveJobApprovalDb(db, id, approved, { ctx, tools, notify: opts.notify });
+    },
+    stopScheduler() {
+      scheduler.stop();
     },
   };
 }

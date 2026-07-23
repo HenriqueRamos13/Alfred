@@ -64,6 +64,9 @@ import {
   extractValue,
   validateJobSpec,
   MIN_INTERVAL_MS,
+  escalateForTrifecta,
+  isOutboundAction,
+  nextApprovalStatus,
 } from '../src/main/core/jobs-pure.ts';
 import type { Job } from '../src/main/core/types.ts';
 import { confirmMatches, factoryResetPaths } from '../src/main/core/reset.ts';
@@ -1864,6 +1867,91 @@ test('jobActionDecision — non-sensitive: in-grant allow, out-of-grant deny, da
   assert.equal(jobActionDecision({ dangerous: true, unattended: true }, ...write), 'allow');
   // plain read under the default grant → allow
   assert.equal(jobActionDecision({ dangerous: false, unattended: true }, 'gmail', { op: 'list' }), 'allow');
+});
+
+// ── scheduled jobs: per-run trifecta escalation (§3.1 egress-after-untrusted) ─
+
+test('isOutboundAction — send/browse-interact/shell-egress are outbound; reads are not', () => {
+  assert.equal(isOutboundAction('gmail', { op: 'send' }), true);
+  assert.equal(isOutboundAction('browser', { op: 'fill', text: 'x' }), true);
+  assert.equal(isOutboundAction('browser', { op: 'type' }), true);
+  assert.equal(isOutboundAction('shell', { command: 'curl -X POST https://x -d @f' }), true);
+  // reads / navigation are not egress
+  assert.equal(isOutboundAction('gmail', { op: 'list' }), false);
+  assert.equal(isOutboundAction('browser', { op: 'goto', url: 'https://x' }), false);
+  assert.equal(isOutboundAction('filesystem', { op: 'read' }), false);
+  assert.equal(isOutboundAction('shell', { command: 'ls -la' }), false);
+});
+
+test('escalateForTrifecta — egress after an untrusted read escalates to queue-approval', () => {
+  const dirty = { readUntrusted: true };
+  const clean = { readUntrusted: false };
+  // in-grant browse-interact that would egress → escalated once untrusted was read
+  assert.equal(escalateForTrifecta('allow', dirty, 'browser', { op: 'fill', text: 'x' }), 'queue-approval');
+  // no untrusted read yet → stays allow
+  assert.equal(escalateForTrifecta('allow', clean, 'browser', { op: 'fill' }), 'allow');
+  // untrusted read but the action is a plain read (not outbound) → stays allow
+  assert.equal(escalateForTrifecta('allow', dirty, 'filesystem', { op: 'read' }), 'allow');
+  // shell egress after an untrusted read → escalate
+  assert.equal(escalateForTrifecta('allow', dirty, 'shell', { command: 'curl -X POST https://x -d @f' }), 'queue-approval');
+  // a deny / already-queued decision is never changed
+  assert.equal(escalateForTrifecta('deny', dirty, 'browser', { op: 'fill' }), 'deny');
+  assert.equal(escalateForTrifecta('queue-approval', dirty, 'gmail', { op: 'send' }), 'queue-approval');
+});
+
+test('escalateForTrifecta — the classic trifecta: in-grant+dangerous STILL queues after untrusted read', () => {
+  const dirty = { readUntrusted: true };
+  // jobActionDecision alone would 'allow' a non-sensitive browse under grant+dangerous…
+  const base = jobActionDecision(
+    { grant: ['read', 'notify', 'browse'], dangerous: true, unattended: true },
+    'browser',
+    { op: 'type', text: 'secret' },
+  );
+  assert.equal(base, 'allow');
+  // …but once untrusted content was read, the egress is queued (pierces dangerous mode).
+  assert.equal(escalateForTrifecta(base, dirty, 'browser', { op: 'type', text: 'secret' }), 'queue-approval');
+});
+
+test('browser readText is a READ (allowed under a read grant) — so the trifecta scenario can start', () => {
+  // Regression: 'readText' tokenises to 'readtext'; it must classify as read, not
+  // fall through to write (which a read/browse grant would deny, blocking §3.1's
+  // "untrusted read then egress" demo at step 1).
+  assert.equal(toolCapability('browser', { op: 'readText' }), 'read');
+  assert.equal(grantAllows(['read', 'notify'], 'browser', { op: 'readText' }), true);
+});
+
+test('§3.1 trifecta end-to-end (pure): read a page, then an in-grant egress → queue-approval', () => {
+  // A job granted read+browse. Step 1: readText is allowed (not sensitive).
+  const grant = ['read', 'notify', 'browse'] as const;
+  const d1 = jobActionDecision({ grant: [...grant], dangerous: false, unattended: true }, 'browser', { op: 'readText' });
+  assert.equal(d1, 'allow');
+  // The runner marks readUntrusted after a browser read. Step 2: an in-grant
+  // browse egress (type into a form) is escalated to a queued approval.
+  const runState = { readUntrusted: true };
+  const d2 = jobActionDecision({ grant: [...grant], dangerous: false, unattended: true }, 'browser', { op: 'type', text: 'leak' });
+  assert.equal(d2, 'allow'); // in-grant on its own
+  assert.equal(escalateForTrifecta(d2, runState, 'browser', { op: 'type', text: 'leak' }), 'queue-approval');
+});
+
+// ── scheduled jobs: approval-queue state transition ──────────────────────────
+
+test('nextApprovalStatus — a pending approval resolves once, then is immutable', () => {
+  assert.equal(nextApprovalStatus('pending', true), 'approved');
+  assert.equal(nextApprovalStatus('pending', false), 'denied');
+  // idempotent: a resolved approval never flips
+  assert.equal(nextApprovalStatus('approved', false), 'approved');
+  assert.equal(nextApprovalStatus('denied', true), 'denied');
+});
+
+// ── scheduled jobs: per-job budget pre-check (runner skips an exhausted job) ──
+
+test('budgetDecision — pre-run exhaustion (counter at/over cap) blocks a new run', () => {
+  const now = Date.parse('2026-07-21T10:00:00');
+  const day = jobDayKey(now);
+  const job = { tokenBudgetDaily: 1000, runtime: { tokensToday: 1000, tokensDay: day } } as unknown as Job;
+  const d = budgetDecision(job, now, 1); // any further spend is refused
+  assert.equal(d.allowed, false);
+  assert.equal(d.pausedReason, 'budget');
 });
 
 // ── fetch runner: the pure value extractor ───────────────────────────────────

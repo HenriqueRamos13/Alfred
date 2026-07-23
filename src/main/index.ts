@@ -14,12 +14,11 @@
  *                        toggles ALL windows.
  *   windowed           — classic bordered window (fallback if the overlay annoys).
  */
-import { app, BrowserWindow, globalShortcut, ipcMain, screen } from 'electron';
+import { app, BrowserWindow, globalShortcut, ipcMain, Notification, screen } from 'electron';
 import { join } from 'node:path';
 import { mkdirSync, readFileSync, existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { openDb } from './core/db.ts';
-import { JobScheduler } from './core/jobs.ts';
 import { createOrchestrator } from './core/orchestrator.ts';
 import { loadPricingOverrides } from './core/pricing.ts';
 import { reassignDisplayCards } from './core/layout.ts';
@@ -233,7 +232,16 @@ function createOverlayWindow(): BrowserWindow {
 }
 
 let displayManager: DisplayManager | undefined;
-let scheduler: JobScheduler | undefined;
+let orchestrator: Orchestrator | undefined;
+
+/** System notification (macOS Notification Center); no-op when unsupported. Injected into the jobs engine. */
+function notify(title: string, body: string): void {
+  try {
+    if (Notification.isSupported()) new Notification({ title, body }).show();
+  } catch (err) {
+    console.error('[alfred] notify failed:', err instanceof Error ? err.message : err);
+  }
+}
 
 function boot(): void {
   loadEnv();
@@ -283,16 +291,15 @@ function boot(): void {
     emit,
     dataDir: data,
     windowControl: { hide: hideAllWindows, show: showAllWindows },
+    notify,
   }) as Orchestrator;
+  orchestrator = core;
   registerIpc(core, emit);
   registerWindowIpc();
 
-  // Scheduled-jobs engine: re-arm persisted jobs on boot. Dormant-safe — with
-  // no jobs it stays idle, and its timers are .unref()'d so it never holds the
-  // process open. `fetch` jobs run for real (emit `job.data`); `agent` jobs are
-  // still a logged stub until stage 2.5 wires the subagent runner.
-  scheduler = new JobScheduler(db, { emit });
-  scheduler.start();
+  // The scheduled-jobs engine is created + armed inside createOrchestrator (it
+  // needs the governed ToolCtx for the agent runner). Boot re-arms persisted
+  // jobs; `fetch` jobs run for real and `agent` jobs now run under grant + budget.
   // Displays for the renderer's "move card to next monitor" control.
   ipcMain.removeHandler('alfred:listDisplays');
   ipcMain.handle('alfred:listDisplays', () => displayManager?.list() ?? []);
@@ -333,7 +340,7 @@ app.whenReady().then(() => {
 
 app.on('will-quit', () => {
   globalShortcut.unregisterAll();
-  scheduler?.stop();
+  orchestrator?.stopScheduler();
   displayManager?.dispose();
 });
 

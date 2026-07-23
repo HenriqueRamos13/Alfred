@@ -18,6 +18,8 @@ import type {
   CardPatch,
   ChatMessage,
   CostSnapshot,
+  Job,
+  JobApproval,
   StreamEvent,
   WakeStatus,
 } from './core/types.ts';
@@ -100,6 +102,15 @@ export interface Orchestrator {
   setWakeword(on: boolean): boolean | Promise<boolean>;
   /** Live wake-listener state, read on mount so the WAKE button isn't blind at boot. */
   getWakeStatus(): { status: WakeStatus; reason?: string } | Promise<{ status: WakeStatus; reason?: string }>;
+  // ── Scheduled jobs (Phase 4) — data channel only; stage 3 builds the UI. ──
+  /** Every persisted scheduled job (management card). */
+  listJobs(): Job[] | Promise<Job[]>;
+  /** Pending sensitive-action approvals for unattended agent jobs (all, or one job). */
+  listPendingApprovals(jobId?: string): JobApproval[] | Promise<JobApproval[]>;
+  /** Resolve a queued job approval; approve executes the stored action through normal governance. */
+  resolveJobApproval(id: string, approved: boolean): Promise<JobApproval | undefined>;
+  /** Stop the in-app job scheduler (clears its timers) on shutdown. */
+  stopScheduler(): void;
 }
 
 /** Trust boundary: keep only well-formed numeric/boolean fields from the renderer. */
@@ -302,6 +313,29 @@ export function registerIpc(core: Orchestrator, emit: (e: StreamEvent) => void):
       return await core.getNote(ref);
     } catch (err) {
       fail('get note', err);
+      return null;
+    }
+  });
+
+  // ── Scheduled jobs — read the job list + the pending approval queue, and
+  // resolve one approval. Data channel only; stage 3 wires the buttons. ──
+  ipcMain.handle('alfred:listJobs', guard('list jobs', () => core.listJobs(), [] as Job[]));
+  ipcMain.handle('alfred:listPendingApprovals', async (_e, jobId: unknown) => {
+    const id = typeof jobId === 'string' && jobId ? jobId : undefined;
+    try {
+      return await core.listPendingApprovals(id);
+    } catch (err) {
+      fail('list pending approvals', err);
+      return [] as JobApproval[];
+    }
+  });
+  ipcMain.handle('alfred:resolveJobApproval', async (_e, id: unknown, approved: unknown) => {
+    // Trust boundary: id must be a string, approved a real boolean.
+    if (typeof id !== 'string' || !id || typeof approved !== 'boolean') return null;
+    try {
+      return (await core.resolveJobApproval(id, approved)) ?? null;
+    } catch (err) {
+      fail('resolve job approval', err);
       return null;
     }
   });

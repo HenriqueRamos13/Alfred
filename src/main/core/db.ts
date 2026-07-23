@@ -129,6 +129,21 @@ CREATE TABLE IF NOT EXISTS job_runs (
   error    TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_job_runs_job ON job_runs(job_id, ts);
+
+-- Sensitive-action approval queue for unattended agent jobs (Phase 4, stage 2.5).
+-- A sensitive tool call (send/pay/delete/secrets/egress) an agent job wants to
+-- run is parked here instead of auto-executing; the user approves/denies later,
+-- and an approval executes the stored tool+args through NORMAL governance.
+CREATE TABLE IF NOT EXISTS job_approvals (
+  id           TEXT PRIMARY KEY,
+  job_id       TEXT NOT NULL,
+  ts           INTEGER NOT NULL,
+  tool_name    TEXT NOT NULL,
+  args_json    TEXT,
+  status       TEXT NOT NULL DEFAULT 'pending',  -- 'pending' | 'approved' | 'denied'
+  resolved_ts  INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_job_approvals_status ON job_approvals(status, ts);
 `;
 
 export function openDb(dbPath: string): AlfredDb {

@@ -114,7 +114,7 @@ const SHELL = ['shell', 'exec', 'bash', 'sh', 'command', 'run', 'spawn'];
 const BROWSE_INTERACT = ['click', 'fill', 'type', 'press', 'select', 'drag'];
 const WRITE = ['write', 'create', 'edit', 'append', 'mkdir', 'save', 'update', 'rename', 'move', 'download', 'set'];
 const NOTIFY = ['notify', 'notification', 'alert', 'toast', 'say', 'speak'];
-const READ = ['read', 'list', 'get', 'search', 'fetch', 'view', 'status', 'info', 'open', 'goto', 'navigate', 'screenshot', 'snapshot', 'ls', 'cat', 'head', 'tail', 'stat', 'find', 'grep', 'recall'];
+const READ = ['read', 'readtext', 'list', 'get', 'search', 'fetch', 'view', 'status', 'info', 'open', 'goto', 'navigate', 'screenshot', 'snapshot', 'ls', 'cat', 'head', 'tail', 'stat', 'find', 'grep', 'recall'];
 
 /** True when a shell command line mutates, deletes, or pipes-to-shell (egress). */
 function isDangerousCmd(cmd: string): boolean {
@@ -201,6 +201,62 @@ export function jobActionDecision(ctx: JobActionCtx, toolName: string, args?: un
   if (ctx.unattended && isSensitiveAction(toolName, args)) return 'queue-approval';
   if (grantAllows(ctx.grant, toolName, args)) return 'allow';
   return ctx.dangerous ? 'allow' : 'deny';
+}
+
+// ── per-run trifecta escalation (§3.1 egress after an untrusted read) ─────────
+
+/** Mutable per-run flag set: has the agent read UNTRUSTED content this run? */
+export interface JobRunState {
+  readUntrusted: boolean;
+}
+
+/**
+ * True when a tool call pushes data OUTWARD: an outbound message (send/post/…),
+ * a browser interaction that could submit a form (fill/type/click/…), or a shell
+ * command that exfiltrates (curl POST/upload, scp, git push — via isDangerousCmd).
+ * A plain read / navigation is NOT outbound.
+ */
+export function isOutboundAction(toolName: string, args?: unknown): boolean {
+  const t = opTokens(toolName, args);
+  const a = args && typeof args === 'object' ? (args as Record<string, unknown>) : {};
+  if (hasAny(t, OUTBOUND)) return true;
+  if (hasAny(t, BROWSE_INTERACT)) return true;
+  if (hasAny(t, SHELL)) {
+    const cmd = String(a.command ?? a.cmd ?? a.script ?? '');
+    if (isDangerousCmd(cmd)) return true;
+  }
+  return false;
+}
+
+/**
+ * Per-run trifecta escalation. Once the agent has read UNTRUSTED content this
+ * run, any OUTBOUND/egress action is escalated to a queued approval — even if
+ * jobActionDecision said 'allow' (in-grant, or dangerous-mode). This pierces
+ * dangerous mode exactly like the sensitive set does: an in-grant `browse`
+ * form-submit could exfiltrate what was just read, so a human must confirm it.
+ * Sensitive actions are already queued by jobActionDecision; a 'deny' or an
+ * existing 'queue-approval' is never downgraded. Pure.
+ */
+export function escalateForTrifecta(
+  decision: 'allow' | 'deny' | 'queue-approval',
+  runState: JobRunState,
+  toolName: string,
+  args?: unknown,
+): 'allow' | 'deny' | 'queue-approval' {
+  if (decision === 'allow' && runState.readUntrusted && isOutboundAction(toolName, args)) {
+    return 'queue-approval';
+  }
+  return decision;
+}
+
+// ── job approval queue: pure state transition ─────────────────────────────────
+
+export type JobApprovalStatus = 'pending' | 'approved' | 'denied';
+
+/** Next status for an approval. A pending one resolves once; a resolved one is immutable (idempotent). */
+export function nextApprovalStatus(current: JobApprovalStatus, approved: boolean): JobApprovalStatus {
+  if (current !== 'pending') return current;
+  return approved ? 'approved' : 'denied';
 }
 
 // ── fetch runner: pure value extraction (stage 2) ─────────────────────────────

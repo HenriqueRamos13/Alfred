@@ -10,8 +10,23 @@
  */
 
 import { randomUUID } from 'node:crypto';
-import { nextRun, extractValue, fetchUrlError } from './jobs-pure.ts';
-import type { Job, JobRun, JobRuntime, StreamEvent } from './types.ts';
+import { streamText, tool, jsonSchema, stepCountIs } from 'ai';
+import type { ToolSet } from 'ai';
+import {
+  nextRun,
+  extractValue,
+  fetchUrlError,
+  budgetDecision,
+  jobActionDecision,
+  escalateForTrifecta,
+  nextApprovalStatus,
+  DEFAULT_GRANT,
+  type JobRunState,
+} from './jobs-pure.ts';
+import { runGovernedTool, classifyAction, trifectaImpact, maskSecrets } from './governance.ts';
+import { BudgetTracker, isOverDailyBudget } from './budget.ts';
+import { resolveProvider } from './providers.ts';
+import type { Capability, Governance, Job, JobApproval, JobRun, JobRuntime, StreamEvent, Tool, ToolCtx } from './types.ts';
 
 type DB = import('better-sqlite3').Database;
 
@@ -127,6 +142,7 @@ export function updateJob(db: DB, id: string, patch: Partial<Job>): Job | undefi
 export function deleteJob(db: DB, id: string): void {
   db.prepare('DELETE FROM scheduled_jobs WHERE id = ?').run(id);
   db.prepare('DELETE FROM job_runs WHERE job_id = ?').run(id);
+  db.prepare('DELETE FROM job_approvals WHERE job_id = ?').run(id);
 }
 
 /** Append one run-log entry (id auto-filled when absent). */
@@ -147,20 +163,191 @@ export function logRun(db: DB, run: Omit<JobRun, 'id'> & { id?: string }): JobRu
   return full;
 }
 
+// ── sensitive-action approval queue (§3.1) ────────────────────────────────────
+
+interface ApprovalRow {
+  id: string;
+  job_id: string;
+  ts: number;
+  tool_name: string;
+  args_json: string | null;
+  status: JobApproval['status'];
+  resolved_ts: number | null;
+}
+
+function rowToApproval(r: ApprovalRow): JobApproval {
+  let args: unknown = null;
+  try {
+    args = r.args_json ? JSON.parse(r.args_json) : null;
+  } catch {
+    args = null; // a corrupt args blob must not hide the pending item
+  }
+  return {
+    id: r.id,
+    jobId: r.job_id,
+    ts: r.ts,
+    toolName: r.tool_name,
+    args,
+    status: r.status,
+    resolvedTs: r.resolved_ts ?? undefined,
+  };
+}
+
+/** Mask secret-looking args before an approval leaves the process (UI/stream). Execution reads the verbatim row. */
+function maskApproval(a: JobApproval): JobApproval {
+  return { ...a, args: maskSecrets(a.args) };
+}
+
+/**
+ * Park a sensitive tool call for the user to approve/deny later. Secret-KEYED
+ * arg fields (token/password/apiKey/authorization/…) are masked BEFORE they hit
+ * the DB — the agent never legitimately supplies real credential values (secrets
+ * live in the keychain and are injected by adapters at execute time, not by the
+ * model), so masking them costs nothing and keeps plaintext creds out of the
+ * queue at rest. Content fields (email body, url, shell command) are preserved
+ * so resolveApproval re-executes the exact action.
+ * ponytail: key-masking only — a secret pasted INSIDE a string (e.g. a bearer in
+ * a `curl -H` command) can't be masked without breaking re-execution; that is
+ * inherent to storing an executable command, same as the messages/audit tables.
+ */
+export function createApproval(db: DB, a: { jobId: string; toolName: string; args: unknown }): JobApproval {
+  const appr: JobApproval = {
+    id: randomUUID(),
+    jobId: a.jobId,
+    ts: Date.now(),
+    toolName: a.toolName,
+    args: maskSecrets(a.args ?? null),
+    status: 'pending',
+  };
+  db.prepare(
+    `INSERT INTO job_approvals (id, job_id, ts, tool_name, args_json, status)
+     VALUES (@id, @jobId, @ts, @toolName, @args, 'pending')`,
+  ).run({ id: appr.id, jobId: appr.jobId, ts: appr.ts, toolName: appr.toolName, args: JSON.stringify(appr.args ?? null) });
+  return appr;
+}
+
+/** Verbatim single approval (used by resolveApproval to execute). */
+export function getApproval(db: DB, id: string): JobApproval | undefined {
+  const r = db.prepare('SELECT * FROM job_approvals WHERE id = ?').get(id) as ApprovalRow | undefined;
+  return r ? rowToApproval(r) : undefined;
+}
+
+/** Pending approvals (all jobs, or one), MASKED for display. */
+export function listPendingApprovals(db: DB, jobId?: string): JobApproval[] {
+  const rows = (
+    jobId
+      ? db.prepare("SELECT * FROM job_approvals WHERE status='pending' AND job_id=? ORDER BY ts").all(jobId)
+      : db.prepare("SELECT * FROM job_approvals WHERE status='pending' ORDER BY ts").all()
+  ) as ApprovalRow[];
+  return rows.map((r) => maskApproval(rowToApproval(r)));
+}
+
+/** Collaborators resolveApproval needs to EXECUTE an approved action through normal governance. */
+export interface ApprovalExecEnv {
+  ctx: ToolCtx;
+  tools: Tool[];
+  notify?: (title: string, body: string) => void;
+}
+
+/**
+ * Resolve a pending approval. `approved=true` EXECUTES the stored tool+args
+ * through the NORMAL governance path (the human is present now, so dangerous
+ * mode / rules / HITL all apply as usual) and logs the run; `approved=false`
+ * discards it. Idempotent — a non-pending approval is returned unchanged.
+ * Emits `job.approval` (action:'resolved') via ctx.emit for the UI.
+ */
+export async function resolveApproval(
+  db: DB,
+  id: string,
+  approved: boolean,
+  exec?: ApprovalExecEnv,
+): Promise<JobApproval | undefined> {
+  const appr = getApproval(db, id);
+  if (!appr || appr.status !== 'pending') return appr;
+
+  const status = nextApprovalStatus(appr.status, approved);
+  const resolvedTs = Date.now();
+  db.prepare('UPDATE job_approvals SET status=?, resolved_ts=? WHERE id=?').run(status, resolvedTs, id);
+  const resolved: JobApproval = { ...appr, status, resolvedTs };
+
+  if (approved && exec) {
+    const t = exec.tools.find((x) => x.name === appr.toolName);
+    if (!t) {
+      logRun(db, { jobId: appr.jobId, ts: resolvedTs, ok: false, tokens: 0, error: `approval ${id}: tool "${appr.toolName}" not found` });
+    } else {
+      try {
+        const out = await runGovernedTool(t, appr.args, exec.ctx);
+        const failed = !!out && typeof out === 'object' && 'error' in (out as Record<string, unknown>);
+        logRun(db, {
+          jobId: appr.jobId,
+          ts: resolvedTs,
+          ok: !failed,
+          tokens: 0,
+          summary: `approval executed: ${appr.toolName}`,
+          error: failed ? String((out as Record<string, unknown>).error) : undefined,
+        });
+      } catch (err) {
+        logRun(db, {
+          jobId: appr.jobId,
+          ts: resolvedTs,
+          ok: false,
+          tokens: 0,
+          error: `approval ${id} execution failed: ${err instanceof Error ? err.message : String(err)}`,
+        });
+      }
+    }
+  }
+  exec?.ctx.emit({ kind: 'job.approval', action: 'resolved', approval: maskApproval(resolved) });
+  return resolved;
+}
+
 // ── the timer engine ─────────────────────────────────────────────────────────
 
-/** Extension port: run a due job (fetch/agent). Default = the real fetch runner (agent is stage 2.5). */
+/** Extension port: run a due job (fetch/agent). Default = the real fetch + agent runners. */
 export type JobRunner = (job: Job) => Promise<void>;
 
+/**
+ * Everything the AGENT runner needs, injected from the orchestrator (which owns
+ * the governed ToolCtx + tool registry + brain resolution). Absent → agent jobs
+ * are logged and skipped (tests / headless). Kept out of jobs-pure so this file
+ * stays the only place that pulls the AI SDK + governance into the scheduler.
+ */
+export interface JobAgentEnv {
+  /** Full governed ctx (real governance) — reused for tool execution + emit. */
+  ctx: ToolCtx;
+  tools: Tool[];
+  dailyTokenBudget: number;
+  stepCap: number;
+  dailyUsdBudget?: number;
+  /** provider:model spec for the job's brain (agent_config.main); undefined → default. */
+  agentSpec?: () => string | undefined;
+  /** Live DANGEROUS-mode state. */
+  dangerous?: () => boolean;
+  /** System notification (injected so core stays Electron-free). */
+  notify?: (title: string, body: string) => void;
+  env?: Record<string, string | undefined>;
+}
+
 export interface SchedulerOpts {
-  /** Override the runner (tests / future wiring); default runs fetch jobs for real. */
+  /** Override the runner (tests / future wiring); default runs fetch + agent jobs for real. */
   runJob?: JobRunner;
   /** Injectable clock (tests pass a fixed reader; boot uses Date.now). */
   now?: () => number;
   log?: (msg: string) => void;
-  /** Stream sink so a fetch refresh can emit `job.data` to the UI. */
+  /** Stream sink so a fetch refresh / agent job can emit events to the UI. */
   emit?: (event: StreamEvent) => void;
+  /** Agent-runner environment; absent → agent jobs are skipped-with-a-log. */
+  agent?: JobAgentEnv;
 }
+
+/** Unattended-agent system prompt: single autonomous turn, no human, grant-limited. */
+const AGENT_JOB_SYSTEM =
+  'You are Alfred running an UNATTENDED scheduled task. Complete the task autonomously in this single turn ' +
+  'using the available tools, then stop and briefly report what you did. NO human is watching: never ask ' +
+  'questions or for confirmation. You are limited to this task\'s granted capabilities — calls outside the ' +
+  'grant are refused, and sensitive actions (sending messages, payments, deletes, secret access, or egress ' +
+  'of data you have just read) are queued for the user\'s later approval, NOT executed now. Do not retry a ' +
+  'refused or queued action; note it and continue with what you can. Be economical with tokens.';
 
 /**
  * Single active scheduler, so the `schedule` tool can re-arm a job after
@@ -181,18 +368,19 @@ export class JobScheduler {
   private readonly now: () => number;
   private readonly log: (msg: string) => void;
   private readonly emit?: (event: StreamEvent) => void;
+  private readonly agentEnv?: JobAgentEnv;
 
   constructor(db: DB, opts: SchedulerOpts = {}) {
     this.db = db;
     this.now = opts.now ?? Date.now;
     this.log = opts.log ?? ((m) => console.log(`[alfred] scheduler: ${m}`));
     this.emit = opts.emit;
+    this.agentEnv = opts.agent;
     this.runJob =
       opts.runJob ??
       (async (job) => {
         if (job.kind === 'fetch') return this.runFetch(job);
-        // Agent runner lands in stage 2.5 (subagent turn under grant + budget).
-        this.log(`agent runner: stage 2.5 — job ${job.id} "${job.title}" not executed (no agent runner yet)`);
+        return this.runAgent(job);
       });
     activeScheduler = this;
   }
@@ -239,6 +427,201 @@ export class JobScheduler {
       this.log(`fetch job ${job.id} "${job.title}" failed: ${msg}`);
       logRun(this.db, { jobId: job.id, ts, ok: false, tokens: 0, error: msg });
     }
+  }
+
+  /**
+   * The AGENT runner (§1/§2/§3): ONE autonomous, unattended turn driven by
+   * job.prompt, over the AI SDK in-process (streamText + tools) so EVERY tool
+   * call is intercepted by the job governor before it can execute. Bounded by the
+   * job's grant + the per-job daily budget + the global kill-switch + the step
+   * cap. Never throws — a failed run is logged, the scheduler survives.
+   */
+  private async runAgent(job: Job): Promise<void> {
+    const env = this.agentEnv;
+    const startTs = this.now();
+    if (!env) {
+      this.log(`agent job ${job.id} "${job.title}" skipped: no agent environment wired`);
+      logRun(this.db, { jobId: job.id, ts: startTs, ok: false, tokens: 0, error: 'agent runner not available' });
+      return;
+    }
+
+    // Per-job daily budget: apply the reset first, then refuse if exhausted.
+    const pre = budgetDecision(job, startTs, 1);
+    if (pre.reset) {
+      const cur = getJob(this.db, job.id);
+      if (cur) job = updateJob(this.db, job.id, { runtime: { ...cur.runtime, tokensToday: 0, tokensDay: pre.tokensDay } }) ?? job;
+    }
+    if (!pre.allowed) {
+      logRun(this.db, { jobId: job.id, ts: startTs, ok: false, tokens: 0, error: 'per-job daily token budget exhausted' });
+      const cur = getJob(this.db, job.id);
+      if (cur) updateJob(this.db, job.id, { runtime: { ...cur.runtime, pausedReason: 'budget' } });
+      env.notify?.('Alfred — tarefa pausada', `"${job.title}" atingiu o orçamento de tokens do dia.`);
+      return;
+    }
+
+    // Global kill-switch (budget.ts) applies on top; count this run's usage into it.
+    const jobSessionId = `job:${job.id}`;
+    const tracker = new BudgetTracker(
+      this.db,
+      { dailyLimit: env.dailyTokenBudget, stepCap: env.stepCap, dailyUsdBudget: env.dailyUsdBudget },
+      jobSessionId,
+    );
+    if (isOverDailyBudget(tracker.snapshot())) {
+      logRun(this.db, { jobId: job.id, ts: startTs, ok: false, tokens: 0, error: 'global daily token budget exhausted' });
+      return; // global resets daily and is app-wide — don't pause the job itself
+    }
+
+    // Resolve the brain via the AI SDK (in-process → tool calls are interceptable).
+    let provider: ReturnType<typeof resolveProvider>;
+    try {
+      provider = resolveProvider(env.agentSpec?.(), env.env ?? process.env);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      this.log(`agent job ${job.id} "${job.title}" has no usable brain: ${msg}`);
+      logRun(this.db, { jobId: job.id, ts: startTs, ok: false, tokens: 0, error: `no brain: ${msg}` });
+      return;
+    }
+
+    const dangerous = env.dangerous?.() ?? false;
+    const grant = job.grant ?? [...DEFAULT_GRANT];
+    const runState: JobRunState = { readUntrusted: false };
+
+    // Job-run governance: an unattended job has NO human to approve, so this
+    // ALWAYS denies — even in dangerous mode. The sensitive set is queued by the
+    // job governor (gateJobTool) BEFORE execute, but some sensitive sub-ops are
+    // only discoverable at execute time (e.g. filesystem `write` OVERWRITING an
+    // existing file — the tool stats the path itself and raises its own approval).
+    // Riding dangerous-mode here would auto-overwrite/-mutate unattended, piercing
+    // §3.1. Denying fails those closed; the model is told and continues. Trifecta
+    // is done per-run below, so markTrifecta/trifecta are inert (no double logic).
+    const jobGovernance: Governance = {
+      classify: classifyAction,
+      requestApproval: async () => ({
+        id: randomUUID(),
+        decision: 'deny',
+        note: 'unattended job — no human to approve (sensitive sub-op refused, not auto-run)',
+      }),
+      markTrifecta: () => {},
+      trifecta: () => ({ readUntrusted: false, hasPrivate: false, canEgress: false }),
+    };
+    const jobCtx: ToolCtx = { ...env.ctx, sessionId: jobSessionId, governance: jobGovernance };
+
+    const controller = new AbortController();
+    const set: ToolSet = {};
+    for (const t of env.tools) {
+      set[t.name] = tool({
+        description: t.description,
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        inputSchema: jsonSchema(t.inputSchema as any),
+        execute: (args: unknown) => this.gateJobTool(job, t, args, { grant, dangerous, runState, jobCtx, jobSessionId, notify: env.notify }),
+      });
+    }
+
+    try {
+      const result = streamText({
+        model: provider.languageModel,
+        system: AGENT_JOB_SYSTEM,
+        prompt: job.prompt ?? '',
+        maxOutputTokens: 4096,
+        tools: set,
+        stopWhen: stepCountIs(env.stepCap),
+        abortSignal: controller.signal,
+        // Global kill-switch mid-run: abort the loop if the app-wide budget is now spent.
+        prepareStep: () => {
+          if (isOverDailyBudget(tracker.snapshot())) controller.abort();
+          return {};
+        },
+        onStepFinish: ({ usage }) => {
+          try {
+            tracker.record({ inputTokens: usage.inputTokens ?? 0, outputTokens: usage.outputTokens ?? 0 }, provider.model);
+          } catch (err) {
+            console.error('[alfred] job step accounting failed:', err instanceof Error ? err.message : err);
+          }
+        },
+      });
+
+      let text = '';
+      for await (const part of result.fullStream) {
+        if (part.type === 'text-delta') text += part.text;
+        else if (part.type === 'error') throw part.error instanceof Error ? part.error : new Error(String(part.error));
+      }
+      let spent = 0;
+      try {
+        const u = await result.usage;
+        spent = (u.inputTokens ?? 0) + (u.outputTokens ?? 0);
+      } catch {
+        /* usage unavailable (e.g. aborted) — spent stays 0 */
+      }
+      this.applyAgentBudget(job, startTs, spent, text.trim(), env);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      this.log(`agent job ${job.id} "${job.title}" failed: ${msg}`);
+      logRun(this.db, { jobId: job.id, ts: startTs, ok: false, tokens: 0, error: msg });
+    }
+  }
+
+  /**
+   * The JOB GOVERNOR (§2): gate ONE tool call from an agent job.
+   *  - deny            → refuse, tell the model it is outside the grant.
+   *  - queue-approval  → park it (createApproval) + notify + emit; refuse to the model.
+   *  - allow           → execute through the shared governed executor (audit + events),
+   *                      using the non-blocking jobGovernance.
+   * Sensitive actions + post-untrusted-read egress ALWAYS take the queue path,
+   * even in dangerous mode — never the governance dangerous-auto-approve.
+   */
+  private async gateJobTool(
+    job: Job,
+    t: Tool,
+    args: unknown,
+    g: { grant: Capability[]; dangerous: boolean; runState: JobRunState; jobCtx: ToolCtx; jobSessionId: string; notify?: (title: string, body: string) => void },
+  ): Promise<unknown> {
+    let decision = jobActionDecision({ grant: g.grant, dangerous: g.dangerous, unattended: true }, t.name, args);
+    decision = escalateForTrifecta(decision, g.runState, t.name, args);
+
+    if (decision === 'deny') {
+      this.emit?.({ kind: 'tool.start', sessionId: g.jobSessionId, toolName: t.name, args: maskSecrets(args), tier: classifyAction(t.name, args) });
+      this.emit?.({ kind: 'tool.end', sessionId: g.jobSessionId, toolName: t.name, status: 'blocked', error: 'out of grant' });
+      return { ok: false, error: `não permitido pelo grant desta tarefa: ${t.name}` };
+    }
+
+    if (decision === 'queue-approval') {
+      const appr = createApproval(this.db, { jobId: job.id, toolName: t.name, args });
+      g.notify?.('Alfred — aprovação pendente', `"${job.title}" quer executar ${t.name}; aprova na app.`);
+      this.emit?.({ kind: 'tool.start', sessionId: g.jobSessionId, toolName: t.name, args: maskSecrets(args), tier: classifyAction(t.name, args) });
+      this.emit?.({ kind: 'tool.end', sessionId: g.jobSessionId, toolName: t.name, status: 'blocked', error: 'queued for approval' });
+      this.emit?.({ kind: 'job.approval', action: 'created', approval: maskApproval(appr) });
+      return { ok: false, error: 'ação sensível colocada em fila para a tua aprovação' };
+    }
+
+    // allow → execute through the shared governance path (audit + tool.start/end).
+    const out = await runGovernedTool(t, args, g.jobCtx);
+    // Trifecta: once the agent has read untrusted content, later egress escalates.
+    if (trifectaImpact(t.name).readUntrusted) g.runState.readUntrusted = true;
+    return out;
+  }
+
+  /**
+   * Fold this run's token spend into the per-job daily counter and pause the job
+   * (never kill it mid-run) if the spend blew the cap. Records lastResult + a
+   * run-log entry and emits `job.data` so a card can show the outcome.
+   */
+  private applyAgentBudget(job: Job, startTs: number, spent: number, text: string, env: JobAgentEnv): void {
+    const cur = getJob(this.db, job.id);
+    if (!cur) return;
+    const bd = budgetDecision(cur, this.now(), spent);
+    const tokensToday = bd.tokensToday + spent; // bd.tokensToday is reset-adjusted, pre-add
+    const runtime: JobRuntime = {
+      ...cur.runtime,
+      tokensToday,
+      tokensDay: bd.tokensDay,
+      lastResult: text || cur.runtime.lastResult,
+    };
+    // `spent` has already been consumed; if it exceeded the cap, pause going forward.
+    if (!bd.allowed) runtime.pausedReason = 'budget';
+    updateJob(this.db, job.id, { runtime });
+    logRun(this.db, { jobId: job.id, ts: startTs, ok: true, tokens: spent, summary: text.slice(0, 200) || undefined });
+    this.emit?.({ kind: 'job.data', jobId: job.id, title: job.title, value: text.slice(0, 2000), ts: startTs });
+    if (!bd.allowed) env.notify?.('Alfred — tarefa pausada', `"${job.title}" atingiu o orçamento de tokens do dia.`);
   }
 
   /** Re-arm one job from its fresh DB row (create/edit/resume); disarm if gone/disabled/paused. */

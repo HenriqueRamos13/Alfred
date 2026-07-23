@@ -13,6 +13,8 @@ import type {
   ChatMessage,
   CostSnapshot,
   DisplayInfo,
+  Job,
+  JobApproval,
   WakeStatus,
 } from '../main/core/types.ts';
 import type { BrainInfo } from '../main/core/providers.ts';
@@ -119,6 +121,14 @@ const api = {
   setWakeword: (on: boolean): Promise<boolean> => ipcRenderer.invoke('alfred:setWakeword', on),
   /** Live wake-listener state — read on mount so the WAKE button shows why it is (not) hearing you. */
   getWakeStatus: (): Promise<{ status: WakeStatus; reason?: string }> => ipcRenderer.invoke('alfred:getWakeStatus'),
+  /** Every persisted scheduled job (management card — stage 3). */
+  listJobs: (): Promise<Job[]> => ipcRenderer.invoke('alfred:listJobs'),
+  /** Pending sensitive-action approvals for unattended agent jobs (all, or one job). */
+  listPendingApprovals: (jobId?: string): Promise<JobApproval[]> =>
+    ipcRenderer.invoke('alfred:listPendingApprovals', jobId),
+  /** Resolve a queued job approval; approve executes the stored action through normal governance. */
+  resolveJobApproval: (id: string, approved: boolean): Promise<JobApproval | null> =>
+    ipcRenderer.invoke('alfred:resolveJobApproval', id, approved),
   /** Overlay window controls (frameless HUD). */
   hideWindow: (): void => ipcRenderer.send('window:hide'),
   quitWindow: (): void => ipcRenderer.send('window:quit'),

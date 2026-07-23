@@ -312,6 +312,22 @@ export interface JobRun {
   error?: string;
 }
 
+/**
+ * A sensitive tool call an unattended agent job wanted to run, parked for the
+ * user to approve/deny (§3.1). Approving executes the stored tool+args through
+ * normal governance (the human is present now).
+ */
+export interface JobApproval {
+  id: string;
+  jobId: string;
+  ts: number;
+  toolName: string;
+  /** Tool args, secret-KEYED fields masked (content preserved for re-execution). */
+  args: unknown;
+  status: 'pending' | 'approved' | 'denied';
+  resolvedTs?: number;
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Chat / streaming
 // ─────────────────────────────────────────────────────────────────────────────
@@ -368,6 +384,9 @@ export type StreamEvent =
   // A fetch job refreshed its value (stage 2). Stage-3 data cards listen for
   // this; for now it is just emitted alongside the persisted runtime.lastResult.
   | { kind: 'job.data'; jobId: string; title: string; value: unknown; ts: number }
+  // An unattended agent job's sensitive action was queued for approval, or a
+  // queued approval was resolved. Stage 3 renders the pending list + buttons.
+  | { kind: 'job.approval'; action: 'created' | 'resolved'; approval: JobApproval }
   // The main conversation was reset: the UI clears the chat (every window).
   | { kind: 'conversation.reset'; sessionId: string }
   // A factory reset completed: the UI reloads to a blank factory state.
