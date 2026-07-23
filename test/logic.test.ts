@@ -78,6 +78,7 @@ import type { Job } from '../src/main/core/types.ts';
 import { wrapWidgetHtml, WIDGET_CSP, WIDGET_HTML_MAX_BYTES } from '../src/main/core/widget-html-pure.ts';
 import { confirmMatches, factoryResetPaths, factoryResetTables } from '../src/main/core/reset.ts';
 import { grillMeEnabled } from '../src/main/core/settings-pure.ts';
+import { enqueueTurn, TURN_QUEUE_MAX } from '../src/main/core/turn-queue-pure.ts';
 import {
   defaultProviderId,
   parseProviderSpec,
@@ -2306,4 +2307,33 @@ test('describeApproval — never renders a message body in clear (only its lengt
   // Other content-y keys are redacted the same way.
   assert.match(describeApproval('memory_write', { text: secret }), /text: \[\d+ car\.\]/);
   assert.match(describeApproval('http_post', { url: 'https://x', payload: secret }), /payload: \[\d+ car\.\]/);
+});
+
+// ── turn queue (single-flight FIFO drain) ───────────────────────────────────
+test('enqueueTurn — preserves FIFO order', () => {
+  const q: string[] = [];
+  enqueueTurn(q, 'a');
+  enqueueTurn(q, 'b');
+  enqueueTurn(q, 'c');
+  assert.deepEqual(q, ['a', 'b', 'c']);
+  // draining shift() pulls them out oldest-first
+  assert.equal(q.shift(), 'a');
+  assert.equal(q.shift(), 'b');
+  assert.equal(q.shift(), 'c');
+});
+
+test('turn queue — clear empties it (clear-on-kill)', () => {
+  const q = ['x', 'y', 'z'];
+  q.length = 0; // the clear-on-kill/reset op
+  assert.equal(q.length, 0);
+});
+
+test('enqueueTurn — size guard drops oldest past cap, never silent, never unbounded', () => {
+  const q: string[] = [];
+  for (let i = 0; i < TURN_QUEUE_MAX; i++) assert.equal(enqueueTurn(q, `m${i}`).dropped, null);
+  assert.equal(q.length, TURN_QUEUE_MAX);
+  const over = enqueueTurn(q, 'overflow');
+  assert.equal(over.dropped, 'm0'); // oldest reported for logging
+  assert.equal(q.length, TURN_QUEUE_MAX); // bounded
+  assert.equal(q[q.length - 1], 'overflow'); // newest kept, order intact
 });

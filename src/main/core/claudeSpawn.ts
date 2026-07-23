@@ -59,8 +59,17 @@ function subscriptionEnv(): NodeJS.ProcessEnv {
   return env;
 }
 
-export function spawnClaudeCli(args: string[], opts: { cwd: string; bridge?: boolean }): Promise<ClaudeCliResult> {
+export function spawnClaudeCli(
+  args: string[],
+  opts: { cwd: string; bridge?: boolean; signal?: AbortSignal },
+): Promise<ClaudeCliResult> {
   return new Promise((resolve) => {
+    // Kill switch: an already-aborted signal never spawns; a later abort SIGKILLs
+    // the child so the live `claude -p` turn dies instead of running to timeout.
+    if (opts.signal?.aborted) {
+      resolve({ stdout: '', stderr: 'aborted', code: 1, enoent: false });
+      return;
+    }
     // Attach the in-process Alfred MCP bridge (both spawn paths — the claude-code
     // brain and the delegate tool — route through here, so both gain Alfred's
     // tools). Empty when no bridge is live or ALFRED_MCP_BRIDGE disabled it.
@@ -74,6 +83,11 @@ export function spawnClaudeCli(args: string[], opts: { cwd: string; bridge?: boo
       timeout: TIMEOUT_MS,
       killSignal: 'SIGKILL',
     });
+
+    const onAbort = (): void => {
+      child.kill('SIGKILL');
+    };
+    opts.signal?.addEventListener('abort', onAbort, { once: true });
 
     let stdout = '';
     let stderr = '';
@@ -89,10 +103,12 @@ export function spawnClaudeCli(args: string[], opts: { cwd: string; bridge?: boo
     });
 
     child.on('error', (err: NodeJS.ErrnoException) => {
+      opts.signal?.removeEventListener('abort', onAbort);
       resolve({ stdout, stderr, code: 1, enoent: err.code === 'ENOENT' });
     });
-    // code null ⇒ killed by a signal (timeout / maxBuffer) ⇒ treat as failure.
+    // code null ⇒ killed by a signal (timeout / maxBuffer / abort) ⇒ failure.
     child.on('close', (code) => {
+      opts.signal?.removeEventListener('abort', onAbort);
       resolve({ stdout, stderr, code: code == null ? 1 : code, enoent: false });
     });
   });

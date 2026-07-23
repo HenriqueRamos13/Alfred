@@ -76,6 +76,7 @@ import {
   deleteJob as deleteJobDb,
 } from './jobs.ts';
 import { grillMeEnabled } from './settings-pure.ts';
+import { enqueueTurn } from './turn-queue-pure.ts';
 import { dayKey } from './budget.ts';
 import { spawnClaudeCli, dangerousArgs } from './claudeSpawn.ts';
 import * as tts from './tts.ts';
@@ -416,11 +417,12 @@ async function spawnClaudeConversation(
   dangerous: boolean,
   resumeId?: string,
   model?: string,
+  signal?: AbortSignal,
 ): Promise<ClaudeTurn> {
   const args = ['-p', prompt, '--output-format', 'json', ...dangerousArgs(dangerous)];
   if (model) args.push('--model', model);
   if (resumeId) args.push('--resume', resumeId);
-  const out = await spawnClaudeCli(args, { cwd });
+  const out = await spawnClaudeCli(args, { cwd, signal });
   if (out.enoent) return { enoent: true };
   if (out.code !== 0) {
     return { error: `claude -p exited ${out.code}: ${(out.stderr || out.stdout).trim()}` };
@@ -745,6 +747,19 @@ export function createOrchestrator(opts: CreateOrchestratorOpts): OrchestratorHa
   }
 
   let active: Orchestrator | null = null;
+  // Aborts whatever turn is really running, whichever provider — the AI-SDK
+  // Orchestrator OR the `claude -p` child. Kill/reset/factory-reset call this so
+  // no provider leaves a zombie turn running after the queue is cleared.
+  let activeAbort: (() => void) | null = null;
+
+  // ── Single-flight turn serialisation (FIFO) ─────────────────────────────────
+  // A message arriving mid-turn must NOT start a second parallel turn (shared
+  // mutable state: gov trifecta, ctx/tools/DB, the emit stream, and — worst — two
+  // `claude -p --resume <same session>` corrupting continuity). Every entry point
+  // (IPC send, wake "enviar", auto-send) routes through send() → enqueue → drain
+  // one at a time.
+  const turnQueue: string[] = [];
+  let draining = false;
 
   // ── Curator (memory organiser) — runs on IDLE after a task, debounced ───────
   // Never mid-task: send() awaits the turn, then schedules; a new turn clears the
@@ -848,7 +863,7 @@ export function createOrchestrator(opts: CreateOrchestratorOpts): OrchestratorHa
    * Claude Code drives its own tools; no Alfred tools, no per-turn HITL. Cost is
    * external (subscription), so the COST panel is flagged external, not estimated.
    */
-  async function runClaudeTurn(text: string, model?: string): Promise<void> {
+  async function runClaudeTurn(text: string, model?: string, signal?: AbortSignal): Promise<void> {
     emit({ kind: 'agent.status', sessionId, status: 'thinking' });
     // claude -p reads the CLAUDE.md of its cwd (the workspace) automatically —
     // seed it with Alfred's identity so the vanilla CLI knows it's Alfred.
@@ -867,8 +882,14 @@ export function createOrchestrator(opts: CreateOrchestratorOpts): OrchestratorHa
     // DANGEROUS mode wires through to `claude -p`: skip its own permission
     // prompts + append a preamble so the brain never asks for confirmation.
     // The chosen Anthropic model (agent_config.main) is passed as --model.
-    const turn = await spawnClaudeConversation(prompt, config.workspace, isDangerous(), resumeId, model);
+    const turn = await spawnClaudeConversation(prompt, config.workspace, isDangerous(), resumeId, model, signal);
 
+    // User kill/reset: the child was SIGKILLed → clean halt, not a red error
+    // (parity with the AI-SDK path's abort handling).
+    if (signal?.aborted) {
+      emit({ kind: 'agent.status', sessionId, status: 'done' });
+      return;
+    }
     if (turn.enoent) {
       emit({
         kind: 'error',
@@ -906,23 +927,10 @@ export function createOrchestrator(opts: CreateOrchestratorOpts): OrchestratorHa
   // The single turn entry point: IPC `alfred:send` and the wake "enviar <text>"
   // command both route through here. A function declaration so the wake handler
   // (defined above) can call it.
-  async function send(text: string): Promise<void> {
+  // One drained turn: the body of the old send(). resetTrifecta lives HERE, at
+  // the start of every turn — a per-turn reset, never mid-turn from a sibling.
+  async function runTurn(text: string): Promise<void> {
       gov.resetTrifecta();
-      // A new turn cancels a pending curator sweep — never organise mid-task.
-      if (curatorTimer) {
-        clearTimeout(curatorTimer);
-        curatorTimer = null;
-      }
-      // Persist the user turn before routing so it survives restarts and feeds
-      // the continuity transcript. The renderer shows it optimistically, so it
-      // is stored (not re-emitted) to avoid a duplicate bubble in-session.
-      if (text.trim()) {
-        try {
-          insertMessage(db, { id: randomUUID(), sessionId, role: 'user', content: text, ts: Date.now() });
-        } catch (err) {
-          console.error('[alfred] persist user message failed:', err instanceof Error ? err.message : err);
-        }
-      }
       try {
         const main = getAgentConfig().main;
         const brains = listBrains();
@@ -940,7 +948,9 @@ export function createOrchestrator(opts: CreateOrchestratorOpts): OrchestratorHa
             emit({ kind: 'agent.status', sessionId, status: 'error' });
             return;
           }
-          await runClaudeTurn(text, main.model);
+          const ac = new AbortController();
+          activeAbort = () => ac.abort();
+          await runClaudeTurn(text, main.model, ac.signal);
           return;
         }
 
@@ -983,12 +993,53 @@ export function createOrchestrator(opts: CreateOrchestratorOpts): OrchestratorHa
           brainLabel: `${provider.id}:${provider.model}`,
           projectContext: await projectContext(text),
         });
+        activeAbort = () => active?.abort();
         await active.run(text);
       } finally {
-        // Turn over → free the busy flag and schedule an idle curator sweep.
         active = null;
-        scheduleCurator();
+        activeAbort = null;
       }
+  }
+
+  async function send(text: string): Promise<void> {
+    // A new turn cancels a pending curator sweep — never organise mid-task.
+    if (curatorTimer) {
+      clearTimeout(curatorTimer);
+      curatorTimer = null;
+    }
+    // Persist the user turn immediately so it survives restarts, feeds the
+    // continuity transcript, and appears in order. The renderer shows it
+    // optimistically, so it is stored (not re-emitted) to avoid a duplicate.
+    if (text.trim()) {
+      try {
+        insertMessage(db, { id: randomUUID(), sessionId, role: 'user', content: text, ts: Date.now() });
+      } catch (err) {
+        console.error('[alfred] persist user message failed:', err instanceof Error ? err.message : err);
+      }
+    }
+    // Enqueue. If a drain is already running, this turn waits its FIFO turn.
+    const { dropped } = enqueueTurn(turnQueue, text);
+    if (dropped !== null) {
+      console.warn(`[alfred] turn queue over cap — dropped oldest pending turn (queue runaway?): ${dropped.slice(0, 80)}`);
+    }
+    if (draining) return;
+
+    draining = true;
+    try {
+      // Single-flight: one turn at a time, in order. A failed turn is logged and
+      // the drain continues — one bad turn never strands the rest of the queue.
+      while (turnQueue.length) {
+        const next = turnQueue.shift()!;
+        try {
+          await runTurn(next);
+        } catch (err) {
+          console.error('[alfred] turn failed:', err instanceof Error ? err.message : err);
+        }
+      }
+    } finally {
+      draining = false;
+      scheduleCurator();
+    }
   }
 
   // ── Scheduled-jobs engine (Phase 4) ─────────────────────────────────────────
@@ -1052,7 +1103,8 @@ export function createOrchestrator(opts: CreateOrchestratorOpts): OrchestratorHa
       return getRecentMessages(db, limit ?? 100) as ChatMessage[];
     },
     stop() {
-      active?.abort();
+      activeAbort?.(); // abort the live turn — AI-SDK stream OR the claude -p child
+      turnQueue.length = 0; // drop pending turns — a kill switch means stop, not "finish the queue"
       tts.stop();
       // Kill switch also silences every mic owner — no audio capture after an
       // emergency stop. wakeSuppressed keeps wake from auto-restarting on the
@@ -1082,7 +1134,8 @@ export function createOrchestrator(opts: CreateOrchestratorOpts): OrchestratorHa
       setSetting(db, 'auto_approve', '[]');
     },
     resetConversation() {
-      active?.abort();
+      activeAbort?.(); // abort the live turn — AI-SDK stream OR the claude -p child
+      turnQueue.length = 0; // no queued turns should run against a wiped conversation
       // Clear the persisted chat + the claude-code --resume ids so the next turn
       // starts a fresh session. Memory / facts / projects are untouched.
       try {
@@ -1123,7 +1176,8 @@ export function createOrchestrator(opts: CreateOrchestratorOpts): OrchestratorHa
 
       // 1. Halt everything that owns a resource: the running turn, TTS, the mic
       //    (wake + manual), the browser and the MCP bridge. Best-effort each.
-      active?.abort();
+      activeAbort?.(); // abort the live turn — AI-SDK stream OR the claude -p child
+      turnQueue.length = 0; // no queued turns should run against a factory-reset state
       tts.stop();
       scheduler.stop(); // disarm all job timers so no autonomous job fires/re-arms after the wipe
       wakeSuppressed = true;
