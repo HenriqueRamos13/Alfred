@@ -18,6 +18,7 @@ import { ProjectList } from './components/ProjectList.tsx';
 import { ApprovalPrompt } from './components/ApprovalPrompt.tsx';
 import { DraggableCard } from './components/DraggableCard.tsx';
 import { ReferenceChat } from './components/ReferenceChat.tsx';
+import { GraphCard } from './components/GraphCard.tsx';
 import type { ReferenceTarget } from '../main/core/reference.ts';
 import { clampBox, tileLayout, cardOnDisplay, nextDisplayId, type Bounds } from '../main/core/layout.ts';
 import { initialDictation, dictationReduce } from '../main/core/dictation.ts';
@@ -867,6 +868,11 @@ export default function App() {
             ) : (
               <div className="empty">LOADING…</div>
             ),
+        };
+      case 'graph':
+        return {
+          meta: <span className="panel-meta">notes + projects · live</span>,
+          body: <GraphCard onReference={openReference} />,
         };
       case 'activity':
         return {

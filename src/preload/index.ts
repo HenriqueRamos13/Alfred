@@ -16,6 +16,7 @@ import type {
 } from '../main/core/types.ts';
 import type { BrainInfo } from '../main/core/providers.ts';
 import type { FactoryResetInfo } from '../main/core/orchestrator.ts';
+import type { Graph } from '../main/core/graph.ts';
 import type { ReferenceRequest } from '../main/core/reference.ts';
 import type {
   AgentId,
@@ -73,6 +74,11 @@ const api = {
   factoryReset: (): Promise<void> => ipcRenderer.invoke('alfred:factoryReset'),
   /** Manually run the memory curator (drain inbox → notes, rebuild MOCs/backlinks). */
   runCurator: (): Promise<unknown> => ipcRenderer.invoke('alfred:runCurator'),
+  /** Knowledge-graph data (notes + projects + wikilink edges) for the graph card. */
+  getGraph: (): Promise<Graph> => ipcRenderer.invoke('alfred:getGraph'),
+  /** Read-only markdown of one note (graph card node preview). */
+  getNote: (ref: string): Promise<{ title: string; markdown: string } | null> =>
+    ipcRenderer.invoke('alfred:getNote', ref),
   /** Reference agent: ask one isolated, read-only question about a note/node. Streams reference.* events. */
   askReference: (payload: ReferenceRequest): Promise<void> => ipcRenderer.invoke('alfred:askReference', payload),
   listProjects: (): Promise<ProjectRecord[]> => ipcRenderer.invoke('alfred:listProjects'),

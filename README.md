@@ -30,6 +30,15 @@ drive the machine: filesystem, shell, a real browser, and read-only Gmail.
   workspace with a canonical `.alfred/PROJECT.md` manifest, indexed in SQLite.
 - **Memory (ICM)** — stable, human-curated `preferences.md` / `house-rules.md`
   plus per-session working notes.
+- **Knowledge graph** — an Obsidian-style, force-directed **KNOWLEDGE GRAPH**
+  card (hidden by default; open it from the top strip). Notes (cyan) and projects
+  (magenta) are nodes; wikilinks/backlinks and note↔project membership are edges,
+  drawn with a self-contained `<canvas>` simulation (no graph library). It lights
+  up **live** by observing the existing tool-activity stream — read = cyan pulse,
+  write = amber, done = green, error = red — at **zero extra AI cost** (no new
+  tools). Files/URLs a tool touches that aren't in the vault appear as transient
+  amber nodes that fade (pin to keep). Click a node to focus it and preview the
+  note; its ◈ Reference button opens the isolated reference agent for that node.
 - **Secrets** — stored in the macOS Keychain via the `security` CLI, never on disk.
 - **Overlay window** — by default the HUD opens on the **current screen** (the
   display under the cursor) and is sized to fill it, so it is always fully

@@ -42,6 +42,7 @@ import { CAPABILITY_MANIFEST } from './manifest.ts';
 import { runCurator } from './curator.ts';
 import { createSecrets } from './secrets.ts';
 import { getProject, listProjects } from './projects.ts';
+import { getGraph as buildVaultGraph, getNote as readNotePreview, type Graph } from './graph.ts';
 import { factoryResetPaths } from './reset.ts';
 import { resolveProvider, listBrains, resolveActiveBrainId } from './providers.ts';
 import type { BrainInfo } from './providers.ts';
@@ -477,6 +478,10 @@ export interface OrchestratorHandle {
   factoryReset(): Promise<void>;
   /** Manually run the memory curator (drain inbox → notes, rebuild MOCs/backlinks). */
   runCurator(): Promise<unknown>;
+  /** Knowledge-graph data (notes + projects + wikilink edges) for the graph card. */
+  getGraph(): Promise<Graph>;
+  /** Read-only markdown of one note, for the graph card's node preview. */
+  getNote(ref: string): Promise<{ title: string; markdown: string } | null>;
   /**
    * Reference agent: one ISOLATED, read-only turn over a note/node. Streams
    * reference.* events scoped by threadId; never touches the main chat/session.
@@ -903,6 +908,12 @@ export function createOrchestrator(opts: CreateOrchestratorOpts): OrchestratorHa
     send,
     async runCurator() {
       return runCuratorNow();
+    },
+    getGraph() {
+      return buildVaultGraph(config.workspace, listProjects(db));
+    },
+    getNote(ref) {
+      return readNotePreview(config.workspace, ref);
     },
     async askReference(req) {
       // Isolated side-thread: uses the reference agent's config; never the main

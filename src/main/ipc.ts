@@ -22,6 +22,7 @@ import type {
 } from './core/types.ts';
 import type { BrainInfo } from './core/providers.ts';
 import type { FactoryResetInfo } from './core/orchestrator.ts';
+import type { Graph } from './core/graph.ts';
 import type { ReferenceRequest } from './core/reference.ts';
 import {
   AGENT_IDS,
@@ -58,6 +59,10 @@ export interface Orchestrator {
   factoryReset(): Promise<void>;
   /** Manually run the memory curator (drain inbox → notes, rebuild MOCs/backlinks). */
   runCurator(): Promise<unknown>;
+  /** Knowledge-graph data for the graph card. */
+  getGraph(): Promise<Graph>;
+  /** Read-only note markdown for the graph card's node preview. */
+  getNote(ref: string): Promise<{ title: string; markdown: string } | null>;
   /** Reference agent: one isolated, read-only turn over a note/node (streams reference.*). */
   askReference(req: ReferenceRequest): Promise<void>;
   listProjects(): ProjectRecord[] | Promise<ProjectRecord[]>;
@@ -280,6 +285,19 @@ export function registerIpc(core: Orchestrator, emit: (e: StreamEvent) => void):
     }
   });
   ipcMain.handle('alfred:runCurator', guard('run curator', () => core.runCurator(), null as unknown));
+  ipcMain.handle(
+    'alfred:getGraph',
+    guard('get graph', () => core.getGraph(), { nodes: [], edges: [] } as Graph),
+  );
+  ipcMain.handle('alfred:getNote', async (_e, ref: unknown) => {
+    if (typeof ref !== 'string' || !ref.trim()) return null;
+    try {
+      return await core.getNote(ref);
+    } catch (err) {
+      fail('get note', err);
+      return null;
+    }
+  });
 
   // Reference agent — validate the whole payload at the boundary before it reaches
   // core. A missing threadId means we can't scope the stream, so drop silently.

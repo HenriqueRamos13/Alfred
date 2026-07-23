@@ -92,6 +92,14 @@ import {
   buildReferencePrompt,
 } from '../src/main/core/reference.ts';
 import {
+  buildGraph,
+  toolEventTarget,
+  resolveActivity,
+  activityIntensity,
+  ACTIVITY_HOLD_MS,
+  ACTIVITY_FADE_MS,
+} from '../src/main/core/graph-pure.ts';
+import {
   parseBattery,
   parseVolume,
   parseBrightness,
@@ -1404,4 +1412,77 @@ test('buildReferencePrompt — folds context + history + question; drops empty h
   assert.ok(p.includes('# Question'));
   assert.ok(p.includes('Q?'));
   assert.ok(!buildReferencePrompt('CTX', 'Q?').includes('Conversation so far'));
+});
+
+// ── Knowledge graph (Phase 3) ────────────────────────────────────────────────
+
+test('buildGraph — nodes for notes+projects, note↔note link + note↔project belongs, dangling dropped, deduped', () => {
+  const notes = [
+    { slug: 'alpha', note: { title: 'Alpha', type: 'note' } },
+    { slug: 'beta', note: { title: 'Beta', type: 'note' } },
+  ];
+  const projects = [{ slug: 'webapp', name: 'WebApp' }];
+  // backlinks: target-title → source-slugs (what buildBacklinks / the curator emits)
+  const backlinks = {
+    Beta: ['alpha'], // Alpha → Beta (note link)
+    WebApp: ['beta'], // Beta → WebApp (project membership)
+    Ghost: ['alpha'], // dangling: no such node → dropped
+  };
+  const g = buildGraph(notes, projects, backlinks);
+  assert.equal(g.nodes.length, 3);
+  assert.ok(g.nodes.some((n) => n.id === 'note:alpha' && n.type === 'note'));
+  assert.ok(g.nodes.some((n) => n.id === 'project:webapp' && n.type === 'project'));
+
+  const link = g.edges.find((e) => e.source === 'note:alpha' && e.target === 'note:beta');
+  assert.equal(link?.type, 'link');
+  const belongs = g.edges.find((e) => e.source === 'note:beta' && e.target === 'project:webapp');
+  assert.equal(belongs?.type, 'belongs');
+  assert.ok(!g.edges.some((e) => e.target.includes('ghost'))); // dangling dropped
+  assert.equal(g.edges.length, 2);
+
+  // Idempotent / deduped: the same backlink twice yields one edge.
+  const g2 = buildGraph(notes, projects, { Beta: ['alpha', 'alpha'] });
+  assert.equal(g2.edges.filter((e) => e.source === 'note:alpha').length, 1);
+});
+
+test('toolEventTarget — maps tool args to a node target (or null)', () => {
+  assert.deepEqual(toolEventTarget('memory', { op: 'note', title: 'Foo' }), {
+    kind: 'note',
+    ref: 'Foo',
+    label: 'Foo',
+    write: true,
+  });
+  // memory ops without a note title (recall/list/append) light nothing
+  assert.equal(toolEventTarget('memory', { op: 'recall', query: 'x' }), null);
+
+  const fsRead = toolEventTarget('filesystem', { op: 'read', path: '/a/b/c.md' });
+  assert.deepEqual(fsRead, { kind: 'file', ref: '/a/b/c.md', label: 'c.md', write: false });
+  assert.equal(toolEventTarget('filesystem', { op: 'write', path: '/a/b.txt' })?.write, true);
+
+  assert.equal(toolEventTarget('browser', { op: 'goto', url: 'https://example.com/p' })?.label, 'example.com');
+  assert.equal(toolEventTarget('project', { op: 'create', name: 'X' })?.write, true);
+  assert.equal(toolEventTarget('unknown', { path: 'x' }), null);
+});
+
+test('resolveActivity — existing nodes hit the real node; files/unknowns are transient', () => {
+  const nodes = buildGraph([{ slug: 'foo', note: { title: 'Foo', type: 'note' } }], [{ slug: 'web', name: 'Web' }], {}).nodes;
+  // by title
+  const byTitle = resolveActivity(nodes, { kind: 'note', ref: 'Foo', label: 'Foo', write: false });
+  assert.deepEqual([byTitle.id, byTitle.transient], ['note:foo', false]);
+  // by slug
+  assert.equal(resolveActivity(nodes, { kind: 'project', ref: 'web', label: 'Web', write: true }).id, 'project:web');
+  // file → always transient
+  const f = resolveActivity(nodes, { kind: 'file', ref: '/x/y.md', label: 'y.md', write: true });
+  assert.deepEqual([f.id, f.transient], ['file:/x/y.md', true]);
+  // unknown note → transient
+  assert.equal(resolveActivity(nodes, { kind: 'note', ref: 'Nope', label: 'Nope', write: false }).transient, true);
+});
+
+test('activityIntensity — full while held, then fades to zero', () => {
+  assert.equal(activityIntensity(0), 1);
+  assert.equal(activityIntensity(ACTIVITY_HOLD_MS), 1);
+  assert.equal(activityIntensity(ACTIVITY_HOLD_MS + ACTIVITY_FADE_MS), 0);
+  assert.equal(activityIntensity(ACTIVITY_HOLD_MS + ACTIVITY_FADE_MS + 500), 0);
+  const mid = activityIntensity(ACTIVITY_HOLD_MS + ACTIVITY_FADE_MS / 2);
+  assert.ok(mid > 0.4 && mid < 0.6);
 });
