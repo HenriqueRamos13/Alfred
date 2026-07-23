@@ -18,30 +18,93 @@
  * owners of the microphone.
  */
 import { spawn, type ChildProcess } from 'node:child_process';
-import type { StreamEvent } from './types.ts';
+import type { StreamEvent, WakeStatus } from './types.ts';
 import { findSttBinary, readJsonLines } from './stt.ts';
 
 let proc: ChildProcess | null = null;
-// The "failed" state is RECOVERABLE: only a rapid, repeated crash loop (the
-// helper dying within WAKE_FAST_FAIL_MS, WAKE_MAX_FAST_FAILS times in a row)
-// latches it, making startWakeword() a no-op so we don't respawn-spam. A single
-// exit — even non-zero, e.g. a benign asset error is no longer fatal in the
-// helper — is not fatal on its own. stopWakeword() (WAKE toggle off, manual mic
-// path) and an app restart clear it — the explicit re-arm points.
-let failed = false;
+// A crash no longer LATCHES the listener off. Any unintentional exit schedules a
+// single self re-arm after a backoff (see wakeBackoffMs); a rapid, repeated
+// crash loop (WAKE_MAX_FAST_FAILS fast exits in a row) just widens the backoff
+// and raises an alert — it never needs a manual toggle to come back.
 let fastFailCount = 0;
+let rearmTimer: ReturnType<typeof setTimeout> | null = null;
+// Last emit/session so the auto re-arm timer can respawn on its own.
+let emitFn: ((e: StreamEvent) => void) | null = null;
+let sessionRef = '';
 
-/** How quickly an exit counts as a "fast fail", and how many in a row trip `failed`. */
+/** How quickly an exit counts as a "fast fail", and how many in a row are a crash loop. */
 export const WAKE_FAST_FAIL_MS = 3000;
 export const WAKE_MAX_FAST_FAILS = 3;
 
+/** Auto-re-arm backoff after a failure: 30s doubling to a 5min ceiling. */
+export const WAKE_BACKOFF_BASE_MS = 30_000;
+export const WAKE_BACKOFF_MAX_MS = 300_000;
+
 /**
- * Decide, from how a helper process exited, whether wake should stop respawning.
- * Pure so it is unit-testable without spawning anything. The exit CODE is
- * intentionally ignored: the helper no longer exits non-zero for benign/recover-
- * able reasons (asset errors, transients), so only crash CADENCE matters.
- *   - any exit after living long enough (>= WAKE_FAST_FAIL_MS) → reset, stay armed.
- *   - a fast exit repeated WAKE_MAX_FAST_FAILS times in a row → stop (real crash loop).
+ * PURE — backoff before the failed listener auto-re-arms itself, from the number
+ * of consecutive fast failures: 30s, 60s, 120s, 240s, capped at 5min. A transient
+ * (single) exit resets the counter so it recovers at the base 30s; a genuine
+ * crash loop keeps widening the gap instead of spinning.
+ */
+export function wakeBackoffMs(fastFails: number): number {
+  const n = Math.max(1, fastFails);
+  return Math.min(WAKE_BACKOFF_BASE_MS * 2 ** (n - 1), WAKE_BACKOFF_MAX_MS);
+}
+
+// ── Explicit, VISIBLE state ──────────────────────────────────────────────────
+// The user can't hear why the mic is deaf, so the state is surfaced (wake.status).
+let state: { status: WakeStatus; reason?: string } = { status: 'stopped' };
+
+/** Current wake state (read on the UI's mount so the button isn't blind at boot). */
+export function getWakeState(): { status: WakeStatus; reason?: string } {
+  return state;
+}
+
+/** Set + emit the wake state, but only when it actually changed (no event spam). */
+function setStatus(status: WakeStatus, reason?: string): void {
+  if (state.status === status && state.reason === reason) return;
+  state = reason === undefined ? { status } : { status, reason };
+  emitFn?.({ kind: 'wake.status', sessionId: sessionRef, status, reason });
+}
+
+/**
+ * PURE — the half-duplex mute reflected on the status machine. While Alfred
+ * speaks the wake path is muted (see orchestrator), so listening⇄suppressed; any
+ * other state (failed/stopped/disabled) is untouched by his own voice.
+ */
+export function applySpeaking(status: WakeStatus, speaking: boolean): WakeStatus {
+  if (speaking && status === 'listening') return 'suppressed';
+  if (!speaking && status === 'suppressed') return 'listening';
+  return status;
+}
+
+/** Reflect the TTS half-duplex mute in the wake state (listening⇄suppressed). */
+export function noteSpeaking(speaking: boolean): void {
+  const next = applySpeaking(state.status, speaking);
+  if (next !== state.status) setStatus(next);
+}
+
+/** Enter the failed state with a reason and schedule ONE backoff re-arm. */
+function enterFailed(baseReason: string): void {
+  const delay = wakeBackoffMs(fastFailCount);
+  setStatus('failed', `${baseReason} — retrying in ${Math.round(delay / 1000)}s`);
+  if (rearmTimer) return; // a re-arm is already pending
+  rearmTimer = setTimeout(() => {
+    rearmTimer = null;
+    if (emitFn) startWakeword(emitFn, sessionRef);
+  }, delay);
+  rearmTimer.unref?.(); // a pending retry must never keep the process alive
+}
+
+/**
+ * Decide, from how a helper process exited, whether this is a genuine crash loop
+ * (which widens the re-arm backoff and raises an alert) vs a transient exit. Pure
+ * so it is unit-testable without spawning anything. The exit CODE is intentionally
+ * ignored: the helper no longer exits non-zero for benign/recoverable reasons
+ * (asset errors, transients), so only crash CADENCE matters.
+ *   - any exit after living long enough (>= WAKE_FAST_FAIL_MS) → reset the counter.
+ *   - a fast exit repeated WAKE_MAX_FAST_FAILS times in a row → flagged a crash loop.
+ * Either way the caller auto-re-arms; `failed` only tunes backoff + alerting.
  */
 export function classifyWakeExit(
   _code: number | null,
@@ -126,16 +189,26 @@ export function parseVoiceIntent(command: string): VoiceIntent {
 }
 
 /**
- * Start the always-on wake listener. No-op if already running or if the native
- * helper isn't compiled (graceful disable). Long-running: it only exits when
- * stopWakeword() (SIGINT) is called or the process crashes.
+ * Start the always-on wake listener. No-op if already running; if the native
+ * helper isn't compiled it goes to the 'disabled' state (graceful). Long-running:
+ * it only exits when stopWakeword() (SIGINT) is called or the process crashes —
+ * and a crash now auto-re-arms after a backoff instead of latching off.
  */
 export function startWakeword(emit: (e: StreamEvent) => void, sessionId: string): void {
-  if (proc || failed) return;
+  // Remember the sink so the auto re-arm timer (and status emits) can reach the UI.
+  emitFn = emit;
+  sessionRef = sessionId;
+  // A manual/auto start supersedes any pending backoff re-arm.
+  if (rearmTimer) {
+    clearTimeout(rearmTimer);
+    rearmTimer = null;
+  }
+  if (proc) return;
 
   const bin = findSttBinary();
   if (!bin) {
     console.warn('[alfred] wakeword disabled — native STT helper not found (run ./setup.sh to compile it).');
+    setStatus('disabled', 'native STT helper not found — run ./setup.sh to compile it');
     return;
   }
 
@@ -143,6 +216,7 @@ export function startWakeword(emit: (e: StreamEvent) => void, sessionId: string)
   // ALFRED_WAKEWORD is read from the environment by the helper itself.
   const child = spawn(bin, ['--wake', '--locale', locale], { stdio: ['pipe', 'pipe', 'pipe'] });
   proc = child;
+  setStatus('listening');
   const startedAt = Date.now();
   let sawError = false; // helper already surfaced a reason → don't double-emit on close
 
@@ -157,43 +231,50 @@ export function startWakeword(emit: (e: StreamEvent) => void, sessionId: string)
   child.stderr.on('data', (d: Buffer) => console.error('[alfred] wakeword:', d.toString().trim()));
 
   child.on('error', (err) => {
-    console.error('[alfred] wakeword spawn failed:', err instanceof Error ? err.message : err);
-    if (proc === child) proc = null;
-    // Can't even launch the helper: fatal — don't respawn-loop.
-    failed = true;
-    if (!sawError)
-      emit({ kind: 'error', sessionId, message: `wake word failed to start: ${err instanceof Error ? err.message : err}` });
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error('[alfred] wakeword spawn failed:', msg);
+    if (proc === child) proc = null; // makes the close handler treat this as handled
+    fastFailCount += 1; // a launch failure counts toward the backoff escalation
+    enterFailed(`failed to start: ${msg}`);
+    if (!sawError) emit({ kind: 'error', sessionId, message: `wake word failed to start: ${msg}` });
   });
 
   child.on('close', (code) => {
-    // stopWakeword() nulls/replaces `proc` first, so `proc !== child` marks an
-    // intentional stop — never counted as a failure.
+    // stopWakeword() nulls/replaces `proc` first (and the error handler nulls it
+    // on a spawn failure), so `proc !== child` marks an already-handled exit —
+    // never counted twice.
     if (proc !== child) return;
     proc = null;
     const next = classifyWakeExit(code, Date.now() - startedAt, fastFailCount);
     fastFailCount = next.fastFailCount;
-    if (next.failed) {
-      failed = true;
-      if (!sawError)
-        emit({
-          kind: 'error',
-          sessionId,
-          message: `wake word disabled — voice helper exited (code ${code ?? 'signal'}). Re-enable WAKE in the top bar once fixed.`,
-        });
-    }
+    // Auto-re-arm on ANY unintentional exit (transient → base backoff; a repeated
+    // fast-crash loop → widening backoff), so the listener heals without a toggle.
+    enterFailed(`voice helper exited (code ${code ?? 'signal'})`);
+    // Only alert on a genuine crash loop; a one-off transient recovers quietly.
+    if (next.failed && !sawError)
+      emit({
+        kind: 'error',
+        sessionId,
+        message: `wake word crashing repeatedly (code ${code ?? 'signal'}) — still auto-retrying with backoff.`,
+      });
   });
 }
 
 /**
- * Stop the wake listener; the helper releases the mic and exits. Also clears the
- * "failed" state — an explicit stop is the re-arm point (toggle WAKE off/on, or
- * the manual-mic path), so a later startWakeword() may run again.
+ * Stop the wake listener; the helper releases the mic and exits. Cancels any
+ * pending auto re-arm and resets the backoff — an explicit stop (WAKE toggle off,
+ * manual-mic path, kill switch) is a clean re-arm point, so a later
+ * startWakeword() runs immediately.
  */
 export function stopWakeword(): void {
   proc?.kill('SIGINT');
   proc = null;
-  failed = false;
   fastFailCount = 0;
+  if (rearmTimer) {
+    clearTimeout(rearmTimer);
+    rearmTimer = null;
+  }
+  setStatus('stopped');
 }
 
 /** True while the wake listener process is running. */

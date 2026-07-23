@@ -38,6 +38,7 @@ import type {
   ProjectRecord,
   StreamEvent,
   UiNode,
+  WakeStatus,
 } from '../main/core/types.ts';
 import type { BrainInfo } from '../main/core/providers.ts';
 import {
@@ -112,6 +113,9 @@ export default function App() {
   const [factoryBusy, setFactoryBusy] = useState(false);
   const [tts, setTts] = useState(false);
   const [wake, setWake] = useState(false);
+  // Live wake-listener state so the WAKE button shows WHY it is (not) hearing you
+  // (listening / muted while speaking / failed+reason / stopped / disabled).
+  const [wakeStatus, setWakeStatus] = useState<{ status: WakeStatus; reason?: string }>({ status: 'stopped' });
   const [listening, setListening] = useState(false);
   const [speaking, setSpeaking] = useState(false); // Alfred is talking → mic muted (half-duplex)
   // Voice→input state machine: partials preview, a final commits ONCE per
@@ -378,6 +382,9 @@ export default function App() {
     alfred.getTts().then(setTts).catch(() => {});
     // Reflect the persisted wake-word toggle (default on when the STT binary exists).
     alfred.getWakeword().then(setWake).catch(() => {});
+    // Read the live wake state so the button isn't blind at boot (events only
+    // arrive on the NEXT transition, which the renderer would otherwise miss).
+    alfred.getWakeStatus().then((s) => s && setWakeStatus(s)).catch(() => {});
     const off = alfred.onStream((e: StreamEvent) => {
       switch (e.kind) {
         case 'chat.delta':
@@ -403,6 +410,16 @@ export default function App() {
           setDict((d) => dictationReduce(d, { kind: 'activate' }));
           pushLog({ tag: 'WAKE', tone: 'cyan', msg: 'ouvi “Alfred” — a captar comando' });
           break;
+        case 'wake.status': {
+          setWakeStatus({ status: e.status, reason: e.reason });
+          // Log only real problems / recovery, not the routine speaking mute (which
+          // the SPEAKING pill already shows) — keeps the activity feed readable.
+          if (e.status === 'failed')
+            pushLog({ tag: 'WAKE', tone: 'red', msg: `falhou: ${e.reason ?? 'helper parou'}` });
+          else if (e.status === 'disabled')
+            pushLog({ tag: 'WAKE', tone: 'dim', msg: e.reason ?? 'indisponível' });
+          break;
+        }
         case 'speaking':
           // While Alfred speaks the wake mic is silenced (half-duplex); reflect it.
           setSpeaking(e.speaking);
@@ -896,6 +913,24 @@ export default function App() {
 
   const hidden = cards.filter((c) => !c.visible);
 
+  // WAKE button face: the toggle says whether it's ARMED; the live status says
+  // what it's actually doing right now, so a stuck/failed mic is visible at a glance.
+  const wakeFace = ((): { label: string; tone: '' | ' on' | ' danger'; title: string } => {
+    if (!wake) return { label: '👂 WAKE OFF', tone: '', title: 'Wake word off — click to listen for “Alfred” (needs the STT helper compiled).' };
+    switch (wakeStatus.status) {
+      case 'suppressed':
+        return { label: '👂 WAKE MUTED', tone: ' on', title: 'Wake word armed but muted — Alfred is speaking (half-duplex). Resumes when he stops.' };
+      case 'failed':
+        return { label: '⚠ WAKE FAILED', tone: ' danger', title: `Wake word failed: ${wakeStatus.reason ?? 'voice helper stopped'}. Auto-retrying; toggle to retry now.` };
+      case 'disabled':
+        return { label: '👂 WAKE N/A', tone: '', title: `Wake word unavailable: ${wakeStatus.reason ?? 'STT helper not found'}.` };
+      case 'stopped':
+        return { label: '👂 WAKE …', tone: ' on', title: 'Wake word armed — starting the listener.' };
+      default: // listening
+        return { label: '👂 WAKE ON', tone: ' on', title: 'Wake word on — say “Alfred …” to dictate a command (local, no account). Click to disable.' };
+    }
+  })();
+
   return (
     <div className="app">
       <div className="scanline">
@@ -941,15 +976,11 @@ export default function App() {
           </button>
           <button
             type="button"
-            className={`topbar-btn no-drag${wake ? ' on' : ''}`}
+            className={`topbar-btn no-drag${wakeFace.tone}`}
             onClick={toggleWake}
-            title={
-              wake
-                ? 'Wake word on — say “Alfred …” to dictate a command (local, no account). Click to disable.'
-                : 'Wake word off — click to listen for “Alfred” (needs the STT helper compiled)'
-            }
+            title={wakeFace.title}
           >
-            {wake ? '👂 WAKE ON' : '👂 WAKE OFF'}
+            {wakeFace.label}
           </button>
           <button
             type="button"

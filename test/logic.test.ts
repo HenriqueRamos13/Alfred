@@ -20,7 +20,18 @@ import {
   denialError,
 } from '../src/main/core/governance.ts';
 import { readJsonLines } from '../src/main/core/stt.ts';
-import { classifyWakeExit, WAKE_MAX_FAST_FAILS, wakeStreamEvent, parseVoiceIntent, suppressWhileSpeaking } from '../src/main/core/wakeword.ts';
+import {
+  classifyWakeExit,
+  WAKE_MAX_FAST_FAILS,
+  WAKE_BACKOFF_BASE_MS,
+  WAKE_BACKOFF_MAX_MS,
+  wakeBackoffMs,
+  applySpeaking,
+  wakeStreamEvent,
+  parseVoiceIntent,
+  suppressWhileSpeaking,
+} from '../src/main/core/wakeword.ts';
+import { watchdogAction } from '../src/main/core/tts.ts';
 import { initialDictation, dictationReduce } from '../src/main/core/dictation.ts';
 import { shell } from '../src/main/tools/shell.ts';
 import { filesystem } from '../src/main/tools/filesystem.ts';
@@ -1064,6 +1075,49 @@ test('classifyWakeExit — only a repeated fast-crash loop trips failed (any cod
 
 test('classifyWakeExit — a long-lived exit resets the fast-fail counter, no fail', () => {
   assert.deepEqual(classifyWakeExit(0, 60_000, 2), { failed: false, fastFailCount: 0 });
+});
+
+// ── wakeword: auto-recover backoff (failed no longer latches until a toggle) ──
+
+test('wakeBackoffMs — 30s base, doubles per consecutive fast fail, caps at 5min', () => {
+  // A transient (reset to 0) recovers at the base delay; treated as one attempt.
+  assert.equal(wakeBackoffMs(0), WAKE_BACKOFF_BASE_MS);
+  assert.equal(wakeBackoffMs(1), 30_000);
+  assert.equal(wakeBackoffMs(2), 60_000);
+  assert.equal(wakeBackoffMs(3), 120_000);
+  assert.equal(wakeBackoffMs(4), 240_000);
+  // A genuine crash loop widens the gap but never past the 5-minute ceiling.
+  assert.equal(wakeBackoffMs(5), WAKE_BACKOFF_MAX_MS);
+  assert.equal(wakeBackoffMs(50), WAKE_BACKOFF_MAX_MS);
+});
+
+// ── wakeword: half-duplex mute on the VISIBLE status machine ──────────────────
+
+test('applySpeaking — toggles listening⇄suppressed, leaves every other state alone', () => {
+  // Speaking mutes an armed listener; silence re-arms it.
+  assert.equal(applySpeaking('listening', true), 'suppressed');
+  assert.equal(applySpeaking('suppressed', false), 'listening');
+  // No spurious flips.
+  assert.equal(applySpeaking('listening', false), 'listening');
+  assert.equal(applySpeaking('suppressed', true), 'suppressed');
+  // A dead/off/unavailable listener is never woken (or muted) by Alfred's voice.
+  for (const s of ['failed', 'stopped', 'disabled'] as const) {
+    assert.equal(applySpeaking(s, true), s);
+    assert.equal(applySpeaking(s, false), s);
+  }
+});
+
+// ── tts: half-duplex mute watchdog (speaking never sticks) ────────────────────
+
+test('watchdogAction — orphaned mute (speaking, no player) force-unsticks; live player re-arms', () => {
+  // Cap elapsed while still speaking with NO audible player → the mute desynced
+  // (pending skipped its finally) → force it off so wake isn't deafened forever.
+  assert.equal(watchdogAction(true, false), 'unstick');
+  // A genuinely long single utterance keeps a player audible → keep muting, re-arm.
+  assert.equal(watchdogAction(true, true), 're-arm');
+  // Mute already cleared before the cap fired → nothing to do.
+  assert.equal(watchdogAction(false, false), 'idle');
+  assert.equal(watchdogAction(false, true), 'idle');
 });
 
 // ── memory: parse/serialize round-trip + merge fallbacks (edge cases) ─────────

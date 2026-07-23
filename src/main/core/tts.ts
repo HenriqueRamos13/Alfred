@@ -82,12 +82,22 @@ let epoch = 0;
 let speaking = false;
 let pending = 0; // enqueued utterances not yet finished
 let tailTimer: ReturnType<typeof setTimeout> | null = null;
+let watchdogTimer: ReturnType<typeof setTimeout> | null = null;
 let onChange: ((speaking: boolean) => void) | null = null;
 
 /** Tail (ms) the mute lingers after the last player closes. ALFRED_TTS_TAIL_MS, default 700. */
 function tailMs(): number {
   const n = Number(process.env.ALFRED_TTS_TAIL_MS);
   return Number.isFinite(n) && n >= 0 ? n : 700;
+}
+
+/** Failsafe cap on how long the half-duplex mute may stay on with no audible
+ * player. ALFRED_TTS_MAX_SPEAK_MS, default 20s. If `pending` ever desyncs (an
+ * unforeseen path that skips the finally), this floor guarantees `speaking`
+ * un-sticks so a stuck mute can't deafen the wake listener forever. */
+function maxSpeakMs(): number {
+  const n = Number(process.env.ALFRED_TTS_MAX_SPEAK_MS);
+  return Number.isFinite(n) && n > 0 ? n : 20_000;
 }
 
 /** True while Alfred is speaking (incl. the trailing tail). */
@@ -103,7 +113,46 @@ export function onSpeaking(cb: (speaking: boolean) => void): void {
 function setSpeaking(v: boolean): void {
   if (v === speaking) return;
   speaking = v;
+  if (v) armWatchdog();
+  else if (watchdogTimer) {
+    clearTimeout(watchdogTimer);
+    watchdogTimer = null;
+  }
   onChange?.(v);
+}
+
+/**
+ * PURE — the watchdog's decision when its cap elapses:
+ *   - not speaking → 'idle' (mute already cleared; nothing to do)
+ *   - speaking with a live player → 're-arm' (a genuinely long utterance, legit)
+ *   - speaking with NO player → 'unstick' (mute orphaned by a `pending` desync)
+ * Split out so the un-stick rule is unit-testable without timers/processes.
+ */
+export function watchdogAction(isSpeakingNow: boolean, hasPlayer: boolean): 'idle' | 're-arm' | 'unstick' {
+  if (!isSpeakingNow) return 'idle';
+  return hasPlayer ? 're-arm' : 'unstick';
+}
+
+/** Half-duplex watchdog: while the mute is on, periodically check it isn't stuck.
+ * If the cap elapses with NO audible player (`current` null) the mute is orphaned
+ * (pending desynced) → force it off so the wake listener isn't deafened forever.
+ * A genuinely long single utterance keeps `current` set, so we just re-arm. */
+function armWatchdog(): void {
+  if (watchdogTimer) clearTimeout(watchdogTimer);
+  watchdogTimer = setTimeout(() => {
+    watchdogTimer = null;
+    const action = watchdogAction(speaking, current !== null);
+    if (action === 'idle') return;
+    if (action === 're-arm') return void armWatchdog(); // a player is still audible — legit
+    console.error('[alfred] tts watchdog: mute stuck with no active player — forcing unmute (pending reset).');
+    pending = 0;
+    if (tailTimer) {
+      clearTimeout(tailTimer);
+      tailTimer = null;
+    }
+    setSpeaking(false);
+  }, maxSpeakMs());
+  watchdogTimer.unref?.();
 }
 
 /** A player just started → speaking, and cancel any pending end-of-speech tail. */

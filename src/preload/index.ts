@@ -13,6 +13,7 @@ import type {
   ChatMessage,
   CostSnapshot,
   DisplayInfo,
+  WakeStatus,
 } from '../main/core/types.ts';
 import type { BrainInfo } from '../main/core/providers.ts';
 import type { FactoryResetInfo } from '../main/core/orchestrator.ts';
@@ -116,6 +117,8 @@ const api = {
   /** Wake word ("Alfred", always-on) toggle — persisted; read on mount. */
   getWakeword: (): Promise<boolean> => ipcRenderer.invoke('alfred:getWakeword'),
   setWakeword: (on: boolean): Promise<boolean> => ipcRenderer.invoke('alfred:setWakeword', on),
+  /** Live wake-listener state — read on mount so the WAKE button shows why it is (not) hearing you. */
+  getWakeStatus: (): Promise<{ status: WakeStatus; reason?: string }> => ipcRenderer.invoke('alfred:getWakeStatus'),
   /** Overlay window controls (frameless HUD). */
   hideWindow: (): void => ipcRenderer.send('window:hide'),
   quitWindow: (): void => ipcRenderer.send('window:quit'),

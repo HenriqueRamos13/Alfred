@@ -260,6 +260,11 @@ export type StreamEvent =
   | { kind: 'stt.partial'; sessionId: string; text: string }
   | { kind: 'stt.final'; sessionId: string; text: string }
   | { kind: 'wake.detected'; sessionId: string }
+  // Wake listener lifecycle, so the UI can show at a glance WHY it is (not)
+  // hearing you: listening (armed) · suppressed (muted while Alfred speaks) ·
+  // failed (helper crashed — reason + auto-retry) · stopped (killed) · disabled
+  // (no STT helper / toggled off).
+  | { kind: 'wake.status'; sessionId: string; status: WakeStatus; reason?: string }
   // A wake command was recognised as an ACTION (not dictation). hide/show are
   // already applied in main; 'send' with no text asks the renderer to submit the
   // current input; text (when present) is what was sent, for the log.
@@ -283,6 +288,9 @@ export type StreamEvent =
   | { kind: 'error'; sessionId: string; message: string };
 
 export type AgentStatus = 'idle' | 'thinking' | 'tool' | 'awaiting-approval' | 'error' | 'done';
+
+/** Explicit wake-listener state, surfaced to the UI (see the wake.status event). */
+export type WakeStatus = 'listening' | 'suppressed' | 'failed' | 'stopped' | 'disabled';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Projects (ICM folder-as-context)

@@ -32,6 +32,7 @@ import type {
   StreamEvent,
   Tool,
   ToolCtx,
+  WakeStatus,
 } from './types.ts';
 import { getLayout as readLayout, updateCard as writeCard } from './layout.ts';
 import { BudgetTracker, callSignature, isLoop, isOverDailyBudget } from './budget.ts';
@@ -519,6 +520,8 @@ export interface OrchestratorHandle {
   /** Wake word ("Alfred", always-on): read/toggle, persisted. Default: on if the STT binary exists. */
   getWakeword(): boolean;
   setWakeword(on: boolean): boolean;
+  /** Live wake-listener state (listening/suppressed/failed/stopped/disabled), read on mount so the button isn't blind at boot. */
+  getWakeStatus(): { status: WakeStatus; reason?: string };
   /** Live MCP bridge endpoint for the claude-code brain, or null (not started / disabled). */
   getMcpEndpoint(): { url: string; token: string } | null;
   /** Tear down the MCP bridge (release the port). */
@@ -548,9 +551,13 @@ export function createOrchestrator(opts: CreateOrchestratorOpts): OrchestratorHa
     opts.emit(event);
   };
 
-  // Mirror the TTS speaking state to the UI (mic-silenced indicator). The wake
-  // path is muted in main while this is true (see wakeEmit).
-  tts.onSpeaking((isSpeaking) => emit({ kind: 'speaking', sessionId, speaking: isSpeaking }));
+  // Mirror the TTS speaking state to the UI (mic-silenced indicator) AND reflect
+  // it in the wake state (listening⇄suppressed) so the WAKE button shows "muted
+  // (speaking)" — the wake path is muted in main while this is true (see wakeEmit).
+  tts.onSpeaking((isSpeaking) => {
+    emit({ kind: 'speaking', sessionId, speaking: isSpeaking });
+    wakeword.noteSpeaking(isSpeaking);
+  });
 
   // Persisted approval controls (Phase B): DANGEROUS mode + auto-approve rules.
   const readRules = (): string[] => {
@@ -1157,6 +1164,9 @@ export function createOrchestrator(opts: CreateOrchestratorOpts): OrchestratorHa
         wakeword.stopWakeword();
       }
       return wakeEnabled();
+    },
+    getWakeStatus() {
+      return wakeword.getWakeState();
     },
     getMcpEndpoint() {
       return mcpBridge?.endpoint ?? null;

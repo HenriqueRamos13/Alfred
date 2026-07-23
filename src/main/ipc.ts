@@ -19,6 +19,7 @@ import type {
   ChatMessage,
   CostSnapshot,
   StreamEvent,
+  WakeStatus,
 } from './core/types.ts';
 import type { BrainInfo } from './core/providers.ts';
 import type { FactoryResetInfo } from './core/orchestrator.ts';
@@ -97,6 +98,8 @@ export interface Orchestrator {
   /** Wake word ("Alfred", always-on): read/set, persisted. */
   getWakeword(): boolean | Promise<boolean>;
   setWakeword(on: boolean): boolean | Promise<boolean>;
+  /** Live wake-listener state, read on mount so the WAKE button isn't blind at boot. */
+  getWakeStatus(): { status: WakeStatus; reason?: string } | Promise<{ status: WakeStatus; reason?: string }>;
 }
 
 /** Trust boundary: keep only well-formed numeric/boolean fields from the renderer. */
@@ -233,6 +236,10 @@ export function registerIpc(core: Orchestrator, emit: (e: StreamEvent) => void):
       return false;
     }
   });
+  ipcMain.handle(
+    'alfred:getWakeStatus',
+    guard('get wake status', () => core.getWakeStatus(), { status: 'stopped' as WakeStatus }),
+  );
 
   ipcMain.on('alfred:resolveApproval', (_e, id: unknown, decision: unknown, remember: unknown) => {
     // Trust boundary: only forward well-formed decisions.
