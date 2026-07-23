@@ -12,6 +12,7 @@
 
 import type { Capability, Job, JobKind, JobPlacement, JobRender, JobSchedule, JobSource } from './types.ts';
 import { WIDGET_HTML_MAX_BYTES } from './widget-html-pure.ts';
+import { classifyUrl } from './url-safety-pure.ts';
 
 /** Default per-job daily token cap when a job sets none (agent jobs). */
 export const DEFAULT_TOKEN_BUDGET_DAILY = 100_000;
@@ -267,69 +268,26 @@ export const MIN_INTERVAL_MS = 30_000;
 
 // ── SSRF guard for fetch sources (§6) ────────────────────────────────────────
 
-/** True when an IPv4 literal is loopback / private / link-local / unspecified. */
-function isPrivateIpv4(h: string): boolean {
-  const m = h.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
-  if (!m) return false;
-  const o = m.slice(1).map(Number);
-  if (o.some((n) => n > 255)) return false; // not a real v4 literal
-  const [a, b] = o;
-  if (a === 0) return true; // 0.0.0.0/8 (this-host / unspecified)
-  if (a === 127) return true; // loopback 127/8
-  if (a === 10) return true; // private 10/8
-  if (a === 169 && b === 254) return true; // link-local 169.254/16 (cloud metadata)
-  if (a === 172 && b >= 16 && b <= 31) return true; // private 172.16/12
-  if (a === 192 && b === 168) return true; // private 192.168/16
-  return false;
-}
-
-/** True when an IPv6 literal (brackets already stripped) is loopback / ULA / link-local / mapped-private. */
-function isPrivateIpv6(h: string): boolean {
-  const x = h.toLowerCase();
-  if (!x.includes(':')) return false;
-  if (x === '::1' || x === '::') return true; // loopback / unspecified
-  if (x.startsWith('fe80:') || x.startsWith('fe80::')) return true; // link-local fe80::/10
-  if (/^f[cd][0-9a-f]*:/.test(x)) return true; // unique-local fc00::/7
-  const mapped = x.match(/::ffff:(\d+\.\d+\.\d+\.\d+)$/); // IPv4-mapped ::ffff:a.b.c.d
-  if (mapped) return isPrivateIpv4(mapped[1]);
-  return false;
-}
-
 /**
- * Reject hostnames a scheduled fetch must never reach: localhost, mDNS/internal
- * TLDs, and loopback/private/link-local IP literals (incl. the cloud-metadata
- * address). ponytail: literal-host blocklist only — DNS rebinding (a public name
- * resolving to a private IP) is out of this trivial guard's scope; add a
- * resolve-time check if a job ever legitimately needs a rebinding-prone name.
- */
-function isBlockedHost(hostname: string): boolean {
-  const h = hostname.toLowerCase().replace(/^\[|\]$/g, ''); // strip IPv6 [] brackets
-  if (!h) return true;
-  if (h === 'localhost' || h.endsWith('.localhost')) return true;
-  if (h.endsWith('.local') || h.endsWith('.internal') || h.endsWith('.lan')) return true;
-  return isPrivateIpv4(h) || isPrivateIpv6(h);
-}
-
-/**
- * Validate a fetch source URL: http(s) only, and not a local/internal address
- * (SSRF floor, §6). Returns an error string, or null when the URL is allowed.
- * Reused by validateJobSpec (create/edit) AND the runtime runner (defence in
- * depth against a row written straight to the DB).
+ * Validate a fetch source URL: http(s) only, and not a local/internal/metadata
+ * address (SSRF floor, §6). Returns an error string, or null when allowed.
+ * Delegates to the shared Phase-6 classifier (`url-safety-pure.classifyUrl`) so
+ * create/edit validation, the runtime runner's defence-in-depth check, and the
+ * connect-time `safeFetch` guard all agree on one rule set. Full DNS-rebinding
+ * enforcement (resolve + re-check the IP at connect) lives in the runner's
+ * `safeFetch`; this static check runs first.
  */
 export function fetchUrlError(url: string): string | null {
-  let u: URL;
-  try {
-    u = new URL(url);
-  } catch {
+  const c = classifyUrl(url);
+  if (c.ok) return null;
+  if (c.protocol === undefined) {
+    // URL did not parse, or scheme was rejected without a parse — treat as a scheme error.
     return 'fetch job needs source.url starting with http:// or https://';
   }
-  if (u.protocol !== 'http:' && u.protocol !== 'https:') {
+  if (c.protocol !== 'http:' && c.protocol !== 'https:') {
     return 'fetch job needs source.url starting with http:// or https://';
   }
-  if (isBlockedHost(u.hostname)) {
-    return `fetch job may not target a local/internal address (${u.hostname}) — SSRF guard`;
-  }
-  return null;
+  return `fetch job may not target a local/internal address (${c.hostname ?? url}) — SSRF guard`;
 }
 
 /**

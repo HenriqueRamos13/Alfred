@@ -490,7 +490,16 @@ export interface ToolCtx {
   workspace: string;
   db: import('better-sqlite3').Database;
   governance: Governance;
+  /** Alfred's own credential STORE (macOS Keychain): get/set/delete tokens Alfred creates (e.g. Gmail OAuth). */
   secrets: Secrets;
+  /**
+   * Resolve a named service credential at USE-TIME from the configured vault
+   * backend (ALFRED_SECRET_SOURCE: keychain default | command | op | bw). The
+   * value is never logged nor returned to the model in clear; reading one is a
+   * T3 (credentials) action. Distinct from `secrets` (Alfred's own store) — this
+   * is the read-only port for user-provisioned secrets. See secret-source.ts.
+   */
+  getSecret(name: string): Promise<string>;
   browser: BrowserHandle;
   /** Stream an activity/log event to the UI. */
   emit(event: StreamEvent): void;

@@ -25,7 +25,7 @@ type DB = import('better-sqlite3').Database;
 
 // ── classification ────────────────────────────────────────────────────────────
 
-const T3_HINTS = ['pay', 'payment', 'purchase', 'charge', 'billing', 'credential', 'credentials', 'transfer', 'wire'];
+const T3_HINTS = ['pay', 'payment', 'purchase', 'charge', 'billing', 'credential', 'credentials', 'transfer', 'wire', 'secret', 'secrets', 'password', 'keychain', 'vault'];
 const T2_HINTS = ['delete', 'remove', 'destroy', 'rm', 'send', 'install', 'uninstall', 'publish', 'deploy', 'drop', 'kill'];
 const T1_HINTS = ['write', 'create', 'edit', 'update', 'append', 'mkdir', 'make', 'type', 'click', 'fill', 'rename', 'move', 'download', 'connect'];
 const T0_HINTS = ['read', 'list', 'get', 'search', 'open', 'goto', 'screenshot', 'view', 'fetch', 'status', 'info'];

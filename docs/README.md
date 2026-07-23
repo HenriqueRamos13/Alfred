@@ -47,6 +47,7 @@ The rails, enforced in `core/governance.ts` + the orchestrator (docs are advisor
 - [approval-flow.md](governance/approval-flow.md) — the HITL approval broker + trifecta-lite.
 - [dangerous-mode.md](governance/dangerous-mode.md) — the user-only approval bypass.
 - [grill-me.md](governance/grill-me.md) — the plan-clarity interview.
+- [security-model.md](governance/security-model.md) — honest framing (heuristics vs OS isolation) + the Stage-3 vault, SSRF guard, and env-scoping.
 
 ## Memory — [memory/](memory/)
 

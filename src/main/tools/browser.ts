@@ -1,5 +1,6 @@
 import path from 'node:path';
 import type { Page } from 'playwright';
+import { assertUrlSafe } from '../core/url-safety.ts';
 import type { Tool, ToolCtx, BrowserHandle } from './types.ts';
 
 /**
@@ -102,6 +103,9 @@ export const browser: Tool<Args> = {
       switch (a.op) {
         case 'goto': {
           if (!a.url) return { ok: false, error: 'url is required for goto' };
+          // SSRF guard: classify + resolve-and-check the target IP before Playwright
+          // connects (DNS-rebinding aware). Throws on a blocked/internal address.
+          await assertUrlSafe(a.url);
           await page.goto(a.url, { waitUntil: 'domcontentloaded' });
           const wall = await handleLoginWall(page, ctx, this.name);
           if (wall) return { ok: false, error: wall };

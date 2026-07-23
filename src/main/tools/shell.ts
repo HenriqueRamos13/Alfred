@@ -1,7 +1,19 @@
 import { execFile } from 'node:child_process';
 import path from 'node:path';
 import { denialError } from '../core/governance.ts';
+import { scrubbedEnv } from '../core/env-scoping-pure.ts';
 import type { Tool } from './types.ts';
+
+/**
+ * Keys a shell command may legitimately need, kept despite matching the
+ * sensitive-key patterns. Comma-separated in ALFRED_SHELL_ENV_ALLOWLIST.
+ */
+function shellEnvAllowlist(): string[] {
+  return (process.env.ALFRED_SHELL_ENV_ALLOWLIST ?? '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
 
 interface Args {
   command: string;
@@ -39,7 +51,9 @@ function run(
     const child = execFile(
       '/bin/sh',
       ['-c', command],
-      { cwd, timeout: timeoutMs, maxBuffer: 8 * 1024 * 1024, killSignal: 'SIGKILL' },
+      // Env-scoping: a model-driven command must not see provider API keys / OAuth
+      // secrets (exfil vector). Allowlist a key via ALFRED_SHELL_ENV_ALLOWLIST.
+      { cwd, timeout: timeoutMs, maxBuffer: 8 * 1024 * 1024, killSignal: 'SIGKILL', env: scrubbedEnv(process.env, shellEnvAllowlist()) },
       (err, stdout, stderr) => {
         const e = err as (Error & { code?: number; killed?: boolean; signal?: string }) | null;
         resolve({

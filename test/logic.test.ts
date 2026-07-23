@@ -187,6 +187,18 @@ import {
   PROBE_GRACE_MS,
 } from '../src/main/core/tool-disclosure-pure.ts';
 import type { ToolMeta } from '../src/main/core/tool-disclosure-pure.ts';
+import {
+  classifyUrl,
+  ipIsBlocked,
+  isBlockedHostname,
+  shouldRevalidateRedirect,
+} from '../src/main/core/url-safety-pure.ts';
+import {
+  resolveSecretSource,
+  buildSecretArgv,
+  type SecretSourceSpec,
+} from '../src/main/core/secret-source-pure.ts';
+import { isSensitiveEnvKey, scrubbedEnv } from '../src/main/core/env-scoping-pure.ts';
 
 test('classifyAction — read/list/search are T0 autopilot', () => {
   assert.equal(classifyAction('fs_read', { path: '/a' }), 'T0');
@@ -3007,4 +3019,160 @@ test('check_fn cache — a failure past the grace window drops the tool', () => 
   assert.equal(past.available, false);
   // No prior success at all → a failing probe is simply unavailable.
   assert.equal(reconcileProbe(undefined, false, 9999).available, false);
+});
+
+// ── Phase 6 Stage 3: SSRF classifier (url-safety-pure) ────────────────────────
+
+test('ipIsBlocked — loopback / private / link-local / unspecified / CGNAT', () => {
+  for (const ip of ['127.0.0.1', '127.1.2.3', '10.0.0.5', '172.16.5.5', '172.31.255.255', '192.168.1.1', '169.254.1.1', '0.0.0.0', '100.64.0.1']) {
+    assert.equal(ipIsBlocked(ip), true, ip);
+  }
+  // public v4 stays reachable
+  for (const ip of ['8.8.8.8', '1.1.1.1', '172.32.0.1', '93.184.216.34']) {
+    assert.equal(ipIsBlocked(ip), false, ip);
+  }
+});
+
+test('ipIsBlocked — IPv6 loopback / link-local / ULA / mapped / metadata', () => {
+  for (const ip of ['::1', '::', 'fe80::1', 'fc00::1', 'fd00::1', 'fd00:ec2::254', '::ffff:127.0.0.1', '::ffff:10.0.0.1', '[::1]', 'fe80::1%eth0']) {
+    assert.equal(ipIsBlocked(ip), true, ip);
+  }
+  // HEX-form IPv4-mapped — the form the WHATWG URL parser + dns.lookup actually
+  // serialize (::ffff:7f00:1 == 127.0.0.1, ::ffff:a9fe:a9fe == 169.254.169.254).
+  // A dotted-only match let these bypass to loopback/metadata.
+  for (const ip of ['::ffff:7f00:1', '::ffff:7f00:0001', '::ffff:a9fe:a9fe', '::ffff:a00:1', '::ffff:c0a8:1']) {
+    assert.equal(ipIsBlocked(ip), true, ip);
+  }
+  // public v6 + a mapped PUBLIC v4 (dotted AND hex) stay reachable
+  assert.equal(ipIsBlocked('2606:4700:4700::1111'), false);
+  assert.equal(ipIsBlocked('::ffff:8.8.8.8'), false);
+  assert.equal(ipIsBlocked('::ffff:808:808'), false); // 8.8.8.8 in hex
+});
+
+test('ipIsBlocked — cloud metadata always blocked', () => {
+  assert.equal(ipIsBlocked('169.254.169.254'), true); // AWS/GCP/Azure
+  assert.equal(ipIsBlocked('fd00:ec2::254'), true); // AWS IMDS v6
+});
+
+test('isBlockedHostname — localhost / mDNS / internal / metadata names', () => {
+  for (const h of ['localhost', 'sub.localhost', 'printer.local', 'api.internal', 'db.lan', 'metadata.google.internal', '127.0.0.1', '[::1]']) {
+    assert.equal(isBlockedHostname(h), true, h);
+  }
+  assert.equal(isBlockedHostname('api.example.com'), false);
+  assert.equal(isBlockedHostname('open-meteo.com'), false);
+});
+
+test('classifyUrl — scheme gate + host block + public pass', () => {
+  assert.equal(classifyUrl('ftp://x/').ok, false);
+  assert.equal(classifyUrl('file:///etc/passwd').ok, false);
+  assert.equal(classifyUrl('not a url').ok, false);
+  assert.equal(classifyUrl('http://localhost:8080/x').ok, false);
+  assert.equal(classifyUrl('http://169.254.169.254/latest/meta-data/').ok, false);
+  assert.equal(classifyUrl('http://[::1]/x').ok, false);
+  assert.equal(classifyUrl('http://10.0.0.5/x').ok, false);
+  // encoding bypasses: decimal/octal/hex IPv4 normalize to a dotted literal…
+  assert.equal(classifyUrl('http://2130706433/').ok, false); // 127.0.0.1 decimal
+  assert.equal(classifyUrl('http://0177.0.0.1/').ok, false); // octal
+  assert.equal(classifyUrl('http://0x7f000001/').ok, false); // hex
+  // …and the IPv4-mapped IPv6 the parser serializes as HEX (== 127.0.0.1 / metadata)
+  assert.equal(classifyUrl('http://[::ffff:127.0.0.1]/').ok, false);
+  assert.equal(classifyUrl('http://[::ffff:169.254.169.254]/').ok, false);
+  const good = classifyUrl('https://api.open-meteo.com/v1/forecast');
+  assert.equal(good.ok, true);
+  assert.equal(good.protocol, 'https:');
+  assert.equal(good.hostname, 'api.open-meteo.com');
+});
+
+test('shouldRevalidateRedirect — 3xx with a Location only', () => {
+  assert.equal(shouldRevalidateRedirect(301, 'http://x/'), true);
+  assert.equal(shouldRevalidateRedirect(302, 'https://y/'), true);
+  assert.equal(shouldRevalidateRedirect(307, '/rel'), true);
+  assert.equal(shouldRevalidateRedirect(200, 'http://x/'), false);
+  assert.equal(shouldRevalidateRedirect(301, undefined), false);
+  assert.equal(shouldRevalidateRedirect(301, ''), false);
+});
+
+// ── Phase 6 Stage 3: secret sources (secret-source-pure) ──────────────────────
+
+test('resolveSecretSource — default keychain; op/bw; command needs a command', () => {
+  assert.deepEqual(resolveSecretSource({}), { kind: 'keychain' });
+  assert.deepEqual(resolveSecretSource({ ALFRED_SECRET_SOURCE: '' }), { kind: 'keychain' });
+  assert.deepEqual(resolveSecretSource({ ALFRED_SECRET_SOURCE: 'op' }), { kind: 'op' });
+  assert.deepEqual(resolveSecretSource({ ALFRED_SECRET_SOURCE: 'BW' }), { kind: 'bw' });
+  assert.ok('error' in resolveSecretSource({ ALFRED_SECRET_SOURCE: 'wat' }));
+  // command source
+  assert.ok('error' in resolveSecretSource({ ALFRED_SECRET_SOURCE: 'command' })); // no command
+  assert.deepEqual(
+    resolveSecretSource({ ALFRED_SECRET_SOURCE: 'command', ALFRED_SECRET_COMMAND: 'my-vault get --field password' }),
+    { kind: 'command', command: ['my-vault', 'get', '--field', 'password'] },
+  );
+});
+
+test('buildSecretArgv — the secret name is always a discrete argv element (no shell string)', () => {
+  assert.deepEqual(buildSecretArgv({ kind: 'op' }, 'stripe'), { file: 'op', args: ['read', 'stripe'] });
+  assert.deepEqual(buildSecretArgv({ kind: 'bw' }, 'stripe'), { file: 'bw', args: ['get', 'password', 'stripe'] });
+  assert.deepEqual(buildSecretArgv({ kind: 'keychain' }, 'gmail:me@x'), {
+    file: 'security',
+    args: ['find-generic-password', '-a', 'gmail:me@x', '-s', 'alfred', '-w'],
+  });
+  const cmd: SecretSourceSpec = { kind: 'command', command: ['my-vault', 'get'] };
+  assert.deepEqual(buildSecretArgv(cmd, 'stripe'), { file: 'my-vault', args: ['get', 'stripe'] });
+  // A shell-injection attempt is a literal argv element, harmless, not re-parsed.
+  const inj = buildSecretArgv(cmd, 'x; rm -rf ~');
+  assert.ok('args' in inj && inj.args[inj.args.length - 1] === 'x; rm -rf ~');
+  // Rejections: empty name, NUL/newline smuggling.
+  assert.ok('error' in buildSecretArgv({ kind: 'op' }, ''));
+  assert.ok('error' in buildSecretArgv({ kind: 'op' }, 'a\nb'));
+  assert.ok('error' in buildSecretArgv({ kind: 'command', command: [] }, 'x'));
+});
+
+// ── Phase 6 Stage 3: env-scoping (env-scoping-pure) ───────────────────────────
+
+test('isSensitiveEnvKey — provider keys / *_API_KEY / *_TOKEN / *SECRET*', () => {
+  for (const k of ['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'OPENAI_API_KEY', 'DEEPSEEK_API_KEY', 'ELEVENLABS_API_KEY', 'GOOGLE_OAUTH_CLIENT_SECRET', 'AWS_SECRET_ACCESS_KEY', 'AWS_ACCESS_KEY_ID', 'GITHUB_TOKEN', 'MY_SERVICE_API_KEY', 'STRIPE_SECRET_KEY']) {
+    assert.equal(isSensitiveEnvKey(k), true, k);
+  }
+  for (const k of ['PATH', 'HOME', 'LANG', 'USER', 'SHELL', 'PWD', 'TERM', 'ALFRED_WORKSPACE']) {
+    assert.equal(isSensitiveEnvKey(k), false, k);
+  }
+});
+
+test('scrubbedEnv — strips secrets, keeps benign, honours allowlist', () => {
+  const env = { PATH: '/bin', HOME: '/h', ANTHROPIC_API_KEY: 'sk-1', GITHUB_TOKEN: 'gh', AWS_SECRET_ACCESS_KEY: 'aws', MY_API_KEY: 'k' };
+  const out = scrubbedEnv(env);
+  assert.equal(out.PATH, '/bin');
+  assert.equal(out.HOME, '/h');
+  assert.equal(out.ANTHROPIC_API_KEY, undefined);
+  assert.equal(out.GITHUB_TOKEN, undefined);
+  assert.equal(out.AWS_SECRET_ACCESS_KEY, undefined);
+  assert.equal(out.MY_API_KEY, undefined);
+  // allowlist lets a needed credential through explicitly
+  const kept = scrubbedEnv(env, ['GITHUB_TOKEN']);
+  assert.equal(kept.GITHUB_TOKEN, 'gh');
+  assert.equal(kept.ANTHROPIC_API_KEY, undefined);
+});
+
+test('scrubbedEnv — claude -p subscriptionEnv rule: keep BASE_URL/MODEL, strip every credential', () => {
+  // Mirrors claudeSpawn.subscriptionEnv() — the child must not see provider keys.
+  const env = {
+    PATH: '/bin',
+    ANTHROPIC_API_KEY: 'sk-ant',
+    ANTHROPIC_AUTH_TOKEN: 'tok',
+    ANTHROPIC_AWS_API_KEY: 'aws',
+    ANTHROPIC_FOUNDRY_API_KEY: 'f',
+    ANTHROPIC_BASE_URL: 'https://api.anthropic.com',
+    ANTHROPIC_MODEL: 'claude',
+    OPENAI_API_KEY: 'sk-oai',
+    DEEPSEEK_API_KEY: 'ds',
+    ELEVENLABS_API_KEY: '11',
+    GOOGLE_OAUTH_CLIENT_SECRET: 'g',
+    GITHUB_TOKEN: 'gh',
+  };
+  const out = scrubbedEnv(env, ['ANTHROPIC_BASE_URL', 'ANTHROPIC_MODEL']);
+  assert.equal(out.ANTHROPIC_BASE_URL, 'https://api.anthropic.com');
+  assert.equal(out.ANTHROPIC_MODEL, 'claude');
+  assert.equal(out.PATH, '/bin');
+  for (const k of ['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_AWS_API_KEY', 'ANTHROPIC_FOUNDRY_API_KEY', 'OPENAI_API_KEY', 'DEEPSEEK_API_KEY', 'ELEVENLABS_API_KEY', 'GOOGLE_OAUTH_CLIENT_SECRET', 'GITHUB_TOKEN']) {
+    assert.equal(out[k], undefined, k);
+  }
 });

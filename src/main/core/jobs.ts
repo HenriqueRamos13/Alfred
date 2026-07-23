@@ -24,6 +24,7 @@ import {
   type JobRunState,
 } from './jobs-pure.ts';
 import { runGovernedTool, classifyAction, trifectaImpact, maskSecrets } from './governance.ts';
+import { safeFetch } from './url-safety.ts';
 import { addWidgetCard, removeWidgetCard, widgetBox, WIDGET_PREFIX, DISPLAY_MAIN, type Bounds } from './layout.ts';
 import { getSetting } from './db.ts';
 import { BudgetTracker, isOverDailyBudget } from './budget.ts';
@@ -438,9 +439,10 @@ export class JobScheduler {
       return;
     }
     try {
-      const res = await fetch(url, { method: job.source?.method ?? 'GET', headers: job.source?.headers });
-      const body = await res.text();
-      if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText}`.trim());
+      // Connect-time SSRF guard (DNS-rebinding aware, revalidates every redirect).
+      const res = await safeFetch(url, { method: job.source?.method ?? 'GET', headers: job.source?.headers });
+      const body = res.body;
+      if (!res.ok) throw new Error(`HTTP ${res.status}`.trim());
       let data: unknown;
       try {
         data = JSON.parse(body);

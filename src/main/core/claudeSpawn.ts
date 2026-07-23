@@ -20,6 +20,7 @@
  */
 import { spawn } from 'node:child_process';
 import { mcpCliArgs } from './mcpConfig.ts';
+import { scrubbedEnv } from './env-scoping-pure.ts';
 
 const TIMEOUT_MS = 30 * 60_000;
 const MAX_STDOUT = 16 * 1024 * 1024;
@@ -69,14 +70,18 @@ export function dangerousArgs(dangerous: boolean): string[] {
   return [...permission, '--append-system-prompt', system];
 }
 
-/** Copy of process.env with the vars that force API-key mode removed. */
+/**
+ * Env handed to the `claude -p` child. Env-scoping (Phase 6 Stage 3): the child
+ * is a full autonomous agent with shell tools — it must NOT inherit Alfred's
+ * provider keys/tokens/secrets (OPENAI/DEEPSEEK/ELEVENLABS/GOOGLE_OAUTH/AWS/…),
+ * which it could read and exfiltrate. `scrubbedEnv` strips every credential; we
+ * allowlist only ANTHROPIC_BASE_URL / ANTHROPIC_MODEL (config, not credentials).
+ * This also drops the ANTHROPIC_* API-key vars that force API-key mode, so the
+ * child uses subscription auth and org connectors stay enabled (prior behaviour).
+ * The MCP bridge token travels via `--mcp-config`, not env, so this never breaks it.
+ */
 function subscriptionEnv(): NodeJS.ProcessEnv {
-  const env = { ...process.env };
-  delete env.ANTHROPIC_API_KEY;
-  delete env.ANTHROPIC_AUTH_TOKEN;
-  delete env.ANTHROPIC_AWS_API_KEY;
-  delete env.ANTHROPIC_FOUNDRY_API_KEY;
-  return env;
+  return scrubbedEnv(process.env, ['ANTHROPIC_BASE_URL', 'ANTHROPIC_MODEL']);
 }
 
 export function spawnClaudeCli(

@@ -44,6 +44,7 @@ import { ensureClaudeMd, ensureScaffold, readStable, recentMemoryText, formatTra
 import { CAPABILITY_MANIFEST } from './manifest.ts';
 import { runCurator } from './curator.ts';
 import { createSecrets } from './secrets.ts';
+import { createSecretSource } from './secret-source.ts';
 import { getProject, listProjects } from './projects.ts';
 import { getGraph as buildVaultGraph, getNote as readNotePreview, type Graph } from './graph.ts';
 import { factoryResetPaths, factoryResetTables } from './reset.ts';
@@ -762,13 +763,16 @@ export function createOrchestrator(opts: CreateOrchestratorOpts): OrchestratorHa
     },
   });
   const browser = createBrowserHandle(join(opts.dataDir, 'browser-profile'));
+  const secrets = createSecrets();
+  const secretSource = createSecretSource(process.env, secrets);
 
   const ctx: ToolCtx = {
     sessionId,
     workspace: config.workspace,
     db,
     governance: gov.governance,
-    secrets: createSecrets(),
+    secrets,
+    getSecret: (name) => secretSource.getSecret(name),
     browser,
     emit,
     sendUi: (payload) => emit({ kind: 'ui.render', payload }),
