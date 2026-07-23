@@ -55,8 +55,58 @@ actions never auto-run unattended even in dangerous mode.)
 auto-run unattended regardless of the grant — they queue an approval.
 
 ### render / placement (optional)
-- `render` — `{ tier: 1|2|3, card: string }`; default `{ tier:1, card:"value" }`.
+- `render` — `{ tier: 1|2|3, card: string, html? }`; default `{ tier:1, card:"value" }`.
+  - **tier 1** — a builtin data card (value / sparkline / fallback), fed by `job.data`.
+  - **tier 2** — a **custom self-contained HTML** widget the model writes (`html`,
+    required, `<= 256 KB`). See "Tier-2 HTML widgets" below.
 - `placement` — `{ displayId?: number, corner?: "tl"|"tr"|"bl"|"br" }`.
+
+## Tier-2 HTML widgets (custom viz)
+
+For a chart/visualization the builtin cards don't cover, set
+`render: { tier: 2, card: "html", html: "<…>" }`. The `html` is a page the model
+writes; **the data pipeline is unchanged** (same `fetch`/`agent` refresh) — tier 2
+only replaces the render.
+
+**Runtime contract.** The page is wrapped by the app before display: a trusted
+`window.Alfred` runtime is injected *before* your markup. Use it — do **not** add
+external libraries or your own `<script src>` (there is no network; see below).
+
+- `Alfred.onData(cb)` — registers `cb`; it fires on **every** refresh with the
+  job's latest value (the extracted `fetch` value or the `agent` result). Seeded
+  with `runtime.lastResult` on load.
+- `Alfred.sparkline(el, numberArray)` — draws a minimal inline-SVG line chart of a
+  numeric array into `el`. No dependency.
+
+Minimal example:
+
+```json
+{
+  "op": "create", "title": "Temp trend", "kind": "fetch",
+  "schedule": { "type": "interval", "everyMs": 300000 },
+  "source": { "url": "https://api.open-meteo.com/v1/forecast?latitude=38.72&longitude=-9.14&hourly=temperature_2m", "extract": "hourly.temperature_2m" },
+  "render": {
+    "tier": 2, "card": "html",
+    "html": "<style>body{margin:0;color:#35e5ff;font:14px system-ui}</style><div id=\"c\"></div><script>Alfred.onData(function(v){Alfred.sparkline(document.getElementById('c'), v)})</script>"
+  }
+}
+```
+
+### Security (sandbox / CSP / offline)
+
+The page is treated as **untrusted** and confined so a malicious or
+prompt-injected page can only draw junk in its own card:
+
+- Rendered as the `srcdoc` of `<iframe sandbox="allow-scripts">` — **no**
+  `allow-same-origin` (opaque origin: no access to the parent DOM, cookies, or
+  storage), no `allow-popups`/`allow-forms`/`allow-top-navigation`.
+- The wrapper injects, **first** in a `<head>` the model can't precede, a strict
+  CSP: `default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:`.
+  **Zero network** — no `fetch`/XHR/WebSocket, no external script/style/font. A CSP
+  the model tries to add can only *intersect* (further restrict), never relax ours.
+- Data enters **one way**, by `postMessage` from the parent card into the frame —
+  no IPC/preload channel is ever exposed to the page. The trusted **runner**
+  (server-side) does all external fetching; the page never does.
 
 ## `list` / result summary (per job)
 `{ id, title, kind, schedule, enabled, pausedReason, tokensToday,

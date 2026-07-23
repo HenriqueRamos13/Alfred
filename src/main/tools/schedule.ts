@@ -91,8 +91,19 @@ export const schedule: Tool<Args> = {
       tokenBudgetDaily: { type: 'number', description: 'agent jobs: per-day token cap (positive). Omitted → a sane default.' },
       render: {
         type: 'object',
-        description: 'Optional render hint {tier:1|2|3, card:string}. Default {tier:1, card:"value"}.',
-        properties: { tier: { type: 'number', enum: [1, 2, 3] }, card: { type: 'string' } },
+        description:
+          'Optional render hint. Default {tier:1, card:"value"} — builtin data card. ' +
+          'For a CUSTOM chart/visualization, use tier:2 and provide `html`: a self-contained page YOU write. ' +
+          'The page has NO network (a strict CSP blocks all fetch/xhr/ws and external scripts/styles) and runs in a ' +
+          'sandboxed iframe. Do NOT add external libraries or your own <script src>. Get the live value via the ' +
+          'injected runtime: `Alfred.onData(function(v){ ... })` fires on every refresh with the job value; ' +
+          '`Alfred.sparkline(el, numberArray)` draws a minimal line chart. Style with inline <style>/attributes. ' +
+          'The data pipeline (fetch/agent) is unchanged — tier:2 only changes the render.',
+        properties: {
+          tier: { type: 'number', enum: [1, 2, 3] },
+          card: { type: 'string' },
+          html: { type: 'string', description: 'tier:2 only — the self-contained widget page (<= 256KB). Required when tier=2.' },
+        },
       },
       placement: {
         type: 'object',

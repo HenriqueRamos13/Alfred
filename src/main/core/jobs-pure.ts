@@ -11,6 +11,7 @@
  */
 
 import type { Capability, Job, JobKind, JobPlacement, JobRender, JobSchedule, JobSource } from './types.ts';
+import { WIDGET_HTML_MAX_BYTES } from './widget-html-pure.ts';
 
 /** Default per-job daily token cap when a job sets none (agent jobs). */
 export const DEFAULT_TOKEN_BUDGET_DAILY = 100_000;
@@ -423,7 +424,17 @@ function validateRender(r: unknown): { ok: true; render: JobRender } | { ok: fal
   if (!o || typeof o !== 'object' || (o.tier !== 1 && o.tier !== 2 && o.tier !== 3) || typeof o.card !== 'string') {
     return { ok: false, error: 'render must be {tier:1|2|3, card:string}' };
   }
-  return { ok: true, render: { tier: o.tier as 1 | 2 | 3, card: o.card } };
+  const render: JobRender = { tier: o.tier as 1 | 2 | 3, card: o.card };
+  if (o.tier === 2) {
+    if (typeof o.html !== 'string' || o.html.trim() === '') {
+      return { ok: false, error: 'render.tier=2 requires an html string (the self-contained widget page)' };
+    }
+    if (o.html.length > WIDGET_HTML_MAX_BYTES) {
+      return { ok: false, error: `render.html exceeds the ${WIDGET_HTML_MAX_BYTES}-byte cap` };
+    }
+    render.html = o.html;
+  }
+  return { ok: true, render };
 }
 
 /** Loosely-typed create/edit input from the schedule tool (validated here). */

@@ -75,6 +75,7 @@ import {
   describeApproval,
 } from '../src/main/core/jobs-format-pure.ts';
 import type { Job } from '../src/main/core/types.ts';
+import { wrapWidgetHtml, WIDGET_CSP, WIDGET_HTML_MAX_BYTES } from '../src/main/core/widget-html-pure.ts';
 import { confirmMatches, factoryResetPaths } from '../src/main/core/reset.ts';
 import { grillMeEnabled } from '../src/main/core/settings-pure.ts';
 import {
@@ -2089,6 +2090,63 @@ test('validateJobSpec — title and kind are required', () => {
 test('validateJobSpec — agent job requires a prompt', () => {
   const r = validateJobSpec({ title: 't', kind: 'agent', schedule: { type: 'daily', at: '08:30' } });
   assert.equal(r.ok, false);
+});
+
+// ── tier-2 HTML widgets: validation + trusted wrapper (stage 4) ──────────────
+
+test('validateJobSpec — tier=2 render requires an html string', () => {
+  const base = { title: 't', kind: 'fetch' as const, schedule: { type: 'daily' as const, at: '08:30' }, source: { url: 'https://x.com' } };
+  assert.equal(validateJobSpec({ ...base, render: { tier: 2, card: 'html' } }).ok, false);
+  assert.equal(validateJobSpec({ ...base, render: { tier: 2, card: 'html', html: '   ' } }).ok, false);
+  const ok = validateJobSpec({ ...base, render: { tier: 2, card: 'html', html: '<div id="v"></div>' } });
+  assert.equal(ok.ok, true);
+  if (ok.ok) assert.equal(ok.spec.render.html, '<div id="v"></div>');
+});
+
+test('validateJobSpec — tier=2 html over the size cap is rejected', () => {
+  const base = { title: 't', kind: 'fetch' as const, schedule: { type: 'daily' as const, at: '08:30' }, source: { url: 'https://x.com' } };
+  const tooBig = 'x'.repeat(WIDGET_HTML_MAX_BYTES + 1);
+  assert.equal(validateJobSpec({ ...base, render: { tier: 2, card: 'html', html: tooBig } }).ok, false);
+  const atCap = 'x'.repeat(WIDGET_HTML_MAX_BYTES);
+  assert.equal(validateJobSpec({ ...base, render: { tier: 2, card: 'html', html: atCap } }).ok, true);
+});
+
+test('validateJobSpec — tier=1 ignores any html field', () => {
+  const base = { title: 't', kind: 'fetch' as const, schedule: { type: 'daily' as const, at: '08:30' }, source: { url: 'https://x.com' } };
+  const r = validateJobSpec({ ...base, render: { tier: 1, card: 'value', html: '<b>ignored</b>' } as any });
+  assert.equal(r.ok, true);
+  if (r.ok) assert.equal(r.spec.render.html, undefined);
+});
+
+test('wrapWidgetHtml — the trusted CSP meta is always present and precedes the body', () => {
+  const out = wrapWidgetHtml('<div>hi</div>');
+  const metaIdx = out.indexOf(`<meta http-equiv="Content-Security-Policy" content="${WIDGET_CSP}">`);
+  assert.ok(metaIdx > -1, 'CSP meta injected verbatim');
+  assert.ok(out.indexOf('<body>') > metaIdx, 'CSP is in the head, before the body');
+  assert.ok(WIDGET_CSP.startsWith("default-src 'none'"), 'CSP denies all network by default');
+});
+
+test('wrapWidgetHtml — the trusted Alfred runtime is injected', () => {
+  const out = wrapWidgetHtml('');
+  assert.ok(out.includes('window.Alfred'));
+  assert.ok(out.includes('onData'));
+  assert.ok(out.includes('sparkline'));
+  // runtime lives in the head we control, before the model body
+  assert.ok(out.indexOf('window.Alfred') < out.indexOf('<body>'));
+});
+
+test('wrapWidgetHtml — a model CSP / external script cannot relax our default-src none', () => {
+  const evil =
+    '<meta http-equiv="Content-Security-Policy" content="default-src *; connect-src http://evil">' +
+    '<script src="http://evil/x.js"></script><div>payload</div>';
+  const out = wrapWidgetHtml(evil);
+  // Our restrictive meta is in the head and comes BEFORE anything the model wrote
+  // (multiple CSPs compose by intersection, so ours always holds).
+  const ours = out.indexOf(`content="${WIDGET_CSP}"`);
+  const theirs = out.indexOf('default-src *');
+  assert.ok(ours > -1 && ours < out.indexOf('<body>'), 'our CSP is in the head');
+  assert.ok(theirs > out.indexOf('<body>'), 'the model CSP is trapped in the body, after ours');
+  assert.ok(ours < theirs, 'ours precedes theirs');
 });
 
 // ── jobs-format-pure: the "Scheduled Tasks" card display formatters (stage 3) ──

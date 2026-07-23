@@ -265,6 +265,8 @@ export interface JobRender {
   tier: 1 | 2 | 3;
   /** builtin card id | 'html' | 'project'. */
   card: string;
+  /** tier-2 only: the self-contained page the model wrote (wrapped in a sandboxed iframe). */
+  html?: string;
 }
 
 export interface JobPlacement {

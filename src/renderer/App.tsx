@@ -21,6 +21,7 @@ import { ReferenceChat } from './components/ReferenceChat.tsx';
 import { GraphCard } from './components/GraphCard.tsx';
 import { ScheduledTasksCard } from './components/ScheduledTasksCard.tsx';
 import { WidgetCard } from './components/WidgetCard.tsx';
+import { HtmlWidgetCard } from './components/HtmlWidgetCard.tsx';
 import type { ReferenceTarget } from '../main/core/reference.ts';
 import { clampBox, tileLayout, cardOnDisplay, nextDisplayId, type Bounds } from '../main/core/layout.ts';
 import { initialDictation, dictationReduce } from '../main/core/dictation.ts';
@@ -943,7 +944,7 @@ export default function App() {
   const hidden = cards.filter((c) => !c.visible);
 
   // Tier-1 jobs get a floating data widget; the user can dismiss one (session-only).
-  const widgetJobs = jobs.filter((j) => j.render?.tier === 1 && !hiddenWidgets.has(j.id));
+  const widgetJobs = jobs.filter((j) => (j.render?.tier === 1 || j.render?.tier === 2) && !hiddenWidgets.has(j.id));
 
   // WAKE button face: the toggle says whether it's ARMED; the live status says
   // what it's actually doing right now, so a stuck/failed mic is visible at a glance.
@@ -1188,7 +1189,7 @@ export default function App() {
                 onFocus={() => {}}
                 onHide={() => setHiddenWidgets((prev) => new Set(prev).add(job.id))}
               >
-                <WidgetCard job={job} />
+                {job.render?.tier === 2 ? <HtmlWidgetCard job={job} /> : <WidgetCard job={job} />}
               </DraggableCard>
             );
           })}
