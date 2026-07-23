@@ -57,6 +57,188 @@ export function nextRun(schedule: JobSchedule, now: number, lastRunTs?: number):
   return cand.getTime();
 }
 
+// ── catchup / grace (Phase 6 stage 5) ────────────────────────────────────────
+//
+// When the app was OFF and a periodic job missed its slot, the boot/re-arm must
+// NOT fire every missed slot; it runs AT MOST ONCE (catchup), and only if we are
+// still within a clamped window past the due time. A missed daily one-shot fires
+// only inside a short GRACE window. All pure — `now` is passed in.
+
+/** Catchup window floor: never shorter than 2 min. */
+export const CATCHUP_MIN_MS = 120_000;
+/** Catchup window ceiling: never longer than 2 h. */
+export const CATCHUP_MAX_MS = 2 * 60 * 60_000;
+/** Grace window for a missed one-shot (daily) run. */
+export const GRACE_MS = 120_000;
+
+function clampWindow(v: number, lo: number, hi: number): number {
+  return Math.min(Math.max(v, lo), hi);
+}
+
+export interface CatchupDecision {
+  /** Fire ONCE now to catch up a missed run (never more than one). */
+  runNow: boolean;
+  /** The next fire time to arm (always in the future when runNow is false). */
+  next: number;
+}
+
+/**
+ * Decide, at boot/re-arm, whether a job whose slot passed while the app was off
+ * should run one catch-up now, and when it fires next.
+ *  - interval: overdue by <= clamp(everyMs/2, 120s..2h) → runNow. Older than the
+ *    window → skip the missed slot(s); resume the cadence (next = now+everyMs).
+ *    Not overdue → next = the pending due time. Fresh (no lastRun) → just schedule.
+ *  - daily one-shot: fired only if we are within GRACE_MS past today's HH:MM AND
+ *    it hasn't already run today; otherwise the next HH:MM.
+ */
+export function catchupDecision(schedule: JobSchedule, lastRunTs: number | undefined, now: number): CatchupDecision {
+  if (schedule.type === 'interval') {
+    if (lastRunTs === undefined) return { runNow: false, next: nextRun(schedule, now) };
+    const due = lastRunTs + schedule.everyMs;
+    if (now < due) return { runNow: false, next: due };
+    const window = clampWindow(schedule.everyMs / 2, CATCHUP_MIN_MS, CATCHUP_MAX_MS);
+    return { runNow: now - due <= window, next: now + schedule.everyMs };
+  }
+  // daily one-shot
+  const [h, m] = schedule.at.split(':').map((s) => Number(s));
+  const d = new Date(now);
+  const todayAt = new Date(d.getFullYear(), d.getMonth(), d.getDate(), h, m, 0, 0).getTime();
+  const missedInGrace =
+    now >= todayAt && now - todayAt <= GRACE_MS && (lastRunTs === undefined || lastRunTs < todayAt);
+  return { runNow: missedInGrace, next: nextRun(schedule, now, lastRunTs) };
+}
+
+// ── cross-process tick lock (Phase 6 stage 5) ─────────────────────────────────
+//
+// Two Alfred processes must never double-fire the same job. A file-lock holds
+// pid+ts; the LIVENESS probe (process.kill(pid,0)) is done by the IO caller and
+// passed in as `alive`, so this decision stays pure. `alive` is authoritative;
+// the ts-staleness backstop only defends against pid reuse (a different live
+// process now owning a recycled pid), hence a generous default.
+
+/** A held lock as read from disk, plus the caller's liveness probe of its pid. */
+export interface LockInfo {
+  pid: number;
+  ts: number;
+  /** Result of the caller's process.kill(pid, 0) probe. */
+  alive: boolean;
+}
+
+/** ts-staleness backstop for a lock whose holder still probes alive (pid reuse). */
+export const DEFAULT_LOCK_STALE_MS = 10 * 60_000;
+
+export type LockAction = 'acquire' | 'passive' | 'reclaim-stale';
+
+/**
+ * Whether this process (myPid) may take the tick lock now:
+ *  - no lock, or it is ours            → 'acquire'
+ *  - held by a DEAD process            → 'reclaim-stale'
+ *  - held, alive, but ts ancient       → 'reclaim-stale' (pid-reuse backstop)
+ *  - held by a live, fresh process     → 'passive' (stay quiet; don't fire)
+ */
+export function lockDecision(existing: LockInfo | null, now: number, myPid: number, staleMs = DEFAULT_LOCK_STALE_MS): LockAction {
+  if (!existing || existing.pid === myPid) return 'acquire';
+  if (!existing.alive) return 'reclaim-stale';
+  if (now - existing.ts > staleMs) return 'reclaim-stale';
+  return 'passive';
+}
+
+// ── tool-loop circuit breaker (Phase 6 stage 5) ───────────────────────────────
+//
+// Track three failure signals across an autonomous run and cut the loop before
+// it burns the whole budget. Soft-warn interactively; HARD-STOP when autonomous.
+
+export interface CircuitCounters {
+  /** Same tool + same args failing repeatedly (identical call). */
+  exactFailure: number;
+  /** Same tool failing repeatedly (any args). */
+  sameToolFailure: number;
+  /** Consecutive steps that made no progress (idempotent / failed). */
+  noProgress: number;
+}
+
+export interface CircuitThresholds {
+  exactFailure: number;
+  sameToolFailure: number;
+  noProgress: number;
+}
+
+export const DEFAULT_CIRCUIT_THRESHOLDS: CircuitThresholds = { exactFailure: 3, sameToolFailure: 3, noProgress: 3 };
+
+/** Accumulator threaded across a run's tool calls (carries the last call for the run-length counts). */
+export interface CircuitState {
+  counters: CircuitCounters;
+  lastSig?: string;
+  lastTool?: string;
+}
+
+export const INITIAL_CIRCUIT_STATE: CircuitState = {
+  counters: { exactFailure: 0, sameToolFailure: 0, noProgress: 0 },
+};
+
+/**
+ * Does a tool's return value read as a failure (for the circuit breaker)? A
+ * governed-tool error returns `{ error }` WITHOUT an `ok` field (governance.ts),
+ * while the job/delegate gates return `{ ok: false }`; both must count. A success
+ * returns the raw result (an `ok:true` object, plain data, or `{}`) → not failed.
+ */
+export function isToolFailure(out: unknown): boolean {
+  if (!out || typeof out !== 'object') return false;
+  const o = out as Record<string, unknown>;
+  return o.ok === false || (o.error != null && o.ok !== true);
+}
+
+/** One tool call's outcome, fed to updateCircuit. */
+export interface ToolOutcome {
+  toolName: string;
+  /** callSignature(toolName, args) — same tool+args ⇒ same sig. */
+  sig: string;
+  failed: boolean;
+  /** Did this step advance the task? (default heuristic: a successful call progresses.) */
+  progressed: boolean;
+}
+
+/** Fold one tool outcome into the running counters (pure; caller keeps the state). */
+export function updateCircuit(prev: CircuitState, o: ToolOutcome): CircuitState {
+  const c = prev.counters;
+  return {
+    counters: {
+      exactFailure: o.failed ? (o.sig === prev.lastSig ? c.exactFailure + 1 : 1) : 0,
+      sameToolFailure: o.failed ? (o.toolName === prev.lastTool ? c.sameToolFailure + 1 : 1) : 0,
+      noProgress: o.progressed ? 0 : c.noProgress + 1,
+    },
+    lastSig: o.sig,
+    lastTool: o.toolName,
+  };
+}
+
+export interface CircuitTrip {
+  /** HARD-STOP the loop (autonomous runs only). */
+  stop: boolean;
+  /** SOFT-WARN, keep going (interactive runs). */
+  warn: boolean;
+  /** Which counter tripped (for the log/warn). */
+  reason?: string;
+}
+
+/**
+ * Trip decision: a counter at/over its threshold hard-stops an AUTONOMOUS/
+ * scheduled run (so it can't burn the budget looping) and soft-warns an
+ * interactive one. Below every threshold → no action. Pure.
+ */
+export function circuitBreakerTrip(counters: CircuitCounters, thresholds: CircuitThresholds, autonomous: boolean): CircuitTrip {
+  const reason =
+    counters.exactFailure >= thresholds.exactFailure
+      ? `exact_failure x${counters.exactFailure}`
+      : counters.sameToolFailure >= thresholds.sameToolFailure
+        ? `same_tool_failure x${counters.sameToolFailure}`
+        : counters.noProgress >= thresholds.noProgress
+          ? `no_progress x${counters.noProgress}`
+          : null;
+  if (!reason) return { stop: false, warn: false };
+  return autonomous ? { stop: true, warn: false, reason } : { stop: false, warn: true, reason };
+}
+
 // ── per-job daily budget ─────────────────────────────────────────────────────
 
 export interface BudgetDecision {

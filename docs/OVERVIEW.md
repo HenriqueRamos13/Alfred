@@ -186,6 +186,7 @@ The Claude Code brain needs no key — just the `claude` binary on `PATH`
 | `ALFRED_DAILY_TOKEN_BUDGET` | `2000000` | **Hard** daily token kill-switch across all sessions. |
 | `ALFRED_DAILY_USD_BUDGET` | unset | **Soft** daily USD warning (estimated); warns, never blocks. |
 | `ALFRED_STEP_CAP` | `40` | Max tool/model steps per task. |
+| `ALFRED_JOB_MAX_RUN_MS` | `300000` | Per-run hard-interrupt for a scheduled job (fetch/agent/study); a run that exceeds it is aborted + logged, so one runaway job can't monopolise the scheduler. |
 | `ALFRED_PRICING_JSON` | — | Path to a pricing-override JSON (`{ "model": { inputPerM, outputPerM } }`); else `data/pricing.json`. |
 
 ### Window / overlay

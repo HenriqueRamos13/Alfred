@@ -18,6 +18,32 @@ This tool **only persists and (re)schedules** jobs — it never runs one. The
 timer engine fires due jobs; a `fetch` refresh emits a `job.data` stream event.
 Source: `src/main/tools/schedule.ts` (+ `core/jobs.ts`, `core/jobs-pure.ts`).
 
+## Autonomy-robustness guarantees (the timer engine)
+
+These are enforced in `core/jobs.ts` (+ pure decisions in `core/jobs-pure.ts`);
+they apply to every job kind and never crash the scheduler:
+
+- **Per-run hard-interrupt** — each run (fetch/agent/study) is raced against
+  `ALFRED_JOB_MAX_RUN_MS` (default **5 min**). On timeout the run's AI-SDK turn is
+  aborted (the injected `AbortSignal` → the turn's `AbortController`) and a
+  `logRun` timeout entry is written; the tick moves on. One runaway run can
+  neither monopolise the scheduler nor burn the budget indefinitely.
+- **Catch-up + grace on boot/re-arm** (`catchupDecision`) — when the app was off
+  across a slot, a periodic job runs **AT MOST ONCE** (never every missed slot),
+  and only if still within a clamped window (`clamp(everyMs/2, 120s..2h)` past the
+  due time); older than that → skip to the next future slot. A missed **daily**
+  one-shot fires only inside a **120 s grace** window past its `HH:MM`.
+- **Cross-process tick lock** (`lockDecision`, `<workspace>/.alfred/scheduler.tick.lock`)
+  — two Alfred processes never double-fire a job. At each fire a process
+  acquires/refreshes the lock (pid+ts); a second process whose peer is **alive**
+  stays **passive** (re-arms to take over later); a **stale** lock (dead pid, or an
+  ancient ts as a pid-reuse backstop) is **reclaimed**.
+- **Tool-loop circuit breaker** (`circuitBreakerTrip`) — an autonomous run
+  (scheduled agent/study) tracks `exact_failure` / `same_tool_failure` /
+  `no_progress`; at the threshold (default 3) it **hard-stops** the turn and logs,
+  so a stuck loop can't keep spending. The interactive main chat only **soft-warns**
+  (a human is present); identical-arg spins are still hard-cut by the loop guard.
+
 ## Ops, args, output
 | op | args | output | risk |
 |----|------|--------|------|

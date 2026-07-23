@@ -45,6 +45,8 @@ export interface RunStudyOpts {
   /** UNATTENDED only: DANGEROUS-mode state (still never auto-runs sensitive) + the sensitive-action queue. */
   dangerous?: boolean;
   queueApproval?: (toolName: string, args: unknown) => void;
+  /** Per-run hard-interrupt (scheduler) — aborts the research turn when it fires. */
+  signal?: AbortSignal;
 }
 
 export interface RunStudyResult {
@@ -108,6 +110,7 @@ export async function runStudy(ctx: ToolCtx, agentId: string, topic: string, opt
       dailyTokenBudget: agent.dailyTokenBudget,
       system: context,
       task: researchPrompt(t),
+      signal: opts.signal,
       unattended: { dangerous: opts.dangerous ?? false, queue: opts.queueApproval ?? (() => {}) },
     });
     if (!turn.ok) return { ok: false, error: turn.error, budgetExhausted: turn.budgetExhausted };

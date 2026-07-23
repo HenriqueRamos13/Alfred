@@ -10,6 +10,8 @@
  */
 
 import { randomUUID } from 'node:crypto';
+import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
+import { join } from 'node:path';
 import { streamText, tool, jsonSchema, stepCountIs } from 'ai';
 import type { ToolSet } from 'ai';
 import {
@@ -20,14 +22,23 @@ import {
   jobActionDecision,
   escalateForTrifecta,
   nextApprovalStatus,
+  catchupDecision,
+  lockDecision,
+  updateCircuit,
+  circuitBreakerTrip,
+  isToolFailure,
+  INITIAL_CIRCUIT_STATE,
+  DEFAULT_CIRCUIT_THRESHOLDS,
   DEFAULT_GRANT,
   type JobRunState,
+  type LockInfo,
+  type CircuitState,
 } from './jobs-pure.ts';
 import { runGovernedTool, classifyAction, trifectaImpact, maskSecrets } from './governance.ts';
 import { safeFetch } from './url-safety.ts';
 import { addWidgetCard, removeWidgetCard, widgetBox, WIDGET_PREFIX, DISPLAY_MAIN, type Bounds } from './layout.ts';
 import { getSetting } from './db.ts';
-import { BudgetTracker, isOverDailyBudget } from './budget.ts';
+import { BudgetTracker, isOverDailyBudget, callSignature } from './budget.ts';
 import { resolveProvider } from './providers.ts';
 import { runStudy } from '../tools/agent-study.ts';
 import type { Capability, Governance, Job, JobApproval, JobRun, JobRuntime, StreamEvent, Tool, ToolCtx } from './types.ts';
@@ -37,6 +48,16 @@ type DB = import('better-sqlite3').Database;
 // setTimeout truncates delays above ~24.8 days (2^31-1 ms) and would fire
 // immediately; clamp and re-arm past the ceiling.
 const MAX_DELAY = 2_147_483_647;
+
+/** Is a pid alive? kill(pid,0) throws ESRCH when gone; EPERM means it exists (not ours). */
+function pidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code === 'EPERM';
+  }
+}
 
 // ── persistence (thin IO; no pure logic here) ────────────────────────────────
 
@@ -334,8 +355,15 @@ export async function resolveApproval(
 
 // ── the timer engine ─────────────────────────────────────────────────────────
 
-/** Extension port: run a due job (fetch/agent). Default = the real fetch + agent runners. */
-export type JobRunner = (job: Job) => Promise<void>;
+/**
+ * Extension port: run a due job (fetch/agent). Default = the real fetch + agent
+ * runners. The `signal` is aborted by the per-run hard-interrupt timeout — the
+ * default runners wire it into their AI-SDK turn so a runaway run is cut.
+ */
+export type JobRunner = (job: Job, signal?: AbortSignal) => Promise<void>;
+
+/** Per-run hard-interrupt: a single job run may not exceed this (default 5min). */
+const DEFAULT_JOB_MAX_RUN_MS = 5 * 60_000;
 
 /**
  * Everything the AGENT runner needs, injected from the orchestrator (which owns
@@ -369,6 +397,10 @@ export interface SchedulerOpts {
   emit?: (event: StreamEvent) => void;
   /** Agent-runner environment; absent → agent jobs are skipped-with-a-log. */
   agent?: JobAgentEnv;
+  /** Workspace root; the cross-process tick lock lives at <workspace>/.alfred/. Absent → no lock (tests/headless). */
+  workspace?: string;
+  /** Per-run hard-interrupt cap (ms). Default ALFRED_JOB_MAX_RUN_MS or 5min. */
+  maxRunMs?: number;
 }
 
 /** Unattended-agent system prompt: single autonomous turn, no human, grant-limited. */
@@ -400,6 +432,8 @@ export class JobScheduler {
   private readonly log: (msg: string) => void;
   private readonly emit?: (event: StreamEvent) => void;
   private readonly agentEnv?: JobAgentEnv;
+  private readonly workspace?: string;
+  private readonly maxRunMs: number;
 
   constructor(db: DB, opts: SchedulerOpts = {}) {
     this.db = db;
@@ -407,14 +441,50 @@ export class JobScheduler {
     this.log = opts.log ?? ((m) => console.log(`[alfred] scheduler: ${m}`));
     this.emit = opts.emit;
     this.agentEnv = opts.agent;
+    this.workspace = opts.workspace;
+    this.maxRunMs = opts.maxRunMs ?? (Number(process.env.ALFRED_JOB_MAX_RUN_MS) || DEFAULT_JOB_MAX_RUN_MS);
     this.runJob =
       opts.runJob ??
-      (async (job) => {
-        if (job.kind === 'fetch') return this.runFetch(job);
-        if (job.kind === 'study') return this.runStudyJob(job);
-        return this.runAgent(job);
+      (async (job, signal) => {
+        if (job.kind === 'fetch') return this.runFetch(job, signal);
+        if (job.kind === 'study') return this.runStudyJob(job, signal);
+        return this.runAgent(job, signal);
       });
     activeScheduler = this;
+  }
+
+  /**
+   * Acquire (or refresh) the cross-process tick lock, or report we must stay
+   * passive because another LIVE Alfred process holds it. Prevents two processes
+   * double-firing the same job. Liveness is a real process.kill(pid,0) probe;
+   * lockDecision (pure) turns {existing, alive} into acquire | passive | reclaim.
+   * ponytail: read-decide-write is not atomic (no O_EXCL) — fine for a personal
+   * single-user app where two Alfreds is an accidental double-launch, not a race;
+   * upgrade path: open with 'wx' + a rename dance if true contention ever matters.
+   */
+  private tickLockOk(): boolean {
+    if (!this.workspace) return true; // headless / tests → no cross-process guard
+    const dir = join(this.workspace, '.alfred');
+    const file = join(dir, 'scheduler.tick.lock');
+    const myPid = process.pid;
+    const now = this.now();
+    let existing: LockInfo | null = null;
+    try {
+      const p = JSON.parse(readFileSync(file, 'utf8')) as { pid?: unknown; ts?: unknown };
+      if (typeof p.pid === 'number' && typeof p.ts === 'number') {
+        existing = { pid: p.pid, ts: p.ts, alive: pidAlive(p.pid) };
+      }
+    } catch {
+      existing = null; // missing / corrupt → treat as free
+    }
+    if (lockDecision(existing, now, myPid) === 'passive') return false;
+    try {
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(file, JSON.stringify({ pid: myPid, ts: now }));
+    } catch (err) {
+      this.log(`tick-lock write failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    return true;
   }
 
   /**
@@ -423,7 +493,10 @@ export class JobScheduler {
    * tokens (never touches the budget). Any failure is logged, never thrown — a
    * bad fetch must not kill the scheduler.
    */
-  private async runFetch(job: Job): Promise<void> {
+  private async runFetch(job: Job, _signal?: AbortSignal): Promise<void> {
+    // safeFetch has its own connect/read timeout, and the scheduler's per-run
+    // hard-interrupt races the whole run, so a fetch can't monopolise the tick —
+    // no extra signal wiring needed here (kept in the signature for uniformity).
     const ts = this.now();
     const url = job.source?.url;
     if (!url) {
@@ -469,7 +542,7 @@ export class JobScheduler {
    * job's grant + the per-job daily budget + the global kill-switch + the step
    * cap. Never throws — a failed run is logged, the scheduler survives.
    */
-  private async runAgent(job: Job): Promise<void> {
+  private async runAgent(job: Job, signal?: AbortSignal): Promise<void> {
     const env = this.agentEnv;
     const startTs = this.now();
     if (!env) {
@@ -539,14 +612,35 @@ export class JobScheduler {
     };
     const jobCtx: ToolCtx = { ...env.ctx, sessionId: jobSessionId, governance: jobGovernance };
 
+    // The internal controller is aborted by the mid-run budget check (prepareStep)
+    // AND by the scheduler's per-run hard-interrupt (the injected `signal`).
     const controller = new AbortController();
+    if (signal) {
+      if (signal.aborted) controller.abort();
+      else signal.addEventListener('abort', () => controller.abort(), { once: true });
+    }
+    // Tool-loop circuit breaker: a scheduled agent job is AUTONOMOUS, so a
+    // repeated-failure / no-progress spin HARD-STOPS (aborts the turn) before it
+    // burns the per-job/global budget looping — a denied/queued sensitive call
+    // counts as a non-progressing failure, so hammering a blocked tool trips it too.
+    let circuit: CircuitState = INITIAL_CIRCUIT_STATE;
     const set: ToolSet = {};
     for (const t of env.tools) {
       set[t.name] = tool({
         description: t.description,
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         inputSchema: jsonSchema(t.inputSchema as any),
-        execute: (args: unknown) => this.gateJobTool(job, t, args, { grant, dangerous, runState, jobCtx, jobSessionId, notify: env.notify }),
+        execute: async (args: unknown) => {
+          const out = await this.gateJobTool(job, t, args, { grant, dangerous, runState, jobCtx, jobSessionId, notify: env.notify });
+          const failed = isToolFailure(out);
+          circuit = updateCircuit(circuit, { toolName: t.name, sig: callSignature(t.name, args), failed, progressed: !failed });
+          const trip = circuitBreakerTrip(circuit.counters, DEFAULT_CIRCUIT_THRESHOLDS, true);
+          if (trip.stop) {
+            this.log(`agent job ${job.id} "${job.title}" circuit breaker: ${trip.reason} — run interrupted`);
+            controller.abort();
+          }
+          return out;
+        },
       });
     }
 
@@ -601,7 +695,7 @@ export class JobScheduler {
    * global kill-switch. Sensitive actions queue for later approval (fail-closed).
    * Never throws — a failed run is logged and the scheduler survives.
    */
-  private async runStudyJob(job: Job): Promise<void> {
+  private async runStudyJob(job: Job, signal?: AbortSignal): Promise<void> {
     const env = this.agentEnv;
     const ts = this.now();
     if (!env) {
@@ -639,6 +733,7 @@ export class JobScheduler {
     try {
       res = await runStudy(env.ctx, s.agentId, s.topic, {
         unattended: true,
+        signal,
         dangerous: env.dangerous?.() ?? false,
         // A sensitive action the studying agent attempts is parked for the user (fail-closed).
         queueApproval: (toolName, args) => {
@@ -782,7 +877,19 @@ export class JobScheduler {
   private arm(job: Job): void {
     this.disarm(job.id);
     const now = this.now();
-    let next = job.runtime.nextRunTs ?? nextRun(job.schedule, now, job.runtime.lastRunTs);
+    // A future stored nextRunTs is honoured verbatim (normal cadence + the
+    // MAX_DELAY ceiling re-arm). When the stored slot is absent or already
+    // PAST (the app was off across it), catchupDecision clamps it: run ONE
+    // catch-up now if we are still inside the window / grace, otherwise skip the
+    // missed slot(s) and arm the next future fire — never fire every missed slot.
+    const stored = job.runtime.nextRunTs;
+    let next: number;
+    if (stored !== undefined && stored > now) {
+      next = stored;
+    } else {
+      const cd = catchupDecision(job.schedule, job.runtime.lastRunTs, now);
+      next = cd.runNow ? now : cd.next;
+    }
     if (job.runtime.nextRunTs !== next) {
       job = updateJob(this.db, job.id, { runtime: { ...job.runtime, nextRunTs: next } }) ?? job;
     }
@@ -813,12 +920,42 @@ export class JobScheduler {
   private async fire(jobId: string): Promise<void> {
     const job = getJob(this.db, jobId);
     if (!job || !job.enabled || job.runtime.pausedReason) return;
+
+    // Cross-process guard: if another LIVE Alfred holds the tick lock, stay
+    // passive (don't run), but re-arm a future slot so we take over if it dies.
+    if (!this.tickLockOk()) {
+      this.log(`job ${jobId} "${job.title}" skipped: another process holds the tick lock`);
+      const nextTs = catchupDecision(job.schedule, job.runtime.lastRunTs, this.now()).next;
+      const updated = updateJob(this.db, jobId, { runtime: { ...job.runtime, nextRunTs: nextTs } });
+      if (updated) this.arm(updated);
+      return;
+    }
+
     const startTs = this.now();
-    try {
-      await this.runJob(job);
-    } catch (err) {
-      // Log the original error with context; a bad run must not kill the engine.
-      this.log(`job ${jobId} runner threw: ${err instanceof Error ? err.message : String(err)}`);
+    // Per-run hard-interrupt: race the run against a timeout that aborts it (the
+    // default runners wire the signal into their AI-SDK turn). The race
+    // guarantees the tick moves on even if a run ignores the abort, so one
+    // runaway job can neither monopolise the scheduler nor crash it.
+    const ac = new AbortController();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const outcome = await Promise.race<'done' | 'error' | 'timeout'>([
+      this.runJob(job, ac.signal).then(
+        () => 'done' as const,
+        (err) => {
+          this.log(`job ${jobId} runner threw: ${err instanceof Error ? err.message : String(err)}`);
+          return 'error' as const;
+        },
+      ),
+      new Promise<'timeout'>((resolve) => {
+        timer = setTimeout(() => resolve('timeout'), this.maxRunMs);
+        timer.unref?.();
+      }),
+    ]);
+    if (timer) clearTimeout(timer);
+    if (outcome === 'timeout') {
+      ac.abort();
+      this.log(`job ${jobId} "${job.title}" hard-interrupted after ${this.maxRunMs}ms`);
+      logRun(this.db, { jobId, ts: startTs, ok: false, tokens: 0, error: `run exceeded ALFRED_JOB_MAX_RUN_MS (${this.maxRunMs}ms) — hard-interrupted` });
     }
     // Reschedule from the FRESH row — the runner may have mutated runtime
     // (tokens, pausedReason). A run that paused the job is not re-armed.

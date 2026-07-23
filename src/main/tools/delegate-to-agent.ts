@@ -36,11 +36,22 @@ import {
   type DelegationRole,
   type SpawnLimits,
 } from '../core/team-pure.ts';
-import { grantAllows, jobActionDecision, escalateForTrifecta, type JobRunState } from '../core/jobs-pure.ts';
+import {
+  grantAllows,
+  jobActionDecision,
+  escalateForTrifecta,
+  updateCircuit,
+  circuitBreakerTrip,
+  isToolFailure,
+  INITIAL_CIRCUIT_STATE,
+  DEFAULT_CIRCUIT_THRESHOLDS,
+  type JobRunState,
+  type CircuitState,
+} from '../core/jobs-pure.ts';
 import { resolveProvider } from '../core/providers.ts';
 import { agentToSpec, modelSupportsVision, buildToolModelOutput } from '../core/modelCatalog.ts';
 import { runGovernedTool, classifyAction, maskSecrets, trifectaImpact } from '../core/governance.ts';
-import { BudgetTracker, isOverDailyBudget, agentTokensToday, dayKey } from '../core/budget.ts';
+import { BudgetTracker, isOverDailyBudget, agentTokensToday, dayKey, callSignature } from '../core/budget.ts';
 import { spawnClaudeCli, dangerousArgs } from '../core/claudeSpawn.ts';
 import type { Capability, Governance, Tool, ToolCtx } from '../core/types.ts';
 
@@ -206,6 +217,8 @@ export interface AgentTurnSpec {
    * (a human is present; sensitive actions take the normal approval path).
    */
   unattended?: { dangerous: boolean; queue: (toolName: string, args: unknown) => void };
+  /** Per-run hard-interrupt (scheduler) — aborts the turn when it fires. */
+  signal?: AbortSignal;
 }
 
 /**
@@ -309,13 +322,19 @@ export async function runAgentTurn(ctx: ToolCtx, spec: AgentTurnSpec): Promise<A
   const brainHasVision = modelSupportsVision(provider, model);
 
   const controller = new AbortController();
+  // Per-run hard-interrupt from the scheduler: abort the turn when it fires.
+  if (spec.signal) {
+    if (spec.signal.aborted) controller.abort();
+    else spec.signal.addEventListener('abort', () => controller.abort(), { once: true });
+  }
+  // Tool-loop circuit breaker: a scheduled/unattended run HARD-STOPS on repeated
+  // failure / no-progress so it can't burn the budget looping; an attended
+  // delegate soft-warns (the human sees it). State threaded across tool calls.
+  let circuit: CircuitState = INITIAL_CIRCUIT_STATE;
+  let circuitWarned = false;
   const set: ToolSet = {};
   for (const t of subTools) {
-    set[t.name] = tool({
-      description: t.description,
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      inputSchema: jsonSchema(t.inputSchema as any),
-      execute: async (args: unknown) => {
+    const runOne = async (args: unknown): Promise<unknown> => {
         if (unattended) {
           // UNATTENDED: sensitive → queue/deny (pierces dangerous), in-grant benign → allow.
           let decision = jobActionDecision({ grant: effGrant, dangerous: unattended.dangerous, unattended: true }, t.name, args);
@@ -343,6 +362,24 @@ export async function runAgentTurn(ctx: ToolCtx, spec: AgentTurnSpec): Promise<A
           return { ok: false, error: `not permitted by ${agentId}'s grant/role: ${t.name}` };
         }
         return runGovernedTool(t, args, baseCtx);
+    };
+    set[t.name] = tool({
+      description: t.description,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      inputSchema: jsonSchema(t.inputSchema as any),
+      execute: async (args: unknown) => {
+        const out = await runOne(args);
+        const failed = isToolFailure(out);
+        circuit = updateCircuit(circuit, { toolName: t.name, sig: callSignature(t.name, args), failed, progressed: !failed });
+        const trip = circuitBreakerTrip(circuit.counters, DEFAULT_CIRCUIT_THRESHOLDS, !!unattended);
+        if (trip.stop) {
+          ctx.emit({ kind: 'error', sessionId: ctx.sessionId, message: `circuit breaker: ${trip.reason} — corrida autónoma interrompida (${agentId})` });
+          controller.abort();
+        } else if (trip.warn && !circuitWarned) {
+          circuitWarned = true;
+          ctx.emit({ kind: 'error', sessionId: ctx.sessionId, message: `circuit breaker (aviso): ${trip.reason} — possível loop de ferramentas (${agentId})` });
+        }
+        return out;
       },
       toModelOutput: ({ output }) => buildToolModelOutput(output, brainHasVision),
     });

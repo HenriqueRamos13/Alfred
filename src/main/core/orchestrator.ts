@@ -38,6 +38,13 @@ import type {
 } from './types.ts';
 import { getLayout as readLayout, updateCard as writeCard } from './layout.ts';
 import { BudgetTracker, callSignature, isLoop, isOverDailyBudget } from './budget.ts';
+import {
+  updateCircuit,
+  circuitBreakerTrip,
+  INITIAL_CIRCUIT_STATE,
+  DEFAULT_CIRCUIT_THRESHOLDS,
+  type CircuitState,
+} from './jobs-pure.ts';
 import { createGovernance, runGovernedTool } from './governance.ts';
 import { startMcpBridge, type McpBridgeHandle } from './mcpServer.ts';
 import { ensureClaudeMd, ensureScaffold, readStable, recentMemoryText, formatTranscript, readIndex, listInbox } from './memory.ts';
@@ -183,6 +190,11 @@ export class Orchestrator {
   private readonly history: string[] = [];
   private stopInfo: StopInfo | null = null;
   private usdWarned = false;
+  // Tool-loop circuit breaker (Phase 6 stage 5): the MAIN chat is INTERACTIVE, so
+  // this only SOFT-WARNs (a human is present). Autonomous/scheduled runs hard-stop
+  // in runAgentTurn. isLoop still hard-stops identical-arg spins below.
+  private circuit: CircuitState = INITIAL_CIRCUIT_STATE;
+  private circuitWarned = false;
 
   constructor(private readonly deps: OrchestratorDeps) {
     this.budget = new BudgetTracker(
@@ -492,7 +504,17 @@ export class Orchestrator {
       return { error: 'Loop detected — task halted.' };
     }
     this.history.push(sig);
-    return runGovernedTool(t, args, this.deps.ctx);
+    const out = await runGovernedTool(t, args, this.deps.ctx);
+    // Soft-warn on a repeated-failure / no-progress pattern (interactive → never
+    // hard-stop; the identical-call loop guard above is the only hard cut here).
+    const failed = !!out && typeof out === 'object' && 'error' in (out as Record<string, unknown>);
+    this.circuit = updateCircuit(this.circuit, { toolName: t.name, sig, failed, progressed: !failed });
+    const trip = circuitBreakerTrip(this.circuit.counters, DEFAULT_CIRCUIT_THRESHOLDS, false);
+    if (trip.warn && !this.circuitWarned) {
+      this.circuitWarned = true;
+      this.deps.ctx.emit({ kind: 'error', sessionId: this.deps.ctx.sessionId, message: `Aviso: possível loop de ferramentas (${trip.reason}). Verifica se a tarefa está a progredir.` });
+    }
+    return out;
   }
 }
 
@@ -1175,6 +1197,7 @@ export function createOrchestrator(opts: CreateOrchestratorOpts): OrchestratorHa
   // jobs on boot; timers are .unref()'d so it never holds the process open.
   const scheduler = new JobScheduler(db, {
     emit,
+    workspace: config.workspace,
     agent: {
       ctx,
       tools,

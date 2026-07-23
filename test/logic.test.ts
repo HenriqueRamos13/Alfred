@@ -68,6 +68,16 @@ import {
   escalateForTrifecta,
   isOutboundAction,
   nextApprovalStatus,
+  catchupDecision,
+  lockDecision,
+  updateCircuit,
+  circuitBreakerTrip,
+  isToolFailure,
+  INITIAL_CIRCUIT_STATE,
+  DEFAULT_CIRCUIT_THRESHOLDS,
+  CATCHUP_MIN_MS,
+  GRACE_MS,
+  type CircuitState,
 } from '../src/main/core/jobs-pure.ts';
 import {
   humanizeSchedule,
@@ -2113,6 +2123,132 @@ test('nextApprovalStatus — a pending approval resolves once, then is immutable
   // idempotent: a resolved approval never flips
   assert.equal(nextApprovalStatus('approved', false), 'approved');
   assert.equal(nextApprovalStatus('denied', true), 'denied');
+});
+
+// ── scheduler hardening (Phase 6 stage 5): catchup / grace ───────────────────
+
+test('catchupDecision — interval missed WITHIN the clamped window runs one catchup', () => {
+  const everyMs = 3_600_000; // 1h → window clamp(30min, 2min..2h) = 30min
+  const last = Date.parse('2026-07-21T10:00:00Z');
+  const d = catchupDecision({ type: 'interval', everyMs }, last, last + everyMs + 5 * 60_000); // 5min late
+  assert.equal(d.runNow, true);
+});
+
+test('catchupDecision — interval missed OUTSIDE the window skips (no immediate fire), next is future', () => {
+  const everyMs = 3_600_000;
+  const last = Date.parse('2026-07-21T10:00:00Z');
+  const now = last + everyMs + 40 * 60_000; // 40min late > 30min window
+  const d = catchupDecision({ type: 'interval', everyMs }, last, now);
+  assert.equal(d.runNow, false);
+  assert.ok(d.next > now, 'next must be in the future, not now (no immediate re-fire)');
+});
+
+test('catchupDecision — interval window floor is 2min (short period clamps up)', () => {
+  const everyMs = 30_000; // /2 = 15s → clamped up to 120s floor
+  const last = Date.parse('2026-07-21T10:00:00Z');
+  const due = last + everyMs;
+  assert.equal(catchupDecision({ type: 'interval', everyMs }, last, due + 90_000).runNow, true, '90s late <= 120s floor');
+  assert.equal(catchupDecision({ type: 'interval', everyMs }, last, due + 130_000).runNow, false, '130s late > 120s floor');
+  assert.equal(CATCHUP_MIN_MS, 120_000);
+});
+
+test('catchupDecision — interval not overdue does not run; fresh job just schedules', () => {
+  const everyMs = 3_600_000;
+  const last = Date.parse('2026-07-21T10:00:00Z');
+  const notDue = catchupDecision({ type: 'interval', everyMs }, last, last + 10 * 60_000);
+  assert.equal(notDue.runNow, false);
+  assert.equal(notDue.next, last + everyMs, 'next is the pending due time');
+  const fresh = catchupDecision({ type: 'interval', everyMs }, undefined, last);
+  assert.equal(fresh.runNow, false);
+});
+
+test('catchupDecision — daily one-shot fires inside grace, not outside / not if already run', () => {
+  const at = '09:00';
+  const todayAt = new Date(2026, 6, 21, 9, 0, 0, 0).getTime();
+  // within grace, never run today
+  assert.equal(catchupDecision({ type: 'daily', at }, undefined, todayAt + 60_000).runNow, true);
+  assert.equal(GRACE_MS, 120_000);
+  // outside grace
+  assert.equal(catchupDecision({ type: 'daily', at }, undefined, todayAt + 200_000).runNow, false);
+  // already ran today (lastRun >= todayAt) → no re-fire
+  assert.equal(catchupDecision({ type: 'daily', at }, todayAt + 10_000, todayAt + 60_000).runNow, false);
+  // before today's slot → not a catchup, next is today's slot
+  const before = catchupDecision({ type: 'daily', at }, undefined, new Date(2026, 6, 21, 8, 0, 0).getTime());
+  assert.equal(before.runNow, false);
+  assert.equal(before.next, todayAt);
+});
+
+// ── scheduler hardening: cross-process tick lock ─────────────────────────────
+
+test('lockDecision — free / own pid acquires, live+fresh holder is passive, dead or ancient reclaims', () => {
+  const now = 1_000_000_000_000;
+  const mine = 4242;
+  assert.equal(lockDecision(null, now, mine), 'acquire');
+  assert.equal(lockDecision({ pid: mine, ts: now - 5000, alive: true }, now, mine), 'acquire');
+  assert.equal(lockDecision({ pid: 999, ts: now - 5000, alive: true }, now, mine), 'passive');
+  assert.equal(lockDecision({ pid: 999, ts: now - 5000, alive: false }, now, mine), 'reclaim-stale');
+  // alive but ancient ts (pid reuse backstop) → reclaim
+  assert.equal(lockDecision({ pid: 999, ts: now - 60 * 60_000, alive: true }, now, mine), 'reclaim-stale');
+});
+
+// ── scheduler hardening: tool-loop circuit breaker ───────────────────────────
+
+test('updateCircuit — exactFailure counts identical failing calls, resets on success / new sig', () => {
+  let s: CircuitState = INITIAL_CIRCUIT_STATE;
+  s = updateCircuit(s, { toolName: 'shell', sig: 'shell(a)', failed: true, progressed: false });
+  assert.equal(s.counters.exactFailure, 1);
+  s = updateCircuit(s, { toolName: 'shell', sig: 'shell(a)', failed: true, progressed: false });
+  assert.equal(s.counters.exactFailure, 2);
+  s = updateCircuit(s, { toolName: 'shell', sig: 'shell(b)', failed: true, progressed: false });
+  assert.equal(s.counters.exactFailure, 1, 'different args reset the identical-call count');
+  s = updateCircuit(s, { toolName: 'shell', sig: 'shell(b)', failed: false, progressed: true });
+  assert.equal(s.counters.exactFailure, 0, 'success resets');
+});
+
+test('updateCircuit — sameToolFailure counts a tool failing regardless of args', () => {
+  let s: CircuitState = INITIAL_CIRCUIT_STATE;
+  s = updateCircuit(s, { toolName: 'browser', sig: 'browser(1)', failed: true, progressed: false });
+  s = updateCircuit(s, { toolName: 'browser', sig: 'browser(2)', failed: true, progressed: false });
+  s = updateCircuit(s, { toolName: 'browser', sig: 'browser(3)', failed: true, progressed: false });
+  assert.equal(s.counters.sameToolFailure, 3);
+  assert.equal(s.counters.exactFailure, 1, 'args differed each time');
+  s = updateCircuit(s, { toolName: 'filesystem', sig: 'fs(1)', failed: true, progressed: false });
+  assert.equal(s.counters.sameToolFailure, 1, 'a different tool resets');
+});
+
+test('updateCircuit — noProgress counts idempotent/failed steps, resets on progress', () => {
+  let s: CircuitState = INITIAL_CIRCUIT_STATE;
+  s = updateCircuit(s, { toolName: 'a', sig: 'a()', failed: false, progressed: false });
+  s = updateCircuit(s, { toolName: 'b', sig: 'b()', failed: false, progressed: false });
+  assert.equal(s.counters.noProgress, 2, 'counts across different tools');
+  s = updateCircuit(s, { toolName: 'c', sig: 'c()', failed: false, progressed: true });
+  assert.equal(s.counters.noProgress, 0);
+});
+
+test('circuitBreakerTrip — hard-stop autonomous, soft-warn interactive, quiet below threshold', () => {
+  const t = DEFAULT_CIRCUIT_THRESHOLDS;
+  assert.deepEqual(circuitBreakerTrip({ exactFailure: 2, sameToolFailure: 1, noProgress: 0 }, t, true), { stop: false, warn: false });
+  const auto = circuitBreakerTrip({ exactFailure: 3, sameToolFailure: 0, noProgress: 0 }, t, true);
+  assert.equal(auto.stop, true);
+  assert.match(auto.reason!, /exact_failure/);
+  const inter = circuitBreakerTrip({ exactFailure: 3, sameToolFailure: 0, noProgress: 0 }, t, false);
+  assert.deepEqual({ stop: inter.stop, warn: inter.warn }, { stop: false, warn: true });
+  // each counter can trip
+  assert.equal(circuitBreakerTrip({ exactFailure: 0, sameToolFailure: 3, noProgress: 0 }, t, true).stop, true);
+  assert.equal(circuitBreakerTrip({ exactFailure: 0, sameToolFailure: 0, noProgress: 3 }, t, true).stop, true);
+});
+
+test('isToolFailure — governed {error} (no ok) and gate {ok:false} both fail; success does not', () => {
+  // governed-tool error path (governance.ts returns {error} with NO ok field)
+  assert.equal(isToolFailure({ error: 'boom' }), true);
+  // job/delegate gate deny/queue
+  assert.equal(isToolFailure({ ok: false, error: 'out of grant' }), true);
+  // successes: raw result object, ok:true, empty object, primitives
+  assert.equal(isToolFailure({ ok: true, error: null }), false);
+  assert.equal(isToolFailure({ result: 42 }), false);
+  assert.equal(isToolFailure({}), false);
+  assert.equal(isToolFailure(undefined), false);
+  assert.equal(isToolFailure('done'), false);
 });
 
 // ── scheduled jobs: per-job budget pre-check (runner skips an exhausted job) ──
