@@ -76,7 +76,7 @@ import {
 } from '../src/main/core/jobs-format-pure.ts';
 import type { Job } from '../src/main/core/types.ts';
 import { wrapWidgetHtml, WIDGET_CSP, WIDGET_HTML_MAX_BYTES } from '../src/main/core/widget-html-pure.ts';
-import { confirmMatches, factoryResetPaths } from '../src/main/core/reset.ts';
+import { confirmMatches, factoryResetPaths, factoryResetTables } from '../src/main/core/reset.ts';
 import { grillMeEnabled } from '../src/main/core/settings-pure.ts';
 import {
   defaultProviderId,
@@ -298,6 +298,15 @@ test('factoryResetPaths — only workspace/memory, workspace/projects, dataDir/b
   assert.deepEqual(paths, ['/ws/memory', '/ws/projects', '/data/browser-profile']);
   // every path is confined to the workspace or the data dir — never anything else
   assert.ok(paths.every((p) => p.startsWith('/ws/') || p.startsWith('/data/')));
+});
+
+test('factoryResetTables — wipes the scheduled-jobs trio so no autonomous task survives', () => {
+  const tables = factoryResetTables();
+  // regression guard for the security gap: an agent job left in these tables
+  // would keep firing + re-arm on boot after "apagar tudo".
+  for (const t of ['scheduled_jobs', 'job_runs', 'job_approvals']) assert.ok(tables.includes(t), t);
+  // still clears the pre-existing tables too
+  for (const t of ['messages', 'sessions', 'audit', 'accounts', 'settings', 'layout']) assert.ok(tables.includes(t), t);
 });
 
 // ── grill-me toggle: default ON, only explicit "0" disables ──────────────────

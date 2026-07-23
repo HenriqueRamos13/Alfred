@@ -46,7 +46,7 @@ import { runCurator } from './curator.ts';
 import { createSecrets } from './secrets.ts';
 import { getProject, listProjects } from './projects.ts';
 import { getGraph as buildVaultGraph, getNote as readNotePreview, type Graph } from './graph.ts';
-import { factoryResetPaths } from './reset.ts';
+import { factoryResetPaths, factoryResetTables } from './reset.ts';
 import { resolveProvider, listBrains, resolveActiveBrainId } from './providers.ts';
 import type { BrainInfo } from './providers.ts';
 import { askReference as runReferenceTurn } from './reference.ts';
@@ -1108,6 +1108,7 @@ export function createOrchestrator(opts: CreateOrchestratorOpts): OrchestratorHa
       //    (wake + manual), the browser and the MCP bridge. Best-effort each.
       active?.abort();
       tts.stop();
+      scheduler.stop(); // disarm all job timers so no autonomous job fires/re-arms after the wipe
       wakeSuppressed = true;
       try {
         wakeword.stopWakeword();
@@ -1129,13 +1130,15 @@ export function createOrchestrator(opts: CreateOrchestratorOpts): OrchestratorHa
         await ctx.secrets.delete(acc.secretRef).catch((err) => log(`delete secret ${acc.secretRef}`, err));
       }
 
-      // 3. Clear every DB table (factory-empty). The file/handle stays valid —
-      //    the whole app holds this handle, so wiping rows is the robust reset.
+      // 3. Clear every DB table (factory-empty), scheduled jobs + their run log
+      //    and approval queue included, so no autonomous task survives. The
+      //    file/handle stays valid — the whole app holds this handle, so wiping
+      //    rows is the robust reset. `db.exec` runs the batch in one call.
       try {
         db.exec(
-          'DELETE FROM messages; DELETE FROM sessions; DELETE FROM audit; DELETE FROM budget;' +
-            ' DELETE FROM usage_by_model; DELETE FROM projects; DELETE FROM accounts;' +
-            ' DELETE FROM settings; DELETE FROM layout;',
+          factoryResetTables()
+            .map((t) => `DELETE FROM ${t};`)
+            .join(''),
         );
       } catch (err) {
         log('clear database', err);

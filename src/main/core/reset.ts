@@ -24,3 +24,26 @@ export { confirmMatches } from './reset-pure.ts';
 export function factoryResetPaths(workspace: string, dataDir: string): string[] {
   return [join(workspace, 'memory'), join(workspace, 'projects'), join(dataDir, 'browser-profile')];
 }
+
+/**
+ * Every DB table a factory reset empties. Names are hardcoded constants (never
+ * user input) — the caller builds `DELETE FROM <t>` per row. The scheduled-jobs
+ * trio MUST be here: an autonomous agent job that survives "apagar tudo" would
+ * keep firing + re-arm on boot, so a factory reset must wipe them too.
+ */
+export function factoryResetTables(): string[] {
+  return [
+    'messages',
+    'sessions',
+    'audit',
+    'budget',
+    'usage_by_model',
+    'projects',
+    'accounts',
+    'settings',
+    'layout',
+    'scheduled_jobs',
+    'job_runs',
+    'job_approvals',
+  ];
+}
