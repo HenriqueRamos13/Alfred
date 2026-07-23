@@ -872,6 +872,182 @@ body {
   pointer-events: none;
 }
 
+/* ── team card (specialist roster) ─────────────────────────────────── */
+.team { display: flex; flex-direction: column; gap: 12px; }
+.team-section-head {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: #3a5866;
+  margin-bottom: 6px;
+}
+.team-section-head.amber { color: var(--amb); }
+.team-agent {
+  border: 1px solid var(--panel-border);
+  padding: 10px 12px;
+  margin-bottom: 8px;
+  background: transparent;
+}
+.team-agent.orchestrator {
+  border-color: color-mix(in oklab, var(--mag) 35%, transparent);
+  background: color-mix(in oklab, var(--mag) 5%, transparent);
+}
+.team-agent-head { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }
+.team-agent-name {
+  flex: 1;
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.team-role {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  border: 1px solid currentColor;
+  border-radius: 2px;
+  padding: 1px 6px;
+  flex-shrink: 0;
+}
+.team-role.orchestrator { color: var(--mag); }
+.team-role.leaf { color: var(--acc); }
+.team-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--muted);
+  margin-bottom: 6px;
+}
+.team-meta .v { color: var(--acc); }
+.team-topics { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 8px; }
+.team-topic {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text);
+  opacity: 0.85;
+  border: 1px solid color-mix(in oklab, var(--acc) 20%, transparent);
+  border-radius: 2px;
+  padding: 1px 6px;
+}
+.team-pending { margin-bottom: 8px; }
+.team-pending-head {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--amb);
+}
+.team-ap {
+  border: 1px solid color-mix(in oklab, var(--amb) 40%, transparent);
+  background: color-mix(in oklab, var(--amb) 7%, transparent);
+  padding: 7px 10px;
+  margin-top: 6px;
+}
+.team-ap-desc { font-size: 12px; line-height: 1.4; margin-bottom: 4px; }
+.team-ap-time { font-family: var(--font-mono); font-size: 10px; color: var(--dim); margin-bottom: 8px; }
+.team-btns { display: flex; gap: 6px; }
+
+/* ── projects card ─────────────────────────────────────────────────── */
+.projects { display: flex; flex-direction: column; gap: 7px; }
+.project { border: 1px solid color-mix(in oklab, var(--acc) 25%, transparent); padding: 8px 10px; }
+.project-head { display: flex; align-items: baseline; gap: 8px; }
+.project-name { font-weight: 600; font-size: 14px; color: var(--text); }
+.project-slug { font-family: var(--font-mono); font-size: 11px; color: var(--acc); }
+.project-date { margin-left: auto; font-family: var(--font-mono); font-size: 10px; color: var(--dim); flex-shrink: 0; }
+.project-meta { font-family: var(--font-mono); font-size: 10px; color: var(--dim); margin-top: 2px; }
+.project-summary { font-size: 12px; color: var(--muted); margin-top: 4px; }
+
+/* ── reference panel (isolated ◈ side-thread — magenta accent) ─────── */
+.reference-chat {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: min(420px, 92vw);
+  z-index: 60;
+  display: flex;
+  flex-direction: column;
+  background: var(--card);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border-left: 1px solid color-mix(in oklab, var(--mag) 45%, transparent);
+  box-shadow: 0 0 44px -6px color-mix(in oklab, var(--mag) 55%, transparent);
+  font-family: var(--font-head);
+  color: var(--text);
+}
+.reference-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  border-bottom: 1px solid color-mix(in oklab, var(--mag) 25%, transparent);
+  background: linear-gradient(90deg, color-mix(in oklab, var(--mag) 12%, transparent), transparent 75%);
+}
+.reference-badge {
+  font-family: var(--font-mono);
+  color: var(--mag);
+  border: 1px solid var(--mag);
+  border-radius: 2px;
+  padding: 1px 6px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  flex-shrink: 0;
+}
+.reference-title { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.reference-title .kind { color: var(--dim); font-family: var(--font-mono); font-size: 10px; }
+.reference-title .name { font-weight: 600; }
+.reference-close {
+  background: transparent;
+  border: 1px solid color-mix(in oklab, var(--mag) 30%, transparent);
+  color: var(--mag);
+  border-radius: 2px;
+  cursor: pointer;
+  width: 22px;
+  height: 18px;
+  padding: 0;
+  font-size: 11px;
+  line-height: 1;
+  flex-shrink: 0;
+}
+.reference-close:hover { color: var(--red); border-color: var(--red); background: color-mix(in oklab, var(--red) 30%, transparent); }
+.reference-body { flex: 1; overflow-y: auto; padding: 12px 14px; }
+.reference-form {
+  display: flex;
+  gap: 8px;
+  padding: 8px 10px;
+  border-top: 1px solid color-mix(in oklab, var(--mag) 25%, transparent);
+}
+.reference-input {
+  flex: 1;
+  box-sizing: border-box;
+  background: rgba(0, 0, 0, 0.35);
+  border: 1px solid color-mix(in oklab, var(--mag) 25%, transparent);
+  border-radius: 2px;
+  padding: 6px 10px;
+  color: var(--text);
+  font-family: var(--font-head);
+  font-size: 13px;
+}
+.reference-input:focus { outline: none; border-color: var(--mag); box-shadow: 0 0 10px color-mix(in oklab, var(--mag) 25%, transparent); }
+.reference-send {
+  background: color-mix(in oklab, var(--mag) 8%, transparent);
+  border: 1px solid var(--mag);
+  border-radius: 2px;
+  color: var(--mag);
+  cursor: pointer;
+  padding: 0 14px;
+  font-weight: 600;
+}
+.reference-send:hover:not(:disabled) { background: color-mix(in oklab, var(--mag) 20%, transparent); }
+.reference-send:disabled { opacity: 0.4; cursor: default; }
+
 /* ── approval overlay ──────────────────────────────────────────────── */
 .overlay {
   position: absolute;

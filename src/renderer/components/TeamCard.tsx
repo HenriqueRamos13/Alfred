@@ -63,77 +63,72 @@ export function TeamCard() {
   const orphanApprovals = approvals.filter((a) => !agentByJob[a.jobId] || !agents.some((ag) => ag.id === agentByJob[a.jobId]));
 
   const approvalRow = (a: JobApproval) => (
-    <div key={a.id} style={{ ...box, borderColor: 'var(--amber)', marginTop: 6 }}>
-      <div style={{ fontSize: 12, marginBottom: 6, lineHeight: 1.4 }}>{describeApproval(a.toolName, a.args)}</div>
-      <div style={{ fontSize: 10, color: 'var(--dim)', marginBottom: 8 }}>{relativeTime(a.ts, now)}</div>
-      <div style={{ display: 'flex', gap: 6 }}>
-        <button type="button" className="no-drag" style={{ ...btn, borderColor: 'var(--lime, #b8ff3a)', color: 'var(--lime, #b8ff3a)' }} onClick={() => resolve(a.id, true)}>
-          ✓ Aprovar
+    <div key={a.id} className="team-ap">
+      <div className="team-ap-desc">{describeApproval(a.toolName, a.args)}</div>
+      <div className="team-ap-time">{relativeTime(a.ts, now)}</div>
+      <div className="team-btns">
+        <button type="button" className="sched-ap-btn ok no-drag" onClick={() => resolve(a.id, true)}>
+          ✓ APROVAR
         </button>
-        <button type="button" className="no-drag" style={{ ...btn, borderColor: 'var(--red)', color: 'var(--red)' }} onClick={() => resolve(a.id, false)}>
-          ✕ Recusar
+        <button type="button" className="sched-ap-btn no no-drag" onClick={() => resolve(a.id, false)}>
+          ✕ RECUSAR
         </button>
       </div>
     </div>
   );
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 12, padding: '4px 2px', overflowY: 'auto', flex: 1, minHeight: 0 }}>
+    <div className="team">
       {orphanApprovals.length > 0 && (
         <div>
-          <div style={sectionHead}>APROVAÇÕES · {orphanApprovals.length}</div>
+          <div className="team-section-head amber">⚠ APROVAÇÕES · {orphanApprovals.length}</div>
           {orphanApprovals.map(approvalRow)}
         </div>
       )}
 
       <div>
-        <div style={sectionHead}>ESPECIALISTAS · {agents.length}</div>
+        <div className="team-section-head">ESPECIALISTAS · {agents.length}</div>
         {agents.length === 0 ? (
           <div className="empty">NO TEAM AGENTS</div>
         ) : (
           agents.map((agent) => {
             const pending = approvalsFor(agent.id);
+            const orch = agent.delegationRole === 'orchestrator';
             return (
-              <div key={agent.id} style={box}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
-                  <span style={{ flex: 1, fontSize: 13, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                    {agent.name}
-                  </span>
-                  <span style={{ fontSize: 9, textTransform: 'uppercase', color: agent.delegationRole === 'orchestrator' ? 'var(--magenta, #ff5cf0)' : 'var(--cyan, #35e5ff)', border: '1px solid currentColor', borderRadius: 4, padding: '0 5px' }}>
+              <div key={agent.id} className={`team-agent${orch ? ' orchestrator' : ''}`}>
+                <div className="team-agent-head">
+                  <span className="team-agent-name">{agent.name}</span>
+                  <span className={`team-role${orch ? ' orchestrator' : ' leaf'}`}>
                     {humanizeRole(agent.delegationRole)}
                   </span>
                 </div>
-                <div style={{ fontSize: 11, color: 'var(--dim)', display: 'flex', flexWrap: 'wrap', gap: '2px 12px', marginBottom: 6 }}>
+                <div className="team-meta">
                   <span>{agent.provider}:{agent.model}</span>
-                  <span>tok {formatAgentBudget(agent.tokensToday, agent.tokenBudgetDaily)}</span>
+                  <span>tok <span className="v">{formatAgentBudget(agent.tokensToday, agent.tokenBudgetDaily)}</span></span>
                 </div>
                 {agent.topics.length > 0 && (
-                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginBottom: 8 }}>
+                  <div className="team-topics">
                     {agent.topics.map((t) => (
-                      <span key={t} style={{ fontSize: 10, color: 'var(--text)', opacity: 0.85, border: '1px solid rgba(255,255,255,0.15)', borderRadius: 4, padding: '0 5px' }}>
-                        {t}
-                      </span>
+                      <span key={t} className="team-topic">{t}</span>
                     ))}
                   </div>
                 )}
                 {pending.length > 0 && (
-                  <div style={{ marginBottom: 8 }}>
-                    <div style={{ fontSize: 10, color: 'var(--amber)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>
-                      Aprovações pendentes · {pending.length}
-                    </div>
+                  <div className="team-pending">
+                    <div className="team-pending-head">Aprovações pendentes · {pending.length}</div>
                     {pending.map(approvalRow)}
                   </div>
                 )}
-                <div style={{ display: 'flex', gap: 6 }}>
+                <div className="team-btns">
                   {confirmDelete === agent.id ? (
                     <>
-                      <button type="button" className="no-drag" style={{ ...btn, borderColor: 'var(--red)', color: 'var(--red)' }} onClick={() => del(agent.id)}>
+                      <button type="button" className="sched-btn danger no-drag" onClick={() => del(agent.id)}>
                         Confirmar apagar
                       </button>
-                      <button type="button" className="no-drag" style={btn} onClick={() => setConfirmDelete(null)}>Cancelar</button>
+                      <button type="button" className="sched-btn no-drag" onClick={() => setConfirmDelete(null)}>Cancelar</button>
                     </>
                   ) : (
-                    <button type="button" className="no-drag" style={{ ...btn, borderColor: 'var(--red)', color: 'var(--red)' }} onClick={() => setConfirmDelete(agent.id)}>
+                    <button type="button" className="sched-btn danger no-drag" onClick={() => setConfirmDelete(agent.id)}>
                       🗑 Apagar
                     </button>
                   )}
@@ -146,30 +141,3 @@ export function TeamCard() {
     </div>
   );
 }
-
-const sectionHead: React.CSSProperties = {
-  fontSize: 10,
-  letterSpacing: '0.08em',
-  color: 'var(--dim)',
-  textTransform: 'uppercase',
-  marginBottom: 6,
-};
-
-const box: React.CSSProperties = {
-  border: '1px solid rgba(255,255,255,0.12)',
-  borderRadius: 8,
-  padding: '8px 10px',
-  marginBottom: 8,
-  background: 'var(--panel-2, rgba(255,255,255,0.02))',
-};
-
-const btn: React.CSSProperties = {
-  background: 'transparent',
-  border: '1px solid rgba(255,255,255,0.2)',
-  borderRadius: 6,
-  color: 'var(--dim)',
-  cursor: 'pointer',
-  fontFamily: 'inherit',
-  fontSize: 11,
-  padding: '3px 9px',
-};

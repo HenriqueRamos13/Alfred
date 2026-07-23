@@ -35,76 +35,26 @@ export function ReferenceChat({ target, title, messages, streaming, busy, onAsk,
   const kind = target.project ? 'PROJECT' : 'NOTE';
 
   return (
-    <div
-      className="reference-chat no-drag"
-      role="complementary"
-      aria-label="Reference"
-      style={{
-        position: 'fixed',
-        top: 0,
-        right: 0,
-        bottom: 0,
-        width: 'min(420px, 92vw)',
-        zIndex: 60,
-        display: 'flex',
-        flexDirection: 'column',
-        background: 'var(--glass)',
-        backdropFilter: 'blur(16px)',
-        WebkitBackdropFilter: 'blur(16px)',
-        borderLeft: '1px solid var(--cyan)',
-        boxShadow: '0 0 44px -6px var(--cyan)',
-        fontFamily: 'var(--font-mono, ui-monospace, monospace)',
-        color: 'var(--text)',
-      }}
-    >
-      <div
-        style={{
-          display: 'flex',
-          alignItems: 'center',
-          gap: 8,
-          padding: '12px 14px',
-          borderBottom: '1px solid rgba(53, 229, 255, 0.25)',
-        }}
-      >
-        <span
-          style={{
-            color: 'var(--cyan)',
-            border: '1px solid var(--cyan)',
-            borderRadius: 4,
-            padding: '1px 6px',
-            fontSize: 10,
-            fontWeight: 700,
-            letterSpacing: '0.08em',
-          }}
-        >
-          ◈ REFERENCE
-        </span>
-        <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-          <span style={{ color: 'var(--dim)', fontSize: 10 }}>{kind} </span>
-          <span style={{ fontWeight: 600 }}>{title}</span>
+    <div className="reference-chat no-drag" role="complementary" aria-label="Reference">
+      <div className="reference-head">
+        <span className="reference-badge">◈ REFERENCE</span>
+        <span className="reference-title">
+          <span className="kind">{kind} </span>
+          <span className="name">{title}</span>
         </span>
         <button
           type="button"
-          className="no-drag"
+          className="reference-close no-drag"
           onClick={onClose}
           title="Close (clears this ephemeral thread)"
-          style={{
-            background: 'transparent',
-            border: '1px solid rgba(255,255,255,0.15)',
-            borderRadius: 6,
-            color: 'var(--dim)',
-            cursor: 'pointer',
-            padding: '2px 8px',
-            fontFamily: 'inherit',
-          }}
         >
           ✕
         </button>
       </div>
 
-      <div style={{ flex: 1, overflowY: 'auto', padding: '12px 14px' }}>
+      <div className="reference-body">
         {messages.length === 0 && !streaming ? (
-          <div className="empty" style={{ color: 'var(--dim)', fontSize: 12 }}>
+          <div className="empty">
             Ask a focused question about this {kind.toLowerCase()}. Isolated — nothing here touches the main chat.
           </div>
         ) : (
@@ -112,44 +62,15 @@ export function ReferenceChat({ target, title, messages, streaming, busy, onAsk,
         )}
       </div>
 
-      <form
-        onSubmit={submit}
-        style={{ display: 'flex', gap: 8, padding: '10px 12px', borderTop: '1px solid rgba(53, 229, 255, 0.25)' }}
-      >
+      <form className="reference-form" onSubmit={submit}>
         <input
-          className="no-drag"
+          className="reference-input no-drag"
           value={text}
           autoFocus
           placeholder={busy ? 'Thinking…' : 'Ask about this note…'}
           onChange={(e) => setText(e.target.value)}
-          style={{
-            flex: 1,
-            boxSizing: 'border-box',
-            background: 'var(--panel-2, #131b2b)',
-            border: '1px solid rgba(255,255,255,0.15)',
-            borderRadius: 8,
-            padding: '8px 10px',
-            color: 'var(--text)',
-            fontFamily: 'inherit',
-            fontSize: 13,
-          }}
         />
-        <button
-          type="submit"
-          className="no-drag"
-          disabled={busy || !text.trim()}
-          style={{
-            background: 'transparent',
-            border: '1px solid var(--cyan)',
-            borderRadius: 8,
-            color: 'var(--cyan)',
-            cursor: busy || !text.trim() ? 'default' : 'pointer',
-            opacity: busy || !text.trim() ? 0.4 : 1,
-            padding: '0 14px',
-            fontFamily: 'inherit',
-            fontWeight: 600,
-          }}
-        >
+        <button type="submit" className="reference-send no-drag" disabled={busy || !text.trim()}>
           ↵
         </button>
       </form>
