@@ -24,7 +24,7 @@ import { WidgetCard } from './components/WidgetCard.tsx';
 import { HtmlWidgetCard } from './components/HtmlWidgetCard.tsx';
 import type { ReferenceTarget } from '../main/core/reference.ts';
 import { clampBox, tileLayout, cardOnDisplay, nextDisplayId, type Bounds } from '../main/core/layout.ts';
-import { initialDictation, dictationReduce } from '../main/core/dictation.ts';
+import { initialDictation, dictationReduce, shouldAutoSend } from '../main/core/dictation.ts';
 import { confirmMatches } from '../main/core/reset-pure.ts';
 import type { FactoryResetInfo } from '../main/core/orchestrator.ts';
 import type {
@@ -122,6 +122,17 @@ export default function App() {
   const [factoryBusy, setFactoryBusy] = useState(false);
   const [tts, setTts] = useState(false);
   const [wake, setWake] = useState(false);
+  // Auto-send: on stt.final, submit the dictated text automatically (no "Alfred
+  // enviar"). Default OFF. The onStream closure is mount-once, so it reads the
+  // live toggle + submit fn via refs (below).
+  const [autosend, setAutosend] = useState(false);
+  const autosendRef = useRef(false);
+  // Latest onSubmit for the mount-once stream closure (avoids stale `killed`).
+  const onSubmitRef = useRef<(text: string) => void>(() => {});
+  // Live `armed` for the mount-once closure so AUTO-SEND honours the SAME guard as
+  // the reducer's OFF path: only an armed activation's final submits. A stray/late/
+  // duplicate final (armed=false) must never fire a turn (see dictation.ts).
+  const dictArmedRef = useRef(false);
   // Live wake-listener state so the WAKE button shows WHY it is (not) hearing you
   // (listening / muted while speaking / failed+reason / stopped / disabled).
   const [wakeStatus, setWakeStatus] = useState<{ status: WakeStatus; reason?: string }>({ status: 'stopped' });
@@ -394,6 +405,8 @@ export default function App() {
     alfred.getGrillMe().then(setGrill).catch(() => {});
     // Reflect the persisted voice-output toggle.
     alfred.getTts().then(setTts).catch(() => {});
+    // Reflect the persisted auto-send toggle (default off).
+    alfred.getAutosend().then(setAutosend).catch(() => {});
     // Reflect the persisted wake-word toggle (default on when the STT binary exists).
     alfred.getWakeword().then(setWake).catch(() => {});
     // Read the live wake state so the button isn't blind at boot (events only
@@ -413,9 +426,20 @@ export default function App() {
           break;
         case 'stt.final':
           setListening(false);
-          // Commits once per activation; a late/duplicate or empty final writes
-          // nothing (see dictation.ts) so the user keeps control of the input.
-          setDict((d) => dictationReduce(d, { kind: 'final', text: e.text }));
+          if (dictArmedRef.current && shouldAutoSend(autosendRef.current, e.text)) {
+            // Auto-send ON, on an ARMED activation: submit the SETTLED text directly
+            // (no dependence on the input's async value → no race, no partial). Consume
+            // `armed` NOW so a same-tick duplicate final can't re-submit; then disarm
+            // via an empty final so nothing lingers in the box (dictation.ts writes nothing).
+            dictArmedRef.current = false;
+            setDict((d) => dictationReduce(d, { kind: 'final', text: '' }));
+            onSubmitRef.current(e.text);
+          } else {
+            // OFF (or a stray/late/duplicate/empty final): route through the reducer,
+            // which commits once per armed activation and ignores everything else
+            // (see dictation.ts) — the user keeps control of the input.
+            setDict((d) => dictationReduce(d, { kind: 'final', text: e.text }));
+          }
           break;
         case 'wake.detected':
           // Show the same "listening" feedback as the mic button; the command's
@@ -578,6 +602,10 @@ export default function App() {
       pushAlert(msg);
     });
   };
+  // Keep the refs the mount-once stream closure reads pointing at the live values.
+  onSubmitRef.current = onSubmit;
+  autosendRef.current = autosend;
+  dictArmedRef.current = dict.armed;
 
   const onKill = () => {
     alfred.stop();
@@ -663,6 +691,17 @@ export default function App() {
     setTts(next); // optimistic
     alfred.setTts(next).then(setTts).catch(() => setTts(!next));
     pushLog({ tag: 'VOICE', tone: next ? 'lime' : 'dim', msg: next ? 'voice output on' : 'voice output off' });
+  };
+
+  const toggleAutosend = () => {
+    const next = !autosend;
+    setAutosend(next); // optimistic
+    alfred.setAutosend(next).then(setAutosend).catch(() => setAutosend(!next));
+    pushLog({
+      tag: 'VOICE',
+      tone: next ? 'lime' : 'dim',
+      msg: next ? 'auto-send on — terminas a frase e envia' : 'auto-send off — diz “Alfred enviar”',
+    });
   };
 
   const toggleWake = () => {
@@ -1010,6 +1049,18 @@ export default function App() {
             }
           >
             {speaking ? '🗣 SPEAKING' : tts ? '🔊 VOICE ON' : '🔈 VOICE OFF'}
+          </button>
+          <button
+            type="button"
+            className={`topbar-btn no-drag${autosend ? ' on' : ''}`}
+            onClick={toggleAutosend}
+            title={
+              autosend
+                ? 'Auto-send on — finishing your sentence submits it automatically. Click to require “Alfred enviar”.'
+                : 'Auto-send off — dictation fills the box; say “Alfred enviar” or press Send. Click to submit automatically when you stop talking.'
+            }
+          >
+            {autosend ? '⏎ AUTO-SEND ON' : '⏎ AUTO-SEND'}
           </button>
           <button
             type="button"

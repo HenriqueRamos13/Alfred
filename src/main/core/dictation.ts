@@ -39,6 +39,15 @@ export function initialDictation(): DictationState {
   return { armed: false, preview: '', commit: { text: '', seq: 0 } };
 }
 
+/**
+ * PURE — auto-send gate. When the auto-send toggle is ON, a settled final with
+ * non-empty text is submitted automatically (the user need only stop talking).
+ * OFF, or an empty/whitespace final, never auto-sends.
+ */
+export function shouldAutoSend(enabled: boolean, finalText: string): boolean {
+  return enabled && finalText.trim().length > 0;
+}
+
 /** PURE — advance the dictation state for one voice event. */
 export function dictationReduce(s: DictationState, e: DictationEvent): DictationState {
   switch (e.kind) {

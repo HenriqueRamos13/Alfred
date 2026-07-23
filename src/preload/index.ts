@@ -113,6 +113,9 @@ const api = {
   /** Voice output toggle (Alfred speaks replies) — persisted; read on mount. */
   getTts: (): Promise<boolean> => ipcRenderer.invoke('alfred:getTts'),
   setTts: (on: boolean): Promise<boolean> => ipcRenderer.invoke('alfred:setTts', on),
+  /** Auto-send (submit dictation on stt.final) toggle — persisted; read on mount. */
+  getAutosend: (): Promise<boolean> => ipcRenderer.invoke('alfred:getAutosend'),
+  setAutosend: (on: boolean): Promise<boolean> => ipcRenderer.invoke('alfred:setAutosend', on),
   /** Voice input (push-to-talk): start/stop the STT helper; transcript arrives via stt.partial/stt.final stream events. */
   startListening: (): void => ipcRenderer.send('alfred:startListening'),
   stopListening: (): void => ipcRenderer.send('alfred:stopListening'),

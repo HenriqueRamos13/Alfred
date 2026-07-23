@@ -94,6 +94,9 @@ export interface Orchestrator {
   /** Voice output toggle (Alfred speaks replies): read/set, persisted. */
   getTts(): boolean | Promise<boolean>;
   setTts(on: boolean): boolean | Promise<boolean>;
+  /** Auto-send toggle (submit dictation on stt.final): read/set, persisted. */
+  getAutosend(): boolean | Promise<boolean>;
+  setAutosend(on: boolean): boolean | Promise<boolean>;
   /** Voice input (push-to-talk): start/stop the native STT helper. */
   startListening(): void;
   stopListening(): void;
@@ -221,6 +224,16 @@ export function registerIpc(core: Orchestrator, emit: (e: StreamEvent) => void):
       return await core.setTts(on === true);
     } catch (err) {
       fail('set tts', err);
+      return false;
+    }
+  });
+
+  ipcMain.handle('alfred:getAutosend', guard('get autosend', () => core.getAutosend(), false));
+  ipcMain.handle('alfred:setAutosend', async (_e, on: unknown) => {
+    try {
+      return await core.setAutosend(on === true);
+    } catch (err) {
+      fail('set autosend', err);
       return false;
     }
   });

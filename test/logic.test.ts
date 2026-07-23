@@ -35,7 +35,7 @@ import {
   resolveWakeWords,
 } from '../src/main/core/wakeword.ts';
 import { watchdogAction } from '../src/main/core/tts.ts';
-import { initialDictation, dictationReduce } from '../src/main/core/dictation.ts';
+import { initialDictation, dictationReduce, shouldAutoSend } from '../src/main/core/dictation.ts';
 import { shell } from '../src/main/tools/shell.ts';
 import { filesystem } from '../src/main/tools/filesystem.ts';
 import { browser } from '../src/main/tools/browser.ts';
@@ -1202,6 +1202,13 @@ test('dictationReduce — each fresh activation commits again (independent utter
   s = dictationReduce(s, { kind: 'activate' });
   s = dictationReduce(s, { kind: 'final', text: 'dois' });
   assert.equal(s.commit.seq, 2); // new activation → new commit
+});
+
+test('shouldAutoSend — only when enabled AND the final text is non-empty', () => {
+  assert.equal(shouldAutoSend(true, 'abre o safari'), true); // on + text → send
+  assert.equal(shouldAutoSend(true, ''), false); // on + empty → never
+  assert.equal(shouldAutoSend(true, '   '), false); // on + whitespace → never
+  assert.equal(shouldAutoSend(false, 'abre o safari'), false); // off → never, keep current behaviour
 });
 
 // ── wakeword: fatal-exit / respawn-backoff classifier ────────────────────────

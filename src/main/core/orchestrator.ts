@@ -549,6 +549,9 @@ export interface OrchestratorHandle {
   /** Voice output (Alfred speaks replies): read/toggle, persisted, default OFF. */
   getTts(): boolean;
   setTts(on: boolean): boolean;
+  /** Auto-send (submit dictation on stt.final, no "Alfred enviar"): read/toggle, persisted, default OFF. */
+  getAutosend(): boolean;
+  setAutosend(on: boolean): boolean;
   /** Voice input (push-to-talk): spawn/stop the native STT helper; streams stt.partial/stt.final. */
   startListening(): void;
   stopListening(): void;
@@ -1226,6 +1229,13 @@ export function createOrchestrator(opts: CreateOrchestratorOpts): OrchestratorHa
     setTts(on) {
       setSetting(db, 'tts_enabled', on ? '1' : '0');
       if (!on) tts.stop(); // silence anything mid-utterance immediately
+      return on;
+    },
+    getAutosend() {
+      return getSetting(db, 'autosend_enabled') === '1';
+    },
+    setAutosend(on) {
+      setSetting(db, 'autosend_enabled', on ? '1' : '0');
       return on;
     },
     startListening() {
