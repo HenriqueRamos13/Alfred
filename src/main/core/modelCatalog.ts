@@ -306,6 +306,16 @@ export function agentToSpec(a: AgentConfig): string {
   return `${brain}:${a.model}`;
 }
 
+/**
+ * Resolve the Anthropic model for a `claude -p` delegation: an explicit, valid
+ * caller-supplied `model` (any id in the Anthropic catalog, e.g. `claude-opus-4-8`)
+ * wins; anything absent/unknown falls back to `fallback` (the main agent's model).
+ * Pure so the delegate tool's model plumbing is unit-testable.
+ */
+export function resolveDelegateModel(input: string | undefined, fallback: string): string {
+  return input && findModel('claude-cli', input) ? input : fallback;
+}
+
 /** Anthropic model to run `claude -p` with for delegation: the main agent's model when it's a Claude provider, else the default. */
 export function agentClaudeModel(raw: string | undefined): string {
   const dflt: AgentConfig = { name: DEFAULT_MAIN_NAME, provider: 'claude-api', model: DEFAULT_MODEL['claude-api'] };

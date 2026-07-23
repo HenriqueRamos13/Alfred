@@ -29,7 +29,8 @@ Each card: what it does · when to use · hard limit · full contract.
 - **memory** — file-based long-term memory: read/append/remember/recall/list/note/delete/handoff · persist facts+events, recall the past, capture notes when a task ends · list enumerates real vault notes (title/slug/path) so never guess a filename; delete is destructive (T2); never invent memories; never edit the stable layer · docs/tools/memory.md
 - **ui_layout** — inspect/rearrange your own floating cards: get_layout/move/resize/show/hide/arrange/reset · tidy the control centre; get_layout tags each card kind — "panel" (fixed built-in) vs "widget" (a scheduled job's own data card, id widget:<jobId>, titled with the job) — and you move/resize job widgets exactly like panels · T1, no approval; call get_layout first (the user drags cards too) · docs/tools/ui_layout.md
 - **gmail** — read-only Gmail: connect/list/search/read · triage & read mail · read-only (cannot send); connect is T2; reading marks the session private + untrusted · docs/tools/gmail.md
-- **delegate_to_claude_code** — hand a self-contained task to a headless \`claude -p\` agent · chunky autonomous sub-tasks (refactors, scaffolding) · T2 approval; cwd confined to the workspace · docs/tools/models.md
+- **delegate_to_claude_code** — hand a self-contained task to a headless \`claude -p\` agent · chunky autonomous sub-tasks (refactors, scaffolding) · T2 approval; cwd confined to the workspace; optional \`model\` runs it on any Claude model (e.g. claude-opus-4-8 = Opus 4.8), else the main agent's model · docs/tools/models.md
+- **team** — manage the specialist agent ROSTER (create/list/delete): named agents that EXTEND the fixed three, each with its OWN model + a private knowledge folder · build a specialist ("a Coder on claude-opus-4-8") · create/delete are T2, list is T0; model can be ANY catalog id; only persists+scaffolds (agents/<id>/knowledge/ + shared agents/index.md), does NOT run the agent yet · docs/tools/team.md
 - **schedule** — create/list/pause/resume/delete/edit recurring Scheduled Jobs that persist + re-arm on boot · a live auto-refreshing widget (\`fetch\`: HTTP GET on a timer, 0 tokens) or a recurring autonomous task (\`agent\`: prompt-driven turn) · create/edit/pause/resume/delete are T2, list is T0; ASK the user the autonomy grant before an \`agent\` job (default read+notify); only persists+schedules, never runs · \`edit\` merges — send only the fields you change (omitted ones keep their current value, e.g. changing the schedule keeps a custom render.html) · rendering: PREFER tier:1 (default) — the builtin card auto-updates live with no custom HTML: a scalar extract shows a VALUE, a numeric-ARRAY extract draws a live SPARKLINE (for a chart just make source.extract return an array of numbers). Use tier:2 ONLY for bespoke visuals; JS FULLY WORKS in tier:2 (the "JS is blocked" idea is FALSE — it was a data race fixed in v1.9.3), but a tier:2 widget UPDATES ONLY IF its HTML calls \`Alfred.onData(cb)\` and mutates the DOM from that callback — NEVER bake a fixed value into static HTML/SVG, it never updates · docs/tools/schedule.md
 Also available: **project** (ICM folder-as-context projects) and **render_ui** (whitelisted generative UI) — see docs and the routing table.
 
@@ -41,8 +42,9 @@ Also available: **project** (ICM folder-as-context projects) and **render_ui** (
 - Email triage → \`gmail\`
 - Remember / recall the past → \`memory\`
 - Rearrange the control centre → \`ui_layout\`
-- Large autonomous coding sub-task → \`delegate_to_claude_code\`
+- Large autonomous coding sub-task → \`delegate_to_claude_code\` (optionally on a chosen Claude model)
 - Live auto-refreshing widget / recurring task ("temp de Lisboa a cada 5 min") → \`schedule\`
+- Create/manage a named specialist agent (own model + knowledge) → \`team\`
 
 # Memory pointers
 - Journal (dated events): memory/journal/YYYY-MM-DD.md · Facts: memory/facts.md

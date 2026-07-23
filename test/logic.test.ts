@@ -1531,8 +1531,10 @@ import {
   hasPersistedAgent,
   agentToSpec,
   agentClaudeModel,
+  resolveDelegateModel,
   type AgentConfig,
 } from '../src/main/core/modelCatalog.ts';
+import { agentIdFromName, validateAgentSpec, buildAgentsIndex } from '../src/main/core/team-pure.ts';
 
 test('catalog — listModels/findModel/priceOf, Anthropic shared by both Claude providers', () => {
   assert.ok(listModels('deepseek').length === 2);
@@ -2413,4 +2415,56 @@ test('enqueueTurn — size guard drops oldest past cap, never silent, never unbo
   assert.equal(over.dropped, 'm0'); // oldest reported for logging
   assert.equal(q.length, TURN_QUEUE_MAX); // bounded
   assert.equal(q[q.length - 1], 'overflow'); // newest kept, order intact
+});
+
+// ── team roster (Phase 5, stage 1): pure id/validation/index ─────────────────
+
+test('agentIdFromName — slug from name, unique against collisions', () => {
+  assert.equal(agentIdFromName('The Coder'), 'the-coder');
+  assert.equal(agentIdFromName('Coder', []), 'coder');
+  assert.equal(agentIdFromName('Coder', ['coder']), 'coder-2');
+  assert.equal(agentIdFromName('Coder', ['coder', 'coder-2']), 'coder-3');
+  // a passed-in slug slugifies to itself (idempotent), still de-duped
+  assert.equal(agentIdFromName('coder-2', ['coder-2']), 'coder-2-2');
+  // name with no slug-able chars falls back
+  assert.equal(agentIdFromName('!!!'), 'agent');
+  assert.equal(agentIdFromName('!!!', ['agent']), 'agent-2');
+});
+
+test('validateAgentSpec — ok, defaults role, rejects bad provider/model/name', () => {
+  const ok = validateAgentSpec({ name: 'Coder', provider: 'claude-cli', model: 'claude-opus-4-8' });
+  assert.ok(ok.ok);
+  assert.deepEqual(ok.ok && ok.spec, { name: 'Coder', role: '', provider: 'claude-cli', model: 'claude-opus-4-8' });
+  // role passes through, name trimmed
+  const withRole = validateAgentSpec({ name: '  Researcher ', role: 'web research', provider: 'deepseek', model: 'deepseek-v4-flash' });
+  assert.ok(withRole.ok && withRole.spec.name === 'Researcher' && withRole.spec.role === 'web research');
+  // empty / missing name
+  assert.equal(validateAgentSpec({ provider: 'claude-cli', model: 'claude-opus-4-8' }).ok, false);
+  assert.equal(validateAgentSpec({ name: '   ', provider: 'claude-cli', model: 'claude-opus-4-8' }).ok, false);
+  // provider not in catalog
+  assert.equal(validateAgentSpec({ name: 'X', provider: 'anthropic', model: 'claude-opus-4-8' }).ok, false);
+  // model not in that provider's catalog
+  assert.equal(validateAgentSpec({ name: 'X', provider: 'openai', model: 'claude-opus-4-8' }).ok, false);
+  assert.equal(validateAgentSpec({ name: 'X', provider: 'claude-cli', model: 'ghost-9' }).ok, false);
+});
+
+test('buildAgentsIndex — one line per agent, sorted, empty-safe', () => {
+  assert.match(buildAgentsIndex([]), /_No agents yet._/);
+  const md = buildAgentsIndex([
+    { id: 'writer', name: 'Writer', role: 'prose', model: 'claude-sonnet-5' },
+    { id: 'coder', name: 'Coder', role: '', model: 'claude-opus-4-8' },
+  ]);
+  // sorted by id (coder before writer)
+  assert.ok(md.indexOf('`coder`') < md.indexOf('`writer`'));
+  assert.match(md, /\*\*Coder\*\* \(`coder`, claude-opus-4-8\) — _no specialty set_/);
+  assert.match(md, /\*\*Writer\*\* \(`writer`, claude-sonnet-5\) — prose/);
+});
+
+test('resolveDelegateModel — valid Claude model wins, else fallback', () => {
+  assert.equal(resolveDelegateModel('claude-opus-4-8', 'claude-sonnet-5'), 'claude-opus-4-8');
+  assert.equal(resolveDelegateModel(undefined, 'claude-sonnet-5'), 'claude-sonnet-5');
+  assert.equal(resolveDelegateModel('', 'claude-sonnet-5'), 'claude-sonnet-5');
+  // unknown / non-Claude model → fallback (delegate always runs claude -p)
+  assert.equal(resolveDelegateModel('gpt-5.5', 'claude-sonnet-5'), 'claude-sonnet-5');
+  assert.equal(resolveDelegateModel('ghost', 'claude-opus-4-8'), 'claude-opus-4-8');
 });

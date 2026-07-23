@@ -10,12 +10,13 @@
  */
 import path from 'node:path';
 import { spawnClaudeCli, dangerousArgs } from '../core/claudeSpawn.ts';
-import { agentClaudeModel } from '../core/modelCatalog.ts';
+import { agentClaudeModel, resolveDelegateModel } from '../core/modelCatalog.ts';
 import type { Tool } from './types.ts';
 
 interface Args {
   task: string;
   cwd?: string;
+  model?: string;
 }
 
 interface ClaudeJson {
@@ -35,6 +36,12 @@ export const delegate: Tool<Args> = {
     properties: {
       task: { type: 'string', description: 'The task/prompt to hand to the delegated agent.' },
       cwd: { type: 'string', description: 'Working directory (defaults to the workspace; kept inside it).' },
+      model: {
+        type: 'string',
+        description:
+          'Optional Anthropic model to run the delegated `claude -p` on, e.g. "claude-opus-4-8" (Opus 4.8) or "claude-sonnet-5". ' +
+          'Any id in the Claude catalog. Omitted/unknown → the main agent\'s model.',
+      },
     },
     required: ['task'],
   },
@@ -64,7 +71,9 @@ export const delegate: Tool<Args> = {
     const rawAgentCfg = (
       ctx.db.prepare("SELECT value FROM settings WHERE key = 'agent_config'").get() as { value?: string } | undefined
     )?.value;
-    const model = agentClaudeModel(rawAgentCfg);
+    // An explicit, valid model wins (so Alfred can delegate on Opus 4.8/Sonnet);
+    // otherwise fall back to the main agent's Claude model.
+    const model = resolveDelegateModel(a.model, agentClaudeModel(rawAgentCfg));
 
     const out = await spawnClaudeCli(
       ['-p', a.task, '--output-format', 'json', '--model', model, ...dangerousArgs(dangerous)],

@@ -59,7 +59,12 @@ the daily token kill-switch and never competes with the main task.
 Hand a self-contained autonomous task to a headless `claude -p` child that grinds
 it to completion and returns parsed JSON.
 - Input: `task` (required), `cwd` (default workspace; **confined to the
-  workspace** — a cwd outside it is rejected).
+  workspace** — a cwd outside it is rejected), `model` (optional).
+- **`model`** — the Anthropic model to run the delegated `claude -p` on: any id in
+  the Claude catalog, e.g. `claude-opus-4-8` (Opus 4.8) or `claude-sonnet-5`.
+  Validated against the catalog; absent/unknown → the **main agent's** Claude
+  model (`agentClaudeModel`). Passed through as `--model <id>` (the same path the
+  claude-code brain uses). Pure resolution: `resolveDelegateModel`.
 - Runs with `--permission-mode acceptEdits --output-format json`.
 - **Risk T2** → the orchestrator gates it behind a human approval.
 - Missing CLI → clear error (`npm i -g @anthropic-ai/claude-code`).
@@ -67,5 +72,5 @@ it to completion and returns parsed JSON.
   hand off wholesale.
 
 ```json
-{ "task": "Add a health-check endpoint and a test for it", "cwd": "api" }
+{ "task": "Add a health-check endpoint and a test for it", "cwd": "api", "model": "claude-opus-4-8" }
 ```

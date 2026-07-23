@@ -144,6 +144,18 @@ CREATE TABLE IF NOT EXISTS job_approvals (
   resolved_ts  INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_job_approvals_status ON job_approvals(status, ts);
+
+-- Agent roster (Phase 5): user-defined specialist agents that EXTEND the fixed
+-- three (main/reference/curator in settings.agent_config). Each has its own model
+-- and a private knowledge folder (<workspace>/agents/<id>/knowledge/). See core/team.ts.
+CREATE TABLE IF NOT EXISTS team_agents (
+  id          TEXT PRIMARY KEY,
+  name        TEXT NOT NULL,
+  role        TEXT NOT NULL DEFAULT '',
+  provider    TEXT NOT NULL,
+  model       TEXT NOT NULL,
+  created_ts  INTEGER NOT NULL
+);
 `;
 
 export function openDb(dbPath: string): AlfredDb {
