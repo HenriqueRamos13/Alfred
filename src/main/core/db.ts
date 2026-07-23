@@ -154,6 +154,7 @@ CREATE TABLE IF NOT EXISTS team_agents (
   role        TEXT NOT NULL DEFAULT '',
   provider    TEXT NOT NULL,
   model       TEXT NOT NULL,
+  grant_json  TEXT,                              -- per-agent autonomy allowlist; null → default read+notify
   created_ts  INTEGER NOT NULL
 );
 `;
@@ -173,6 +174,12 @@ export function openDb(dbPath: string): AlfredDb {
     (c) => c.name === 'displayId',
   );
   if (!hasDisplayId) db.exec("ALTER TABLE layout ADD COLUMN displayId TEXT NOT NULL DEFAULT 'main'");
+  // Idempotent migration: `team_agents.grant_json` (per-agent grant, Phase 5 stage 2)
+  // for roster rows created before it existed. rowToAgent tolerates a null value.
+  const hasGrant = (db.prepare('PRAGMA table_info(team_agents)').all() as { name: string }[]).some(
+    (c) => c.name === 'grant_json',
+  );
+  if (!hasGrant) db.exec('ALTER TABLE team_agents ADD COLUMN grant_json TEXT');
   return db;
 }
 

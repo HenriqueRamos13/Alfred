@@ -10,6 +10,11 @@
 
 import { slugify } from './projects.ts';
 import { isProviderId, findModel, PROVIDER_IDS, type ProviderId } from './modelCatalog.ts';
+import { DEFAULT_GRANT } from './jobs-pure.ts';
+import type { Capability } from './types.ts';
+
+/** Every capability a per-agent grant may list (mirrors jobs-pure's ALL_CAPS). */
+const ALL_CAPS: readonly Capability[] = ['read', 'notify', 'write', 'browse', 'shell', 'send', 'delete', 'money', 'secrets'];
 
 export interface TeamAgent {
   id: string;
@@ -18,6 +23,8 @@ export interface TeamAgent {
   role: string;
   provider: ProviderId;
   model: string;
+  /** Autonomy allowlist for a delegated run (default read+notify). */
+  grant: Capability[];
   createdTs: number;
 }
 
@@ -27,6 +34,7 @@ export interface AgentSpecInput {
   role?: string;
   provider?: string;
   model?: string;
+  grant?: unknown;
 }
 
 /** Validated create spec (id is assigned by createAgent, not here). */
@@ -35,6 +43,26 @@ export interface AgentSpec {
   role: string;
   provider: ProviderId;
   model: string;
+  grant: Capability[];
+}
+
+/**
+ * Tolerant read of a stored `grant_json` column: absent / empty / malformed /
+ * wrong-shaped → the DEFAULT_GRANT (read+notify), so rows written before the
+ * column existed (or a corrupt blob) never break loading. A valid array keeps
+ * only its known capabilities; if that filters to nothing, the default stands.
+ */
+export function parseGrant(json: string | null | undefined): Capability[] {
+  if (!json) return [...DEFAULT_GRANT];
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(json);
+  } catch {
+    return [...DEFAULT_GRANT];
+  }
+  if (!Array.isArray(parsed)) return [...DEFAULT_GRANT];
+  const caps = parsed.filter((c): c is Capability => ALL_CAPS.includes(c as Capability));
+  return caps.length ? caps : [...DEFAULT_GRANT];
 }
 
 /**
@@ -66,7 +94,81 @@ export function validateAgentSpec(spec: AgentSpecInput): { ok: true; spec: Agent
   if (!model || !findModel(spec.provider, model)) {
     return { ok: false, error: `model "${spec.model}" is not in the ${spec.provider} catalog` };
   }
-  return { ok: true, spec: { name, role: (spec.role ?? '').trim(), provider: spec.provider, model } };
+  // grant is optional; absent → the read+notify default. An explicit value must
+  // be an array of known capabilities.
+  let grant: Capability[];
+  if (spec.grant === undefined) {
+    grant = [...DEFAULT_GRANT];
+  } else if (!Array.isArray(spec.grant) || spec.grant.some((c) => !ALL_CAPS.includes(c as Capability))) {
+    return { ok: false, error: `grant must be an array of capabilities (${ALL_CAPS.join(', ')})` };
+  } else {
+    grant = spec.grant as Capability[];
+  }
+  return { ok: true, spec: { name, role: (spec.role ?? '').trim(), provider: spec.provider, model, grant } };
+}
+
+/**
+ * Resolve the model a delegated run should use: an explicit `input` override
+ * wins only when it exists in THAT agent's provider catalog; anything absent /
+ * unknown / from another provider falls back to the agent's own model. Pure so
+ * the delegate_to_agent model plumbing is unit-testable.
+ */
+export function resolveTeamModel(input: string | undefined, agent: { provider: ProviderId; model: string }): string {
+  return input && findModel(agent.provider, input) ? input : agent.model;
+}
+
+/** A private-knowledge note as loaded from the agent's own folder. */
+export interface AgentNote {
+  /** Note title (the filename without `.md`). */
+  title: string;
+  /** Full note body as read from disk. */
+  body: string;
+}
+
+/** Clip to the HEAD of `text`, marking the cut so the model knows it was truncated. */
+function clip(text: string, max: number): string {
+  return text.length <= max ? text : `${text.slice(0, max)}\n…(truncated)`;
+}
+
+/**
+ * Build the system context for a delegated agent turn (MOC pattern, bounded):
+ * the agent's role + the SHARED who-knows-what index (so it knows what the team
+ * knows) + its OWN private notes, each excerpt- and section-capped so a big
+ * knowledge folder can't blow the context. Pure — the caller (core/team.ts)
+ * reads ONLY the agent's own folder and feeds the notes here, which is what
+ * keeps one agent from ever seeing another's private notes.
+ */
+export function buildAgentContext(
+  agent: Pick<TeamAgent, 'name' | 'role' | 'model'>,
+  indexText: string,
+  notes: readonly AgentNote[],
+  opts: { maxNotesChars?: number; perNoteChars?: number } = {},
+): string {
+  const perNoteChars = opts.perNoteChars ?? 600;
+  const maxNotesChars = opts.maxNotesChars ?? 4000;
+  const parts: string[] = [
+    `You are ${agent.name}, a specialist agent on Alfred's team (model ${agent.model}). ` +
+      'Complete the delegated task using your role and knowledge below, then report the result concisely.',
+    `# Your role\n${agent.role.trim() || '_No specialty set yet._'}`,
+  ];
+  if (indexText.trim()) {
+    parts.push(`# Team index — who knows what (shared, read-only)\n${indexText.trim()}`);
+  }
+  if (notes.length) {
+    let budget = maxNotesChars;
+    const blocks: string[] = [];
+    for (const n of notes) {
+      if (budget <= 0) {
+        blocks.push('…(more notes omitted — ask Alfred if you need them)');
+        break;
+      }
+      const excerpt = clip(n.body.trim(), Math.min(perNoteChars, budget));
+      budget -= excerpt.length;
+      blocks.push(`## ${n.title}\n${excerpt}`);
+    }
+    parts.push(`# Your private knowledge (only you read this)\n${blocks.join('\n\n')}`);
+  }
+  return parts.join('\n\n');
 }
 
 /** Shared "who-knows-what" index (agents/index.md): one line per agent, name → specialty. */

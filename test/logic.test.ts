@@ -1534,7 +1534,14 @@ import {
   resolveDelegateModel,
   type AgentConfig,
 } from '../src/main/core/modelCatalog.ts';
-import { agentIdFromName, validateAgentSpec, buildAgentsIndex } from '../src/main/core/team-pure.ts';
+import {
+  agentIdFromName,
+  validateAgentSpec,
+  buildAgentsIndex,
+  buildAgentContext,
+  parseGrant,
+  resolveTeamModel,
+} from '../src/main/core/team-pure.ts';
 
 test('catalog — listModels/findModel/priceOf, Anthropic shared by both Claude providers', () => {
   assert.ok(listModels('deepseek').length === 2);
@@ -2434,7 +2441,20 @@ test('agentIdFromName — slug from name, unique against collisions', () => {
 test('validateAgentSpec — ok, defaults role, rejects bad provider/model/name', () => {
   const ok = validateAgentSpec({ name: 'Coder', provider: 'claude-cli', model: 'claude-opus-4-8' });
   assert.ok(ok.ok);
-  assert.deepEqual(ok.ok && ok.spec, { name: 'Coder', role: '', provider: 'claude-cli', model: 'claude-opus-4-8' });
+  // grant defaults to read+notify when omitted (Phase 5, stage 2)
+  assert.deepEqual(ok.ok && ok.spec, {
+    name: 'Coder',
+    role: '',
+    provider: 'claude-cli',
+    model: 'claude-opus-4-8',
+    grant: ['read', 'notify'],
+  });
+  // an explicit, valid grant passes through
+  const withGrant = validateAgentSpec({ name: 'Ops', provider: 'deepseek', model: 'deepseek-v4-flash', grant: ['read', 'write', 'shell'] });
+  assert.ok(withGrant.ok && withGrant.spec.grant!.join(',') === 'read,write,shell');
+  // a bad capability in the grant is rejected
+  assert.equal(validateAgentSpec({ name: 'X', provider: 'deepseek', model: 'deepseek-v4-flash', grant: ['read', 'fly'] }).ok, false);
+  assert.equal(validateAgentSpec({ name: 'X', provider: 'deepseek', model: 'deepseek-v4-flash', grant: 'read' }).ok, false);
   // role passes through, name trimmed
   const withRole = validateAgentSpec({ name: '  Researcher ', role: 'web research', provider: 'deepseek', model: 'deepseek-v4-flash' });
   assert.ok(withRole.ok && withRole.spec.name === 'Researcher' && withRole.spec.role === 'web research');
@@ -2467,4 +2487,61 @@ test('resolveDelegateModel — valid Claude model wins, else fallback', () => {
   // unknown / non-Claude model → fallback (delegate always runs claude -p)
   assert.equal(resolveDelegateModel('gpt-5.5', 'claude-sonnet-5'), 'claude-sonnet-5');
   assert.equal(resolveDelegateModel('ghost', 'claude-opus-4-8'), 'claude-opus-4-8');
+});
+
+// ── team delegation (Phase 5, stage 2): grant, context, model resolution ─────
+
+test('parseGrant — tolerant: default when absent/invalid, keeps a valid array', () => {
+  // absent → default read+notify (old rows written before the column existed)
+  assert.deepEqual(parseGrant(undefined), ['read', 'notify']);
+  assert.deepEqual(parseGrant(null), ['read', 'notify']);
+  assert.deepEqual(parseGrant(''), ['read', 'notify']);
+  // malformed JSON / wrong shape → default (never throws)
+  assert.deepEqual(parseGrant('not json'), ['read', 'notify']);
+  assert.deepEqual(parseGrant('{"a":1}'), ['read', 'notify']);
+  // a valid capability array is kept; unknown caps are dropped
+  assert.deepEqual(parseGrant('["read","write","shell"]'), ['read', 'write', 'shell']);
+  assert.deepEqual(parseGrant('["read","fly","send"]'), ['read', 'send']);
+  // an array that filters to nothing falls back to the default
+  assert.deepEqual(parseGrant('["fly"]'), ['read', 'notify']);
+});
+
+test('resolveTeamModel — valid override wins, else the agent model', () => {
+  const agent = { provider: 'claude-cli' as const, model: 'claude-sonnet-5' };
+  assert.equal(resolveTeamModel('claude-opus-4-8', agent), 'claude-opus-4-8');
+  assert.equal(resolveTeamModel(undefined, agent), 'claude-sonnet-5');
+  assert.equal(resolveTeamModel('', agent), 'claude-sonnet-5');
+  // override must be in THAT provider's catalog, else agent.model
+  assert.equal(resolveTeamModel('gpt-5.5', agent), 'claude-sonnet-5');
+  assert.equal(resolveTeamModel('ghost', agent), 'claude-sonnet-5');
+  const oa = { provider: 'openai' as const, model: 'gpt-5.6-terra' };
+  assert.equal(resolveTeamModel('gpt-5.5', oa), 'gpt-5.5');
+  assert.equal(resolveTeamModel('claude-opus-4-8', oa), 'gpt-5.6-terra');
+});
+
+test('buildAgentContext — role + shared index + own notes, capped, no other-agent leakage', () => {
+  const agent = { name: 'Coder', role: 'TypeScript refactors', model: 'claude-opus-4-8', provider: 'claude-cli' as const, grant: ['read', 'write'] as const };
+  const index = '# Team\n- **Coder** (`coder`) — TS\n- **Writer** (`writer`) — prose';
+  const notes = [
+    { title: 'esm-notes', body: 'Always use explicit .ts extensions on relative imports.' },
+    { title: 'big', body: 'X'.repeat(5000) },
+  ];
+  const ctx = buildAgentContext(agent, index, notes);
+  // role present
+  assert.match(ctx, /TypeScript refactors/);
+  assert.match(ctx, /Coder/);
+  // shared index present (so the agent knows what the team knows)
+  assert.match(ctx, /who knows what|Team index|Writer/);
+  assert.ok(ctx.includes('esm-notes'));
+  // own note content present
+  assert.match(ctx, /explicit \.ts extensions/);
+  // the big note is truncated, not dumped whole
+  assert.ok(ctx.includes('…(truncated)'));
+  assert.ok(ctx.length < 5000, 'context must be bounded, not the raw folder');
+  // a note NOT belonging to this agent is never fabricated into the context
+  assert.ok(!ctx.includes('secret-other-agent-note'));
+
+  // empty role + no notes still yields a usable system string
+  const bare = buildAgentContext({ ...agent, role: '' }, '', []);
+  assert.match(bare, /No specialty set yet|Coder/);
 });

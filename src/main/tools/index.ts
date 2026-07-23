@@ -16,6 +16,7 @@ import { gmail } from './gmail.ts';
 import { renderUi } from './renderUi.ts';
 import { memory } from './memory.ts';
 import { delegate } from './delegate.ts';
+import { delegateToAgent } from './delegate-to-agent.ts';
 import { uiLayout } from './uiLayout.ts';
 import { system } from './system.ts';
 import { schedule } from './schedule.ts';
@@ -23,7 +24,7 @@ import { team } from './team.ts';
 
 export { createBrowserHandle } from './browser.ts';
 
-export const tools: Tool[] = [filesystem, shell, browser, project, gmail, renderUi, memory, delegate, uiLayout, system, schedule, team];
+export const tools: Tool[] = [filesystem, shell, browser, project, gmail, renderUi, memory, delegate, delegateToAgent, uiLayout, system, schedule, team];
 
 /** Lookup by tool name (for the orchestrator's tool-use dispatch). */
 export const toolsByName: Record<string, Tool> = Object.fromEntries(tools.map((t) => [t.name, t]));

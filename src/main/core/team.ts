@@ -11,9 +11,9 @@
  * a deleted agent leaves no orphan entry regardless.
  */
 
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, writeFile, readFile, readdir } from 'node:fs/promises';
 import { join } from 'node:path';
-import { agentIdFromName, buildAgentsIndex, type AgentSpec, type TeamAgent } from './team-pure.ts';
+import { agentIdFromName, buildAgentsIndex, buildAgentContext, parseGrant, type AgentNote, type AgentSpec, type TeamAgent } from './team-pure.ts';
 
 type DB = import('better-sqlite3').Database;
 
@@ -23,11 +23,21 @@ interface Row {
   role: string;
   provider: string;
   model: string;
+  grant_json: string | null;
   created_ts: number;
 }
 
 function rowToAgent(r: Row): TeamAgent {
-  return { id: r.id, name: r.name, role: r.role, provider: r.provider as TeamAgent['provider'], model: r.model, createdTs: r.created_ts };
+  return {
+    id: r.id,
+    name: r.name,
+    role: r.role,
+    provider: r.provider as TeamAgent['provider'],
+    model: r.model,
+    // Tolerant of rows written before the grant_json column existed.
+    grant: parseGrant(r.grant_json),
+    createdTs: r.created_ts,
+  };
 }
 
 export function listAgents(db: DB): TeamAgent[] {
@@ -54,8 +64,8 @@ export async function createAgent(db: DB, workspace: string, spec: AgentSpec, no
   const id = agentIdFromName(spec.name, listAgents(db).map((a) => a.id));
   const agent: TeamAgent = { id, ...spec, createdTs: now.getTime() };
   db.prepare(
-    'INSERT INTO team_agents (id, name, role, provider, model, created_ts) VALUES (@id, @name, @role, @provider, @model, @createdTs)',
-  ).run(agent);
+    'INSERT INTO team_agents (id, name, role, provider, model, grant_json, created_ts) VALUES (@id, @name, @role, @provider, @model, @grant, @createdTs)',
+  ).run({ ...agent, grant: JSON.stringify(agent.grant) });
 
   const knowledgeDir = join(workspace, 'agents', id, 'knowledge');
   await mkdir(knowledgeDir, { recursive: true });
@@ -70,4 +80,27 @@ export async function deleteAgent(db: DB, workspace: string, id: string): Promis
   const deleted = db.prepare('DELETE FROM team_agents WHERE id = ?').run(id).changes > 0;
   if (deleted) await rebuildIndex(db, workspace);
   return deleted;
+}
+
+/**
+ * Assemble a delegated agent's system context: the shared who-knows-what index +
+ * the agent's OWN private notes (read from ONLY its `agents/<id>/knowledge/`
+ * folder — the isolation boundary) fed to the pure buildAgentContext. Missing
+ * files degrade to empty, never throw.
+ */
+export async function loadAgentContext(workspace: string, agent: TeamAgent): Promise<string> {
+  const indexText = await readFile(join(workspace, 'agents', 'index.md'), 'utf8').catch(() => '');
+  const dir = join(workspace, 'agents', agent.id, 'knowledge');
+  let files: string[] = [];
+  try {
+    files = (await readdir(dir)).filter((f) => f.endsWith('.md')).sort();
+  } catch {
+    /* no folder yet — no private notes */
+  }
+  const notes: AgentNote[] = [];
+  for (const f of files) {
+    const body = await readFile(join(dir, f), 'utf8').catch(() => '');
+    if (body.trim()) notes.push({ title: f.replace(/\.md$/, ''), body });
+  }
+  return buildAgentContext(agent, indexText, notes);
 }
