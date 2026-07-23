@@ -93,13 +93,20 @@ export const schedule: Tool<Args> = {
       render: {
         type: 'object',
         description:
-          'Optional render hint. Default {tier:1, card:"value"} — builtin data card. ' +
-          'For a CUSTOM chart/visualization, use tier:2 and provide `html`: a self-contained page YOU write. ' +
-          'The page has NO network (a strict CSP blocks all fetch/xhr/ws and external scripts/styles) and runs in a ' +
-          'sandboxed iframe. Do NOT add external libraries or your own <script src>. Get the live value via the ' +
-          'injected runtime: `Alfred.onData(function(v){ ... })` fires on every refresh with the job value; ' +
-          '`Alfred.sparkline(el, numberArray)` draws a minimal line chart. Style with inline <style>/attributes. ' +
-          'The data pipeline (fetch/agent) is unchanged — tier:2 only changes the render.',
+          'Optional render hint. Default {tier:1, card:"value"} — builtin data card. PREFER tier:1 for almost everything: ' +
+          'the builtin card auto-updates live and reliably with NO custom HTML. It renders a single VALUE when the ' +
+          'extracted data is a scalar, and a live SPARKLINE when the extract returns a numeric ARRAY (e.g. the last 30 ' +
+          'days of prices, or hourly temps). For a series/chart via tier:1 just make source.extract return an array of ' +
+          'numbers — the card draws and re-draws the sparkline on every refresh automatically. ' +
+          'Use tier:2 ONLY for bespoke visuals the builtin card cannot do. JavaScript FULLY WORKS in tier:2 widgets — ' +
+          'any claim that "the build/CSP blocks JS in widgets" is FALSE (it was a data race, fixed in v1.9.3). ' +
+          'A tier:2 widget UPDATES ONLY IF its HTML calls `Alfred.onData(function(v){ /* mutate the DOM here */ })` and ' +
+          'renders from that callback. Static HTML/SVG with the value BAKED IN NEVER updates — NEVER embed a fixed value; ' +
+          'always render from onData. The page has NO network (a strict CSP blocks all fetch/xhr/ws and external ' +
+          'scripts/styles) and runs in a sandboxed iframe. Do NOT add external libraries or your own <script src>; use the ' +
+          'injected runtime: `Alfred.onData(cb)` fires on every refresh with the job value, `Alfred.sparkline(el, numberArray)` ' +
+          'draws a minimal line chart. Style with inline <style>/attributes. The data pipeline (fetch/agent) is unchanged — ' +
+          'tier:2 only changes the render.',
         properties: {
           tier: { type: 'number', enum: [1, 2, 3] },
           card: { type: 'string' },

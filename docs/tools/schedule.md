@@ -56,17 +56,52 @@ auto-run unattended regardless of the grant — they queue an approval.
 
 ### render / placement (optional)
 - `render` — `{ tier: 1|2|3, card: string, html? }`; default `{ tier:1, card:"value" }`.
-  - **tier 1** — a builtin data card (value / sparkline / fallback), fed by `job.data`.
+  - **tier 1 (PREFER THIS)** — a builtin data card fed by `job.data`, updates live and
+    reliably with **no custom HTML**. It renders a single **value** when the extracted
+    data is a scalar, and a live **sparkline** when the extract returns a **numeric
+    array**. See "Tier-1 — value and live sparkline" below.
   - **tier 2** — a **custom self-contained HTML** widget the model writes (`html`,
-    required, `<= 256 KB`). See "Tier-2 HTML widgets" below.
+    required, `<= 256 KB`). Only for bespoke visuals the builtin card cannot do. See
+    "Tier-2 HTML widgets" below.
 - `placement` — `{ displayId?: number, corner?: "tl"|"tr"|"bl"|"br" }`.
+
+## Tier-1 — value and live sparkline (PREFER THIS)
+
+The default `render` needs **no HTML** and updates automatically on every refresh —
+the card subscribes to the same `job.data` stream that feeds Scheduled Tasks. Two
+shapes, chosen automatically from the extracted value:
+
+- **Value** — the extract yields a scalar (number/string, or an object with a
+  `value`/`temperature`/`temp`/`val` field, optionally `unit`) → a big number + unit.
+- **Sparkline** — the extract yields a **numeric array** (`number[]`, or an array of
+  `{ value: number }`, length ≥ 2) → an inline-SVG line chart, re-drawn each refresh.
+
+For a chart there is usually **no reason to write tier-2 HTML**: just make
+`source.extract` return an array of numbers (e.g. the last 30 days of prices, or an
+`hourly.temperature_2m` array) and tier-1 draws and keeps the sparkline live for you.
 
 ## Tier-2 HTML widgets (custom viz)
 
-For a chart/visualization the builtin cards don't cover, set
-`render: { tier: 2, card: "html", html: "<…>" }`. The `html` is a page the model
-writes; **the data pipeline is unchanged** (same `fetch`/`agent` refresh) — tier 2
+Use tier-2 **only** for a bespoke visual the builtin tier-1 card can't do (a plain
+value or a numeric-array sparkline are already covered by tier-1 — reach for that
+first). Set `render: { tier: 2, card: "html", html: "<…>" }`. The `html` is a page the
+model writes; **the data pipeline is unchanged** (same `fetch`/`agent` refresh) — tier 2
 only replaces the render.
+
+> **JavaScript fully works in tier-2 widgets.** Any belief that "the build or CSP
+> blocks JS in widgets" is **FALSE** — that was a data race, fixed in v1.9.3. The CSP
+> allows `'unsafe-inline'` scripts; your `<script>` runs.
+
+**A tier-2 widget updates ONLY IF its HTML subscribes to `Alfred.onData` and mutates
+the DOM from that callback.** Static HTML/SVG with the value **baked in** NEVER updates
+(the card's `srcdoc` is frozen at mount — the only way fresh data reaches the page is
+the `postMessage` that `Alfred.onData` delivers). So **never embed a fixed value**;
+always render from the callback:
+
+```html
+<div id="v"></div>
+<script>Alfred.onData(function(v){ document.getElementById('v').textContent = v })</script>
+```
 
 **Runtime contract.** The page is wrapped by the app before display: a trusted
 `window.Alfred` runtime is injected *before* your markup. Use it — do **not** add
@@ -74,7 +109,8 @@ external libraries or your own `<script src>` (there is no network; see below).
 
 - `Alfred.onData(cb)` — registers `cb`; it fires on **every** refresh with the
   job's latest value (the extracted `fetch` value or the `agent` result). Seeded
-  with `runtime.lastResult` on load.
+  with `runtime.lastResult` on load. **This is the only way a tier-2 widget gets live
+  data** — a value written straight into the markup is static and never changes.
 - `Alfred.sparkline(el, numberArray)` — draws a minimal inline-SVG line chart of a
   numeric array into `el`. No dependency.
 
