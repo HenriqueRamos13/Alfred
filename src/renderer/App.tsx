@@ -160,7 +160,7 @@ export default function App() {
   const [hoverStrip, setHoverStrip] = useState(false); // pointer over the strip
   const [inputFocused, setInputFocused] = useState(false); // never hide while typing
   const [stripH, setStripH] = useState(96); // measured strip height → anchors alerts below it
-  const stripOpen = !autoHide || nearTop || hoverStrip || inputFocused;
+  const stripOpen = !autoHide || nearTop || hoverStrip || inputFocused || listening;
 
   // Reveal when the cursor touches the top edge; hide after a short delay so it doesn't flicker.
   useEffect(() => {
