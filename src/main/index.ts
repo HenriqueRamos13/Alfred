@@ -289,9 +289,9 @@ function boot(): void {
 
   // Scheduled-jobs engine: re-arm persisted jobs on boot. Dormant-safe — with
   // no jobs it stays idle, and its timers are .unref()'d so it never holds the
-  // process open. The real fetch/agent runner is wired in stage 2 (no-op stub
-  // for now); until then a due job just logs.
-  scheduler = new JobScheduler(db);
+  // process open. `fetch` jobs run for real (emit `job.data`); `agent` jobs are
+  // still a logged stub until stage 2.5 wires the subagent runner.
+  scheduler = new JobScheduler(db, { emit });
   scheduler.start();
   // Displays for the renderer's "move card to next monitor" control.
   ipcMain.removeHandler('alfred:listDisplays');

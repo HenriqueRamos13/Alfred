@@ -10,8 +10,8 @@
  */
 
 import { randomUUID } from 'node:crypto';
-import { nextRun } from './jobs-pure.ts';
-import type { Job, JobRun, JobRuntime } from './types.ts';
+import { nextRun, extractValue, fetchUrlError } from './jobs-pure.ts';
+import type { Job, JobRun, JobRuntime, StreamEvent } from './types.ts';
 
 type DB = import('better-sqlite3').Database;
 
@@ -149,15 +149,29 @@ export function logRun(db: DB, run: Omit<JobRun, 'id'> & { id?: string }): JobRu
 
 // ── the timer engine ─────────────────────────────────────────────────────────
 
-/** Stage-2 extension port: run a due job (fetch/agent). Default = logged no-op. */
+/** Extension port: run a due job (fetch/agent). Default = the real fetch runner (agent is stage 2.5). */
 export type JobRunner = (job: Job) => Promise<void>;
 
 export interface SchedulerOpts {
-  /** Stage-2 wires the real fetch/agent runner here. */
+  /** Override the runner (tests / future wiring); default runs fetch jobs for real. */
   runJob?: JobRunner;
   /** Injectable clock (tests pass a fixed reader; boot uses Date.now). */
   now?: () => number;
   log?: (msg: string) => void;
+  /** Stream sink so a fetch refresh can emit `job.data` to the UI. */
+  emit?: (event: StreamEvent) => void;
+}
+
+/**
+ * Single active scheduler, so the `schedule` tool can re-arm a job after
+ * create/edit/pause/resume/delete without threading the instance through
+ * ToolCtx. ponytail: one global scheduler (there is exactly one per process).
+ */
+let activeScheduler: JobScheduler | undefined;
+
+/** Re-arm/disarm one job on the active scheduler; no-op when none is running (tests). */
+export function rescheduleJob(jobId: string): void {
+  activeScheduler?.reschedule(jobId);
 }
 
 export class JobScheduler {
@@ -166,17 +180,84 @@ export class JobScheduler {
   private readonly runJob: JobRunner;
   private readonly now: () => number;
   private readonly log: (msg: string) => void;
+  private readonly emit?: (event: StreamEvent) => void;
 
   constructor(db: DB, opts: SchedulerOpts = {}) {
     this.db = db;
     this.now = opts.now ?? Date.now;
     this.log = opts.log ?? ((m) => console.log(`[alfred] scheduler: ${m}`));
+    this.emit = opts.emit;
     this.runJob =
       opts.runJob ??
       (async (job) => {
-        // ponytail: stub until stage 2 wires the fetch/agent runners.
-        this.log(`would run job ${job.id} (${job.kind}) "${job.title}" — no runner yet`);
+        if (job.kind === 'fetch') return this.runFetch(job);
+        // Agent runner lands in stage 2.5 (subagent turn under grant + budget).
+        this.log(`agent runner: stage 2.5 — job ${job.id} "${job.title}" not executed (no agent runner yet)`);
       });
+    activeScheduler = this;
+  }
+
+  /**
+   * The real `fetch` runner: pull source.url (GET), extract the card value, save
+   * it to runtime.lastResult + a run-log entry, and emit `job.data`. Zero AI
+   * tokens (never touches the budget). Any failure is logged, never thrown — a
+   * bad fetch must not kill the scheduler.
+   */
+  private async runFetch(job: Job): Promise<void> {
+    const ts = this.now();
+    const url = job.source?.url;
+    if (!url) {
+      logRun(this.db, { jobId: job.id, ts, ok: false, tokens: 0, error: 'fetch job has no source.url' });
+      return;
+    }
+    // Defence in depth: re-check the SSRF floor at run time in case a row was
+    // written straight to the DB (bypassing the schedule tool's validation).
+    const urlErr = fetchUrlError(url);
+    if (urlErr) {
+      this.log(`fetch job ${job.id} "${job.title}" blocked: ${urlErr}`);
+      logRun(this.db, { jobId: job.id, ts, ok: false, tokens: 0, error: urlErr });
+      return;
+    }
+    try {
+      const res = await fetch(url, { method: job.source?.method ?? 'GET', headers: job.source?.headers });
+      const body = await res.text();
+      if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText}`.trim());
+      let data: unknown;
+      try {
+        data = JSON.parse(body);
+      } catch {
+        data = body; // non-JSON source: extract with no spec returns the text
+      }
+      const value = extractValue(data, job.source?.extract);
+      const cur = getJob(this.db, job.id);
+      if (cur) updateJob(this.db, job.id, { runtime: { ...cur.runtime, lastResult: value } });
+      const summary = typeof value === 'string' ? value.slice(0, 200) : JSON.stringify(value)?.slice(0, 200);
+      logRun(this.db, { jobId: job.id, ts, ok: true, tokens: 0, summary });
+      this.emit?.({ kind: 'job.data', jobId: job.id, title: job.title, value, ts });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      this.log(`fetch job ${job.id} "${job.title}" failed: ${msg}`);
+      logRun(this.db, { jobId: job.id, ts, ok: false, tokens: 0, error: msg });
+    }
+  }
+
+  /** Re-arm one job from its fresh DB row (create/edit/resume); disarm if gone/disabled/paused. */
+  reschedule(jobId: string): void {
+    this.disarm(jobId);
+    let job: Job | undefined;
+    try {
+      job = getJob(this.db, jobId);
+    } catch (err) {
+      this.log(`reschedule: could not read job ${jobId}: ${err instanceof Error ? err.message : String(err)}`);
+      return;
+    }
+    if (job && job.enabled && !job.runtime.pausedReason) {
+      try {
+        this.arm(job);
+      } catch (err) {
+        this.log(`reschedule: could not arm job ${jobId}: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
   }
 
   /** Re-arm every enabled, non-paused job. Dormant-safe: no jobs → does nothing. */

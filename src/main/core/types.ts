@@ -365,6 +365,9 @@ export type StreamEvent =
   | { kind: 'agent.status'; sessionId: string; status: AgentStatus }
   | { kind: 'budget'; state: BudgetState }
   | { kind: 'cost'; snapshot: CostSnapshot }
+  // A fetch job refreshed its value (stage 2). Stage-3 data cards listen for
+  // this; for now it is just emitted alongside the persisted runtime.lastResult.
+  | { kind: 'job.data'; jobId: string; title: string; value: unknown; ts: number }
   // The main conversation was reset: the UI clears the chat (every window).
   | { kind: 'conversation.reset'; sessionId: string }
   // A factory reset completed: the UI reloads to a blank factory state.

@@ -37,6 +37,7 @@ One card per domain — *what it does · when to use · hard limit · full contr
 - **ui_layout** — get_layout/move/resize/show/hide/arrange/reset your floating cards · tidy the control centre, incl. moving cards **between monitors** (get_layout returns a `displays[]` list of every screen; `move_card {displayId}` reassigns a card to another monitor) · T1, no approval; call get_layout first (the user drags cards too) · [docs/tools/ui_layout.md](docs/tools/ui_layout.md)
 - **gmail** — read-only Gmail: connect/list/search/read · triage & read mail · read-only (cannot send); connect is T2; reading marks the session private + untrusted · [docs/tools/gmail.md](docs/tools/gmail.md)
 - **delegate_to_claude_code** — hand a self-contained task to a headless `claude -p` agent · chunky autonomous sub-tasks (refactors, scaffolding) · T2 approval; cwd confined to the workspace; the delegated agent also gets Alfred's governed tools via the MCP bridge · [docs/tools/models.md](docs/tools/models.md)
+- **schedule** — create/list/pause/resume/delete/edit recurring **Scheduled Jobs** that persist and re-arm on boot · a live auto-refreshing widget (`fetch`: HTTP GET on a timer, ZERO tokens) or a recurring autonomous task (`agent`: a prompt-driven turn, costs tokens) · create/edit/pause/resume/delete are **T2**, list is T0; before creating an `agent` job ASK the user the autonomy level (grant, default read+notify); this tool only persists+schedules, it never runs a job · [docs/tools/schedule.md](docs/tools/schedule.md)
 
 Also available: **project** (ICM folder-as-context projects) and **render_ui**
 (whitelisted generative UI onto the surface). See the routing table.
@@ -80,6 +81,7 @@ Details: [docs/governance/risk-tiers.md](docs/governance/risk-tiers.md) ·
 | Remember / recall the past | `memory` |
 | Rearrange the control centre | `ui_layout` |
 | Large autonomous coding sub-task | `delegate_to_claude_code` |
+| Live auto-refreshing widget / recurring task ("temp de Lisboa a cada 5 min", "check Gmail every 30 min") | `schedule` |
 
 ## (e) Memory
 - Journal (dated events): `memory/journal/YYYY-MM-DD.md` · Facts: `memory/facts.md`

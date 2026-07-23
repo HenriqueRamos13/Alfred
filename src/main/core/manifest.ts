@@ -30,6 +30,7 @@ Each card: what it does · when to use · hard limit · full contract.
 - **ui_layout** — inspect/rearrange your own floating cards: get_layout/move/resize/show/hide/arrange/reset · tidy the control centre · T1, no approval; call get_layout first (the user drags cards too) · docs/tools/ui_layout.md
 - **gmail** — read-only Gmail: connect/list/search/read · triage & read mail · read-only (cannot send); connect is T2; reading marks the session private + untrusted · docs/tools/gmail.md
 - **delegate_to_claude_code** — hand a self-contained task to a headless \`claude -p\` agent · chunky autonomous sub-tasks (refactors, scaffolding) · T2 approval; cwd confined to the workspace · docs/tools/models.md
+- **schedule** — create/list/pause/resume/delete/edit recurring Scheduled Jobs that persist + re-arm on boot · a live auto-refreshing widget (\`fetch\`: HTTP GET on a timer, 0 tokens) or a recurring autonomous task (\`agent\`: prompt-driven turn) · create/edit/pause/resume/delete are T2, list is T0; ASK the user the autonomy grant before an \`agent\` job (default read+notify); only persists+schedules, never runs · docs/tools/schedule.md
 Also available: **project** (ICM folder-as-context projects) and **render_ui** (whitelisted generative UI) — see docs and the routing table.
 
 # Routing (task → what to load)
@@ -41,6 +42,7 @@ Also available: **project** (ICM folder-as-context projects) and **render_ui** (
 - Remember / recall the past → \`memory\`
 - Rearrange the control centre → \`ui_layout\`
 - Large autonomous coding sub-task → \`delegate_to_claude_code\`
+- Live auto-refreshing widget / recurring task ("temp de Lisboa a cada 5 min") → \`schedule\`
 
 # Memory pointers
 - Journal (dated events): memory/journal/YYYY-MM-DD.md · Facts: memory/facts.md

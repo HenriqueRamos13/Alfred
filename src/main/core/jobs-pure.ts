@@ -10,7 +10,7 @@
  * as `now`, never read here.
  */
 
-import type { Capability, Job, JobSchedule } from './types.ts';
+import type { Capability, Job, JobKind, JobPlacement, JobRender, JobSchedule, JobSource } from './types.ts';
 
 /** Default per-job daily token cap when a job sets none (agent jobs). */
 export const DEFAULT_TOKEN_BUDGET_DAILY = 100_000;
@@ -201,4 +201,236 @@ export function jobActionDecision(ctx: JobActionCtx, toolName: string, args?: un
   if (ctx.unattended && isSensitiveAction(toolName, args)) return 'queue-approval';
   if (grantAllows(ctx.grant, toolName, args)) return 'allow';
   return ctx.dangerous ? 'allow' : 'deny';
+}
+
+// ── fetch runner: pure value extraction (stage 2) ─────────────────────────────
+
+/** Minimum interval between fetches — a sane floor so a job can't hammer a source. */
+export const MIN_INTERVAL_MS = 30_000;
+
+// ── SSRF guard for fetch sources (§6) ────────────────────────────────────────
+
+/** True when an IPv4 literal is loopback / private / link-local / unspecified. */
+function isPrivateIpv4(h: string): boolean {
+  const m = h.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (!m) return false;
+  const o = m.slice(1).map(Number);
+  if (o.some((n) => n > 255)) return false; // not a real v4 literal
+  const [a, b] = o;
+  if (a === 0) return true; // 0.0.0.0/8 (this-host / unspecified)
+  if (a === 127) return true; // loopback 127/8
+  if (a === 10) return true; // private 10/8
+  if (a === 169 && b === 254) return true; // link-local 169.254/16 (cloud metadata)
+  if (a === 172 && b >= 16 && b <= 31) return true; // private 172.16/12
+  if (a === 192 && b === 168) return true; // private 192.168/16
+  return false;
+}
+
+/** True when an IPv6 literal (brackets already stripped) is loopback / ULA / link-local / mapped-private. */
+function isPrivateIpv6(h: string): boolean {
+  const x = h.toLowerCase();
+  if (!x.includes(':')) return false;
+  if (x === '::1' || x === '::') return true; // loopback / unspecified
+  if (x.startsWith('fe80:') || x.startsWith('fe80::')) return true; // link-local fe80::/10
+  if (/^f[cd][0-9a-f]*:/.test(x)) return true; // unique-local fc00::/7
+  const mapped = x.match(/::ffff:(\d+\.\d+\.\d+\.\d+)$/); // IPv4-mapped ::ffff:a.b.c.d
+  if (mapped) return isPrivateIpv4(mapped[1]);
+  return false;
+}
+
+/**
+ * Reject hostnames a scheduled fetch must never reach: localhost, mDNS/internal
+ * TLDs, and loopback/private/link-local IP literals (incl. the cloud-metadata
+ * address). ponytail: literal-host blocklist only — DNS rebinding (a public name
+ * resolving to a private IP) is out of this trivial guard's scope; add a
+ * resolve-time check if a job ever legitimately needs a rebinding-prone name.
+ */
+function isBlockedHost(hostname: string): boolean {
+  const h = hostname.toLowerCase().replace(/^\[|\]$/g, ''); // strip IPv6 [] brackets
+  if (!h) return true;
+  if (h === 'localhost' || h.endsWith('.localhost')) return true;
+  if (h.endsWith('.local') || h.endsWith('.internal') || h.endsWith('.lan')) return true;
+  return isPrivateIpv4(h) || isPrivateIpv6(h);
+}
+
+/**
+ * Validate a fetch source URL: http(s) only, and not a local/internal address
+ * (SSRF floor, §6). Returns an error string, or null when the URL is allowed.
+ * Reused by validateJobSpec (create/edit) AND the runtime runner (defence in
+ * depth against a row written straight to the DB).
+ */
+export function fetchUrlError(url: string): string | null {
+  let u: URL;
+  try {
+    u = new URL(url);
+  } catch {
+    return 'fetch job needs source.url starting with http:// or https://';
+  }
+  if (u.protocol !== 'http:' && u.protocol !== 'https:') {
+    return 'fetch job needs source.url starting with http:// or https://';
+  }
+  if (isBlockedHost(u.hostname)) {
+    return `fetch job may not target a local/internal address (${u.hostname}) — SSRF guard`;
+  }
+  return null;
+}
+
+/**
+ * Split a dot/bracket path ("current.temperature_2m", "list[0].main", "['a.b'].c")
+ * into keys. A QUOTED bracket key is taken verbatim — so ['a.b'] is the single
+ * key "a.b", not a descent a→b (the whole point of the quoted form). Tokenised
+ * directly instead of transform-then-split, which broke on dotted quoted keys.
+ */
+function parsePath(spec: string): string[] {
+  const keys: string[] = [];
+  // quoted-bracket ['k'] / ["k"]  |  bare-bracket [k]  |  dot segment
+  const re = /\[\s*(['"])(.*?)\1\s*\]|\[\s*([^\]]*?)\s*\]|([^.[\]]+)/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(spec)) !== null) {
+    const key = m[2] ?? m[3] ?? m[4];
+    if (key !== undefined && key !== '') keys.push(key);
+  }
+  return keys;
+}
+
+/**
+ * Pull the value a fetch card should show out of a parsed response.
+ * `spec` is a simple dot/bracket path; missing segments → undefined (never
+ * throws). No spec → the whole payload (the card renders it compactly).
+ * ponytail: path-only; add a template ({{a.b}}-style) when a card actually needs it.
+ */
+export function extractValue(data: unknown, spec?: string): unknown {
+  if (!spec) return data;
+  let cur: unknown = data;
+  for (const key of parsePath(spec)) {
+    if (cur == null || typeof cur !== 'object') return undefined;
+    cur = (cur as Record<string, unknown>)[key];
+  }
+  return cur;
+}
+
+// ── schedule tool: pure input validation for create/edit ─────────────────────
+
+/** Normalised, validated job spec ready to build a Job (no id/enabled/runtime). */
+export interface ValidatedJobSpec {
+  title: string;
+  kind: JobKind;
+  schedule: JobSchedule;
+  source?: JobSource;
+  prompt?: string;
+  grant?: Capability[];
+  tokenBudgetDaily?: number;
+  render: JobRender;
+  placement?: JobPlacement;
+}
+
+export type ValidateResult =
+  | { ok: true; spec: ValidatedJobSpec }
+  | { ok: false; error: string };
+
+function validateSchedule(s: unknown): { ok: true; schedule: JobSchedule } | { ok: false; error: string } {
+  if (!s || typeof s !== 'object') {
+    return { ok: false, error: 'schedule is required: {type:"interval",everyMs} or {type:"daily",at:"HH:MM"}' };
+  }
+  const o = s as Record<string, unknown>;
+  if (o.type === 'interval') {
+    if (typeof o.everyMs !== 'number' || !Number.isFinite(o.everyMs)) {
+      return { ok: false, error: 'interval schedule needs a numeric everyMs' };
+    }
+    if (o.everyMs < MIN_INTERVAL_MS) {
+      return { ok: false, error: `everyMs must be >= ${MIN_INTERVAL_MS} (30s) so a job can't hammer the source` };
+    }
+    return { ok: true, schedule: { type: 'interval', everyMs: o.everyMs } };
+  }
+  if (o.type === 'daily') {
+    if (typeof o.at !== 'string' || !/^([01]\d|2[0-3]):[0-5]\d$/.test(o.at)) {
+      return { ok: false, error: 'daily schedule needs at:"HH:MM" (24-hour, local time)' };
+    }
+    return { ok: true, schedule: { type: 'daily', at: o.at } };
+  }
+  return { ok: false, error: 'schedule.type must be "interval" or "daily"' };
+}
+
+const ALL_CAPS: readonly Capability[] = ['read', 'notify', 'write', 'browse', 'shell', 'send', 'delete', 'money', 'secrets'];
+
+function validateGrant(g: unknown): { ok: true; grant: Capability[] } | { ok: false; error: string } {
+  if (g === undefined) return { ok: true, grant: [...DEFAULT_GRANT] };
+  if (!Array.isArray(g) || g.some((c) => !ALL_CAPS.includes(c as Capability))) {
+    return { ok: false, error: `grant must be an array of capabilities (${ALL_CAPS.join(', ')})` };
+  }
+  return { ok: true, grant: g as Capability[] };
+}
+
+function validateRender(r: unknown): { ok: true; render: JobRender } | { ok: false; error: string } {
+  if (r === undefined) return { ok: true, render: { tier: 1, card: 'value' } };
+  const o = r as Record<string, unknown>;
+  if (!o || typeof o !== 'object' || (o.tier !== 1 && o.tier !== 2 && o.tier !== 3) || typeof o.card !== 'string') {
+    return { ok: false, error: 'render must be {tier:1|2|3, card:string}' };
+  }
+  return { ok: true, render: { tier: o.tier as 1 | 2 | 3, card: o.card } };
+}
+
+/** Loosely-typed create/edit input from the schedule tool (validated here). */
+export interface JobSpecInput {
+  title?: unknown;
+  kind?: unknown;
+  schedule?: unknown;
+  source?: unknown;
+  prompt?: unknown;
+  grant?: unknown;
+  tokenBudgetDaily?: unknown;
+  render?: unknown;
+  placement?: unknown;
+}
+
+/**
+ * Validate + normalise a create/edit spec. Pure so the tool can reject bad
+ * input before touching the DB and the tests can exercise every rejection.
+ */
+export function validateJobSpec(input: JobSpecInput): ValidateResult {
+  const title = typeof input.title === 'string' ? input.title.trim() : '';
+  if (!title) return { ok: false, error: 'title is required' };
+  if (input.kind !== 'fetch' && input.kind !== 'agent') return { ok: false, error: 'kind must be "fetch" or "agent"' };
+
+  const sched = validateSchedule(input.schedule);
+  if (!sched.ok) return sched;
+
+  const render = validateRender(input.render);
+  if (!render.ok) return render;
+
+  let tokenBudgetDaily: number | undefined;
+  if (input.tokenBudgetDaily !== undefined) {
+    if (typeof input.tokenBudgetDaily !== 'number' || !Number.isFinite(input.tokenBudgetDaily) || input.tokenBudgetDaily <= 0) {
+      return { ok: false, error: 'tokenBudgetDaily must be a positive number' };
+    }
+    tokenBudgetDaily = input.tokenBudgetDaily;
+  }
+
+  const placement = input.placement as JobPlacement | undefined;
+
+  if (input.kind === 'fetch') {
+    const src = (input.source ?? {}) as Record<string, unknown>;
+    const url = typeof src.url === 'string' ? src.url : '';
+    const urlErr = fetchUrlError(url);
+    if (urlErr) return { ok: false, error: urlErr };
+    if (src.method !== undefined && src.method !== 'GET') return { ok: false, error: 'fetch source.method must be "GET"' };
+    if (src.headers !== undefined && (typeof src.headers !== 'object' || src.headers === null || Array.isArray(src.headers))) {
+      return { ok: false, error: 'source.headers must be an object of string values' };
+    }
+    if (src.extract !== undefined && typeof src.extract !== 'string') return { ok: false, error: 'source.extract must be a string path' };
+    const source: JobSource = { url, method: 'GET' };
+    if (src.headers) source.headers = src.headers as Record<string, string>;
+    if (typeof src.extract === 'string') source.extract = src.extract;
+    return { ok: true, spec: { title, kind: 'fetch', schedule: sched.schedule, source, render: render.render, placement } };
+  }
+
+  // agent
+  const prompt = typeof input.prompt === 'string' ? input.prompt.trim() : '';
+  if (!prompt) return { ok: false, error: 'agent job needs a prompt' };
+  const grant = validateGrant(input.grant);
+  if (!grant.ok) return grant;
+  return {
+    ok: true,
+    spec: { title, kind: 'agent', schedule: sched.schedule, prompt, grant: grant.grant, tokenBudgetDaily, render: render.render, placement },
+  };
 }

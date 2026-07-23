@@ -61,6 +61,9 @@ import {
   toolCapability,
   dayKey as jobDayKey,
   DEFAULT_TOKEN_BUDGET_DAILY,
+  extractValue,
+  validateJobSpec,
+  MIN_INTERVAL_MS,
 } from '../src/main/core/jobs-pure.ts';
 import type { Job } from '../src/main/core/types.ts';
 import { confirmMatches, factoryResetPaths } from '../src/main/core/reset.ts';
@@ -1861,4 +1864,135 @@ test('jobActionDecision — non-sensitive: in-grant allow, out-of-grant deny, da
   assert.equal(jobActionDecision({ dangerous: true, unattended: true }, ...write), 'allow');
   // plain read under the default grant → allow
   assert.equal(jobActionDecision({ dangerous: false, unattended: true }, 'gmail', { op: 'list' }), 'allow');
+});
+
+// ── fetch runner: the pure value extractor ───────────────────────────────────
+
+test('extractValue — nested dot path', () => {
+  const json = { current: { temperature_2m: 21.3, wind: 8 }, hourly: {} };
+  assert.equal(extractValue(json, 'current.temperature_2m'), 21.3);
+  assert.equal(extractValue(json, 'current.wind'), 8);
+});
+
+test('extractValue — bracket + array index', () => {
+  const json = { list: [{ main: { temp: 300 } }, { main: { temp: 305 } }] };
+  assert.equal(extractValue(json, 'list[0].main.temp'), 300);
+  assert.equal(extractValue(json, 'list[1].main.temp'), 305);
+  // dot-index resolves the same as the bracket index
+  assert.equal(extractValue(json, 'list.0.main.temp'), 300);
+});
+
+test('extractValue — missing path → undefined, no throw', () => {
+  const json = { current: { t: 1 } };
+  assert.equal(extractValue(json, 'current.nope'), undefined);
+  assert.equal(extractValue(json, 'a.b.c.d'), undefined);
+  assert.equal(extractValue(null, 'a.b'), undefined);
+  assert.equal(extractValue('a string', 'a.b'), undefined);
+});
+
+test('extractValue — no spec returns the whole payload', () => {
+  const json = { a: 1, b: 2 };
+  assert.deepEqual(extractValue(json), json);
+  assert.deepEqual(extractValue(json, ''), json);
+  assert.equal(extractValue('plain text'), 'plain text');
+});
+
+test('extractValue — a quoted bracket key with a dot inside is one key, not two', () => {
+  const json = { 'a.b': { c: 42 }, list: [{ 'x.y': 7 }] };
+  // ['a.b'] must resolve the literal key "a.b", not descend a → b
+  assert.equal(extractValue(json, "['a.b'].c"), 42);
+  assert.equal(extractValue(json, 'list[0]["x.y"]'), 7);
+  // a leading quoted key works too
+  assert.deepEqual(extractValue(json, "['a.b']"), { c: 42 });
+});
+
+// ── schedule tool: pure input validation for create/edit ─────────────────────
+
+test('validateJobSpec — a well-formed fetch job normalizes', () => {
+  const r = validateJobSpec({
+    title: 'Lisbon temp',
+    kind: 'fetch',
+    schedule: { type: 'interval', everyMs: 5 * 60_000 },
+    source: { url: 'https://api.open-meteo.com/v1/forecast', extract: 'current.temperature_2m' },
+  });
+  assert.equal(r.ok, true);
+  if (r.ok) {
+    assert.equal(r.spec.kind, 'fetch');
+    assert.equal(r.spec.source?.method, 'GET');
+    assert.deepEqual(r.spec.render, { tier: 1, card: 'value' });
+  }
+});
+
+test('validateJobSpec — agent job defaults grant to read+notify', () => {
+  const r = validateJobSpec({
+    title: 'Gmail triage',
+    kind: 'agent',
+    schedule: { type: 'daily', at: '09:00' },
+    prompt: 'summarise new mail',
+  });
+  assert.equal(r.ok, true);
+  if (r.ok) assert.deepEqual(r.spec.grant, ['read', 'notify']);
+});
+
+test('validateJobSpec — malformed schedule is rejected', () => {
+  const base = { title: 't', kind: 'fetch' as const, source: { url: 'https://x.com' } };
+  assert.equal(validateJobSpec({ ...base, schedule: { type: 'weekly' } as any }).ok, false);
+  assert.equal(validateJobSpec({ ...base, schedule: { type: 'daily', at: '25:00' } }).ok, false);
+  assert.equal(validateJobSpec({ ...base, schedule: { type: 'daily', at: '9am' } }).ok, false);
+  assert.equal(validateJobSpec({ ...base, schedule: undefined }).ok, false);
+});
+
+test('validateJobSpec — interval below the floor is rejected', () => {
+  const base = { title: 't', kind: 'fetch' as const, source: { url: 'https://x.com' } };
+  assert.equal(validateJobSpec({ ...base, schedule: { type: 'interval', everyMs: MIN_INTERVAL_MS - 1 } }).ok, false);
+  assert.equal(validateJobSpec({ ...base, schedule: { type: 'interval', everyMs: MIN_INTERVAL_MS } }).ok, true);
+  assert.equal(validateJobSpec({ ...base, schedule: { type: 'interval', everyMs: 'soon' } as any }).ok, false);
+});
+
+test('validateJobSpec — non-http(s) url is rejected', () => {
+  const sched = { type: 'interval', everyMs: 60_000 } as const;
+  assert.equal(validateJobSpec({ title: 't', kind: 'fetch', schedule: sched, source: { url: 'file:///etc/passwd' } }).ok, false);
+  assert.equal(validateJobSpec({ title: 't', kind: 'fetch', schedule: sched, source: { url: 'ftp://x' } }).ok, false);
+  assert.equal(validateJobSpec({ title: 't', kind: 'fetch', schedule: sched, source: {} as any }).ok, false);
+  assert.equal(validateJobSpec({ title: 't', kind: 'fetch', schedule: sched, source: { url: 'https://ok.com' } }).ok, true);
+});
+
+test('validateJobSpec — SSRF: localhost / internal / metadata / private IPs rejected', () => {
+  const sched = { type: 'interval', everyMs: 60_000 } as const;
+  const bad = (url: string) => validateJobSpec({ title: 't', kind: 'fetch', schedule: sched, source: { url } }).ok;
+  // loopback + localhost
+  assert.equal(bad('http://localhost:8080/x'), false);
+  assert.equal(bad('http://127.0.0.1/x'), false);
+  assert.equal(bad('http://127.1.2.3/x'), false);
+  assert.equal(bad('http://[::1]/x'), false);
+  assert.equal(bad('http://sub.localhost/x'), false);
+  // cloud metadata (link-local) — the classic SSRF target
+  assert.equal(bad('http://169.254.169.254/latest/meta-data/'), false);
+  // RFC1918 private ranges
+  assert.equal(bad('http://10.0.0.5/x'), false);
+  assert.equal(bad('http://192.168.1.1/x'), false);
+  assert.equal(bad('http://172.16.5.5/x'), false);
+  assert.equal(bad('http://172.31.255.255/x'), false);
+  // unspecified + IPv6 ULA / link-local + mDNS/internal TLDs
+  assert.equal(bad('http://0.0.0.0/x'), false);
+  assert.equal(bad('http://[fd00::1]/x'), false);
+  assert.equal(bad('http://[fe80::1]/x'), false);
+  assert.equal(bad('http://printer.local/x'), false);
+  assert.equal(bad('http://api.internal/x'), false);
+  // public addresses still pass
+  assert.equal(bad('https://api.open-meteo.com/v1/forecast'), true);
+  assert.equal(bad('http://172.32.0.1/x'), true); // 172.32 is public (outside /12)
+  assert.equal(bad('https://8.8.8.8/x'), true);
+});
+
+test('validateJobSpec — title and kind are required', () => {
+  const sched = { type: 'interval', everyMs: 60_000 } as const;
+  assert.equal(validateJobSpec({ kind: 'fetch', schedule: sched, source: { url: 'https://x.com' } }).ok, false);
+  assert.equal(validateJobSpec({ title: '  ', kind: 'fetch', schedule: sched, source: { url: 'https://x.com' } }).ok, false);
+  assert.equal(validateJobSpec({ title: 't', kind: 'nope' as any, schedule: sched }).ok, false);
+});
+
+test('validateJobSpec — agent job requires a prompt', () => {
+  const r = validateJobSpec({ title: 't', kind: 'agent', schedule: { type: 'daily', at: '08:30' } });
+  assert.equal(r.ok, false);
 });
