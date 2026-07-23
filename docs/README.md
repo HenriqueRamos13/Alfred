@@ -37,6 +37,7 @@ Per-tool input/output/risk contracts. Registered tools live in `src/main/tools/`
 - [gmail.md](tools/gmail.md) · [memory.md](tools/memory.md) ·
   [ui_layout.md](tools/ui_layout.md) · [voice.md](tools/voice.md)
 - [models.md](tools/models.md) — the four brains + `delegate_to_claude_code` + MCP bridge.
+- [tool-disclosure.md](tools/tool-disclosure.md) — progressive disclosure + the `tool_search`/`tool_describe`/`tool_call` bridge, schema sanitizer, check_fn cache.
 
 ## Governance — [governance/](governance/)
 

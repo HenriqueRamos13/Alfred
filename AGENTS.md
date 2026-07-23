@@ -45,6 +45,22 @@ One card per domain — *what it does · when to use · hard limit · full contr
 Also available: **project** (ICM folder-as-context projects) and **render_ui**
 (whitelisted generative UI onto the surface). See the routing table.
 
+### Progressive tool disclosure (why you may not see every tool)
+To keep the tool array from blowing the context (Phase-5 roster + MCP tools), a
+small **CORE** set — `filesystem`, `shell`, `system`, `memory`, `ui_layout` — is
+**always** loaded; the rest are **deferrable**. When the deferrable definitions
+would exceed a token budget (~12% of the context window, or the configurable
+`ALFRED_TOOL_DISCLOSURE_TOKENS` cap) they are hidden behind **3 bridge tools**:
+- **tool_search({query})** — find deferred tools by intent (names + summaries).
+- **tool_describe({name})** — the full description + input schema of one.
+- **tool_call({name, args})** — **execute** a deferred tool. It unwraps to the
+  real tool and runs through the **identical** governed path (risk tier,
+  approvals, trifecta, audit) — a context-saving indirection, **never a bypass**.
+
+If a tool you need isn't visible, `tool_search` for it then `tool_call` it. Below
+the budget every tool is exposed directly and no bridge appears. The catalog is
+rebuilt statelessly on each turn. Details: [docs/tools/tool-disclosure.md](docs/tools/tool-disclosure.md).
+
 ## (c) Governance (always resident — the summary; code is authoritative)
 Every tool call is risk-tiered:
 - **T0** read/search/list · **T1** reversible workspace writes — both run freely.

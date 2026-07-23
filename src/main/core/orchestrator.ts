@@ -82,7 +82,15 @@ import { spawnClaudeCli, dangerousArgs } from './claudeSpawn.ts';
 import * as tts from './tts.ts';
 import * as stt from './stt.ts';
 import * as wakeword from './wakeword.ts';
-import { tools, createBrowserHandle } from '../tools/index.ts';
+import { tools, createBrowserHandle, isCoreTool } from '../tools/index.ts';
+import {
+  shouldDefer,
+  buildCatalog,
+  searchCatalog,
+  resolveBridgeCall,
+  sanitizeToolSchema,
+  type ToolMeta,
+} from './tool-disclosure-pure.ts';
 
 type AlfredDb = import('better-sqlite3').Database;
 
@@ -303,23 +311,111 @@ export class Orchestrator {
     this.controller?.abort();
   }
 
-  /** Wrap every registry Tool as an AI-SDK tool; governance runs inside execute. */
+  /**
+   * Wrap the session's tools as AI-SDK tools; governance runs inside execute.
+   *
+   * Progressive tool disclosure (Phase 6 Stage 1): when the DEFERRABLE (non-core)
+   * tool definitions would exceed the token budget, they are replaced in the
+   * model-visible set by 3 bridge tools — tool_search / tool_describe / tool_call.
+   * The catalog is rebuilt STATELESS here on every assembly (no session state to
+   * drift). tool_call unwraps to the real tool and routes through the SAME
+   * governed path (runTool → runGovernedTool), so approvals / risk-tier / trifecta
+   * / audit fire identically to a direct call. Below the budget, everything is
+   * exposed as before (no bridge). Every schema is run through sanitizeToolSchema
+   * so strict backends (Anthropic) don't 400 on MCP-style schemas.
+   */
   private buildTools(): ToolSet {
     // Does the active brain accept images? screenshot pixels are only fed to a
     // vision-capable brain; a blind brain gets a "switch brains" nudge instead.
     const brainHasVision = modelSupportsVision(brainToProvider(this.deps.brainId), this.deps.modelId);
-    const set: ToolSet = {};
-    for (const t of this.deps.tools) {
-      set[t.name] = tool({
+
+    const wrapReal = (t: Tool) =>
+      tool({
         description: t.description,
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        inputSchema: jsonSchema(t.inputSchema as any),
+        inputSchema: jsonSchema(sanitizeToolSchema(t.inputSchema) as any),
         execute: (args: unknown) => this.runTool(t, args),
         // Feed screenshot pixels to the model as multimodal content when the
         // active brain can see; otherwise keep the JSON result but hint to switch.
         toModelOutput: ({ output }) => buildToolModelOutput(output, brainHasVision),
       });
+
+    const metas: ToolMeta[] = this.deps.tools.map((t) => ({
+      name: t.name,
+      description: t.description,
+      inputSchema: t.inputSchema,
+      core: isCoreTool(t.name),
+    }));
+    const capRaw = Number(process.env.ALFRED_TOOL_DISCLOSURE_TOKENS);
+    const plan = shouldDefer(metas, Number.isFinite(capRaw) && capRaw > 0 ? { maxTokens: capRaw } : {});
+
+    const set: ToolSet = {};
+    if (!plan.defer) {
+      for (const t of this.deps.tools) set[t.name] = wrapReal(t);
+      return set;
     }
+
+    // Deferred mode: core tools stay directly callable; the rest hide behind the
+    // bridge. Catalog is derived from THIS session's deferrable tools only.
+    for (const t of this.deps.tools) if (isCoreTool(t.name)) set[t.name] = wrapReal(t);
+    const catalog = buildCatalog(metas);
+
+    set.tool_search = tool({
+      description:
+        'Search Alfred\'s DEFERRED tools (not currently loaded to save context). ' +
+        'Returns matching tool names + one-line summaries. Then use tool_describe(name) for the full schema and tool_call(name, args) to run one.',
+      inputSchema: jsonSchema({
+        type: 'object',
+        properties: { query: { type: 'string', description: 'What you want to do (e.g. "read email", "browse the web").' } },
+        required: ['query'],
+      } as any),
+      execute: (args: unknown) => {
+        const query = String((args as { query?: unknown })?.query ?? '');
+        return Promise.resolve({ tools: searchCatalog(catalog, query) });
+      },
+    });
+
+    set.tool_describe = tool({
+      description: 'Get the full description + input schema of ONE deferred tool by name (from tool_search).',
+      inputSchema: jsonSchema({
+        type: 'object',
+        properties: { name: { type: 'string', description: 'Exact tool name from tool_search.' } },
+        required: ['name'],
+      } as any),
+      execute: (args: unknown): Promise<unknown> => {
+        const res = resolveBridgeCall(this.deps.tools, (args as { name?: unknown })?.name);
+        if ('error' in res) return Promise.resolve({ error: res.error });
+        return Promise.resolve({
+          name: res.tool.name,
+          description: res.tool.description,
+          inputSchema: sanitizeToolSchema(res.tool.inputSchema),
+        });
+      },
+    });
+
+    set.tool_call = tool({
+      description:
+        'Execute a deferred tool by name with its args. Runs through the EXACT same governance ' +
+        '(approvals, risk tier, trifecta, audit) as a direct call — the bridge is only a context-saving indirection.',
+      inputSchema: jsonSchema({
+        type: 'object',
+        properties: {
+          name: { type: 'string', description: 'Exact tool name from tool_search / tool_describe.' },
+          args: { type: 'object', description: 'The tool\'s arguments, matching its schema.' },
+        },
+        required: ['name'],
+      } as any),
+      execute: (input: unknown) => {
+        const { name, args } = (input as { name?: unknown; args?: unknown }) ?? {};
+        const res = resolveBridgeCall(this.deps.tools, name);
+        if ('error' in res) return Promise.resolve({ error: res.error });
+        // IDENTICAL governed path: loop detection + runGovernedTool, exactly as a
+        // direct tool call. The bridge unwraps to the real Tool and hands it off.
+        return this.runTool(res.tool, args ?? {});
+      },
+      toModelOutput: ({ output }) => buildToolModelOutput(output, brainHasVision),
+    });
+
     return set;
   }
 

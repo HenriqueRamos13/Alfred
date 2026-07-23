@@ -29,3 +29,15 @@ export const tools: Tool[] = [filesystem, shell, browser, project, gmail, render
 
 /** Lookup by tool name (for the orchestrator's tool-use dispatch). */
 export const toolsByName: Record<string, Tool> = Object.fromEntries(tools.map((t) => [t.name, t]));
+
+/**
+ * CORE tools — the small always-loaded set that NEVER defers (progressive tool
+ * disclosure, Phase 6 Stage 1). Everything else (browser, gmail, project,
+ * render_ui, delegate*, agent_study, team, schedule, + any MCP tools) is
+ * DEFERRABLE: hidden behind the tool_search/tool_describe/tool_call bridge once
+ * the deferrable defs would blow the token budget. See tool-disclosure-pure.ts.
+ */
+export const CORE_TOOLS: ReadonlySet<string> = new Set(['filesystem', 'shell', 'system', 'memory', 'ui_layout']);
+
+/** True when a tool is in the always-loaded core set. */
+export const isCoreTool = (name: string): boolean => CORE_TOOLS.has(name);

@@ -171,6 +171,22 @@ import {
   buildToolModelOutput,
   imageOfResult,
 } from '../src/main/core/modelCatalog.ts';
+import {
+  estimateToolTokens,
+  disclosureThreshold,
+  shouldDefer,
+  buildCatalog,
+  toolSummary,
+  searchCatalog,
+  resolveBridgeCall,
+  sanitizeToolSchema,
+  isProbeFresh,
+  reconcileProbe,
+  BRIDGE_TOOL_NAMES,
+  PROBE_TTL_MS,
+  PROBE_GRACE_MS,
+} from '../src/main/core/tool-disclosure-pure.ts';
+import type { ToolMeta } from '../src/main/core/tool-disclosure-pure.ts';
 
 test('classifyAction — read/list/search are T0 autopilot', () => {
   assert.equal(classifyAction('fs_read', { path: '/a' }), 'T0');
@@ -2765,4 +2781,146 @@ test('validateJobSpec — study job requires agentId + topic + a well-formed sch
     assert.deepEqual(ok.spec.study, { agentId: 'coder', topic: 'Rust async' });
     assert.deepEqual(ok.spec.schedule, { type: 'daily', at: '09:00' });
   }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Progressive tool disclosure (Phase 6 Stage 1) — tool-disclosure-pure.ts
+// ─────────────────────────────────────────────────────────────────────────────
+
+const CORE = (name: string, desc = 'core tool'): ToolMeta => ({ name, description: desc, inputSchema: { type: 'object', properties: {} }, core: true });
+const DEFERRABLE = (name: string, desc: string): ToolMeta => ({ name, description: desc, inputSchema: { type: 'object', properties: { q: { type: 'string' } } } });
+
+test('estimateToolTokens — grows with description + schema size', () => {
+  const small = DEFERRABLE('a', 'x');
+  const big = DEFERRABLE('a', 'x'.repeat(400));
+  assert.ok(estimateToolTokens(big) > estimateToolTokens(small));
+  assert.ok(estimateToolTokens(small) >= 1);
+});
+
+test('disclosureThreshold — ratio of window, or absolute cap wins', () => {
+  assert.equal(disclosureThreshold({ contextWindow: 200_000, thresholdRatio: 0.1 }), 20_000);
+  assert.equal(disclosureThreshold({ contextWindow: 200_000, thresholdRatio: 0.1, maxTokens: 500 }), 500);
+});
+
+test('shouldDefer — below threshold exposes everything, core never counts', () => {
+  const tools = [CORE('filesystem'), CORE('shell'), DEFERRABLE('browser', 'drive a browser')];
+  const plan = shouldDefer(tools, { maxTokens: 10_000 });
+  assert.equal(plan.defer, false);
+  assert.deepEqual(plan.coreNames, ['filesystem', 'shell']);
+  assert.deepEqual(plan.deferrableNames, ['browser']);
+});
+
+test('shouldDefer — above threshold defers, and core is never in the deferrable set', () => {
+  const heavy = 'D'.repeat(2000);
+  const tools = [CORE('filesystem'), CORE('memory'), DEFERRABLE('browser', heavy), DEFERRABLE('gmail', heavy)];
+  const plan = shouldDefer(tools, { maxTokens: 100 }); // tiny budget → must defer
+  assert.equal(plan.defer, true);
+  assert.deepEqual(plan.deferrableNames, ['browser', 'gmail']);
+  assert.ok(!plan.deferrableNames.includes('filesystem'));
+  assert.ok(!plan.deferrableNames.includes('memory'));
+  assert.ok(plan.deferrableTokens > plan.thresholdTokens);
+});
+
+test('shouldDefer — no deferrable tools never defers (no bridge for nothing)', () => {
+  const plan = shouldDefer([CORE('filesystem'), CORE('shell')], { maxTokens: 0 });
+  assert.equal(plan.defer, false);
+});
+
+test('toolSummary / buildCatalog — first sentence, clamped, core+bridge excluded', () => {
+  assert.equal(toolSummary('Drive a real browser. Handles logins.'), 'Drive a real browser.');
+  assert.ok(toolSummary('x'.repeat(300)).length <= 160);
+  const tools = [CORE('filesystem'), DEFERRABLE('browser', 'Drive a real browser · web tasks'), { name: 'tool_search', description: 'bridge', inputSchema: {} }];
+  const cat = buildCatalog(tools);
+  assert.deepEqual(cat.map((c) => c.name), ['browser']);
+  assert.equal(cat[0].summary, 'Drive a real browser');
+});
+
+test('searchCatalog — ranks name+summary matches, empty query lists all, no match empty', () => {
+  const cat = buildCatalog([
+    DEFERRABLE('browser', 'Drive a real Chromium browser for web tasks'),
+    DEFERRABLE('gmail', 'Read-only Gmail: connect, list, search, read mail'),
+    DEFERRABLE('schedule', 'Recurring scheduled jobs and widgets'),
+  ]);
+  const web = searchCatalog(cat, 'web browser');
+  assert.equal(web[0].name, 'browser'); // name hit outranks a summary-only hit
+  const mail = searchCatalog(cat, 'gmail mail');
+  assert.equal(mail[0].name, 'gmail');
+  assert.equal(searchCatalog(cat, 'quantum flux capacitor').length, 0);
+  assert.equal(searchCatalog(cat, '   ').length, cat.length);
+});
+
+test('resolveBridgeCall — resolves session tools, rejects unknown + bridge names', () => {
+  const tools = [DEFERRABLE('browser', 'x'), CORE('filesystem')];
+  const ok = resolveBridgeCall(tools, 'browser');
+  assert.ok('tool' in ok && ok.tool.name === 'browser');
+  assert.ok('error' in resolveBridgeCall(tools, 'nope'));
+  assert.ok('error' in resolveBridgeCall(tools, 'tool_call')); // a bridge name is never callable via the bridge
+  assert.ok('error' in resolveBridgeCall(tools, ''));
+  assert.deepEqual([...BRIDGE_TOOL_NAMES], ['tool_search', 'tool_describe', 'tool_call']);
+});
+
+test('sanitizeToolSchema — $ref siblings dropped', () => {
+  const out = sanitizeToolSchema({ $ref: '#/defs/X', description: 'ignored', type: 'string' }) as Record<string, unknown>;
+  assert.deepEqual(out, { $ref: '#/defs/X' });
+});
+
+test('sanitizeToolSchema — nullable anyOf collapses to the single non-null branch, keeps siblings', () => {
+  const out = sanitizeToolSchema({ description: 'maybe', anyOf: [{ type: 'string' }, { type: 'null' }] }) as Record<string, unknown>;
+  assert.equal(out.type, 'string');
+  assert.equal(out.description, 'maybe');
+  assert.ok(!('anyOf' in out));
+});
+
+test('sanitizeToolSchema — multi-branch anyOf keeps anyOf but drops the null branch', () => {
+  const out = sanitizeToolSchema({ oneOf: [{ type: 'string' }, { type: 'number' }, { type: 'null' }] }) as Record<string, unknown>;
+  assert.ok(Array.isArray(out.anyOf));
+  assert.equal((out.anyOf as unknown[]).length, 2);
+  assert.ok(!('oneOf' in out));
+});
+
+test('sanitizeToolSchema — bare/empty object types fixed, recursively', () => {
+  assert.deepEqual(sanitizeToolSchema({}), { type: 'object', properties: {} });
+  assert.deepEqual(sanitizeToolSchema({ type: 'object' }), { type: 'object', properties: {} });
+  // property with a bare {} + nested nullable ref sibling
+  const out = sanitizeToolSchema({
+    type: 'object',
+    properties: { a: {}, b: { properties: { c: { type: 'string' } } } },
+  }) as Record<string, any>;
+  assert.deepEqual(out.properties.a, { type: 'object', properties: {} });
+  assert.equal(out.properties.b.type, 'object'); // inferred from properties
+});
+
+test('sanitizeToolSchema — does not mutate its input', () => {
+  const input = { anyOf: [{ type: 'string' }, { type: 'null' }] };
+  const snapshot = JSON.stringify(input);
+  sanitizeToolSchema(input);
+  assert.equal(JSON.stringify(input), snapshot);
+});
+
+test('check_fn cache — isProbeFresh respects TTL', () => {
+  const entry = { available: true, lastOkTs: 1000, probedTs: 1000 };
+  assert.equal(isProbeFresh(entry, 1000 + PROBE_TTL_MS - 1), true);
+  assert.equal(isProbeFresh(entry, 1000 + PROBE_TTL_MS), false);
+  assert.equal(isProbeFresh(undefined, 1000), false);
+});
+
+test('check_fn cache — a success refreshes last-good', () => {
+  const next = reconcileProbe(undefined, true, 5000);
+  assert.deepEqual(next, { available: true, lastOkTs: 5000, probedTs: 5000 });
+});
+
+test('check_fn cache — a failure within grace of a success serves last-good', () => {
+  const prev = { available: true, lastOkTs: 1000, probedTs: 1000 };
+  const within = reconcileProbe(prev, false, 1000 + PROBE_GRACE_MS); // exactly at edge → still grace
+  assert.equal(within.available, true); // don't yank the tool on a trembling probe
+  assert.equal(within.lastOkTs, 1000); // lastOkTs NOT advanced → grace keeps shrinking
+  assert.equal(within.probedTs, 1000 + PROBE_GRACE_MS);
+});
+
+test('check_fn cache — a failure past the grace window drops the tool', () => {
+  const prev = { available: true, lastOkTs: 1000, probedTs: 1000 };
+  const past = reconcileProbe(prev, false, 1000 + PROBE_GRACE_MS + 1);
+  assert.equal(past.available, false);
+  // No prior success at all → a failing probe is simply unavailable.
+  assert.equal(reconcileProbe(undefined, false, 9999).available, false);
 });
