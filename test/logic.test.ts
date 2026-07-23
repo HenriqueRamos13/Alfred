@@ -2225,6 +2225,24 @@ test('wrapWidgetHtml — the trusted Alfred runtime is injected', () => {
   assert.ok(out.indexOf('window.Alfred') < out.indexOf('<body>'));
 });
 
+test('wrapWidgetHtml — the runtime buffers the last value and replays it on onData (order-independent delivery)', () => {
+  const out = wrapWidgetHtml('');
+  // message listener buffers the latest payload…
+  assert.ok(/last\s*=\s*ev\.data/.test(out), 'listener stores the last value');
+  assert.ok(out.includes('hasLast = true'), 'listener marks a value as buffered');
+  // …and onData replays it immediately if one already arrived (race fix).
+  assert.ok(out.includes('if (hasLast)'), 'onData checks the buffer');
+  assert.ok(/cb\(last\)/.test(out), 'onData replays the buffered value to a late subscriber');
+});
+
+test('wrapWidgetHtml — the runtime posts a ready-handshake to the parent after mount', () => {
+  const out = wrapWidgetHtml('');
+  assert.ok(out.includes('__alfredWidgetReady'), 'ready signal present');
+  assert.ok(/parent\.postMessage\(\{\s*__alfredWidgetReady:\s*1\s*\}/.test(out), 'posts the ready shape to the parent');
+  // handshake fires at the end of the IIFE, after Alfred is defined
+  assert.ok(out.indexOf('__alfredWidgetReady') > out.indexOf('window.Alfred'), 'ready is posted after the runtime is ready');
+});
+
 test('wrapWidgetHtml — a model CSP / external script cannot relax our default-src none', () => {
   const evil =
     '<meta http-equiv="Content-Security-Policy" content="default-src *; connect-src http://evil">' +

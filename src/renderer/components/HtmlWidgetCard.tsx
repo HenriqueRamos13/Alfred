@@ -17,17 +17,42 @@ import type { Job, StreamEvent } from '../../main/core/types.ts';
 export function HtmlWidgetCard({ job }: { job: Job }) {
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const [srcDoc] = useState(() => wrapWidgetHtml(job.render.html ?? ''));
+  // The freshest value we should show — persisted lastResult, then each job.data.
+  // Held in a ref so the ready-handshake listener can post the CURRENT value.
+  const latestRef = useRef<unknown>(job.runtime.lastResult ?? null);
 
-  // Push the latest value into the frame. Seed from persisted lastResult once
-  // the frame is loaded, then on every job.data refresh.
+  const post = (value: unknown) => {
+    latestRef.current = value;
+    iframeRef.current?.contentWindow?.postMessage(value, '*');
+  };
+
+  // Push the latest value into the frame. Seed from persisted lastResult, then
+  // on every job.data refresh (postMessage only — the iframe never reloads).
   useEffect(() => {
-    const post = (value: unknown) => iframeRef.current?.contentWindow?.postMessage(value, '*');
+    latestRef.current = job.runtime.lastResult ?? null;
     if (job.runtime.lastResult != null) post(job.runtime.lastResult);
     const off = alfred.onStream((e: StreamEvent) => {
       if (e.kind === 'job.data' && e.jobId === job.id) post(e.value);
     });
     return off;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [job.id, job.runtime.lastResult]);
+
+  // Ready-handshake (race-proof seed). The runtime posts {__alfredWidgetReady:1}
+  // once mounted; we reply with the current value. STRICTLY confined: accept only
+  // messages from OUR OWN iframe, only that exact shape, and do NOTHING but
+  // re-post this widget's own display value — never any privileged action.
+  useEffect(() => {
+    const onMsg = (ev: MessageEvent) => {
+      if (ev.source !== iframeRef.current?.contentWindow) return;
+      const d = ev.data as { __alfredWidgetReady?: unknown } | null;
+      if (!d || d.__alfredWidgetReady !== 1) return;
+      if (latestRef.current != null) post(latestRef.current);
+    };
+    window.addEventListener('message', onMsg);
+    return () => window.removeEventListener('message', onMsg);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   return (
     <iframe
@@ -36,8 +61,10 @@ export function HtmlWidgetCard({ job }: { job: Job }) {
       sandbox="allow-scripts"
       srcDoc={srcDoc}
       onLoad={() => {
-        // Re-seed after (re)load so a late frame still gets the last value.
-        if (job.runtime.lastResult != null) iframeRef.current?.contentWindow?.postMessage(job.runtime.lastResult, '*');
+        // Extra net: re-seed the freshest value after (re)load. The ready
+        // handshake is the primary path; this covers the case where load fires
+        // first. Both are idempotent (buffer + replay in the runtime).
+        if (latestRef.current != null) post(latestRef.current);
       }}
       style={{ width: '100%', height: '100%', border: 'none', display: 'block', background: 'transparent' }}
       title={job.title}

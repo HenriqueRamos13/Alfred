@@ -30,18 +30,26 @@ export const WIDGET_HTML_MAX_BYTES = 256 * 1024;
 
 /**
  * The trusted runtime injected before the model HTML. Defines `window.Alfred`:
- *   - `onData(cb)` — register a callback; a single `message` listener fans the
- *     posted payload out to every callback (the parent card posts job.data);
+ *   - `onData(cb)` — register a callback and, if a value already arrived,
+ *     replay the LAST one to it immediately. A single `message` listener buffers
+ *     the latest payload (`last`/`hasLast`) and fans it out. Buffer + replay make
+ *     delivery order-independent: whether the value lands before or after the
+ *     model calls `onData`, the callback always gets the most recent value — the
+ *     root-cause fix for tier-2 widgets stuck on "waiting for data".
  *   - `sparkline(el, arr)` — draw a minimal inline-SVG line chart of a numeric
  *     array into `el` (no external lib; CSP forbids one anyway).
+ * After the IIFE mounts it posts `{__alfredWidgetReady:1}` to the parent so the
+ * card knows the runtime is ready to receive and can (re)seed the current value.
  * Kept as ES5-ish string so it is valid inside any generated page.
  */
 export const WIDGET_RUNTIME = `(function(){
   var cbs = [];
+  var last;
+  var hasLast = false;
   function fan(v){ for (var i=0;i<cbs.length;i++){ try { cbs[i](v); } catch(e){} } }
-  window.addEventListener('message', function(ev){ fan(ev.data); });
+  window.addEventListener('message', function(ev){ last = ev.data; hasLast = true; fan(last); });
   window.Alfred = {
-    onData: function(cb){ if (typeof cb === 'function') cbs.push(cb); },
+    onData: function(cb){ if (typeof cb === 'function'){ cbs.push(cb); if (hasLast){ try { cb(last); } catch(e){} } } },
     sparkline: function(el, arr){
       if (!el) return;
       var a = (arr || []).map(Number).filter(function(n){ return isFinite(n); });
@@ -61,6 +69,9 @@ export const WIDGET_RUNTIME = `(function(){
       el.innerHTML = svg;
     }
   };
+  // Ready-handshake: tell the parent card the runtime is mounted and listening,
+  // so it can (re)seed the current value even if its first post raced the load.
+  parent.postMessage({ __alfredWidgetReady: 1 }, '*');
 })();`;
 
 /**
