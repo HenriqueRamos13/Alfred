@@ -231,6 +231,88 @@ export const AI_COMPONENTS = [
 export type AiComponent = (typeof AI_COMPONENTS)[number];
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Scheduled jobs (Phase 4) — persisted, in-app scheduler; see
+// tasks/PHASE4-SCHEDULED-JOBS-PROMPT.md. Pure logic lives in jobs-pure.ts;
+// persistence + the timer engine in jobs.ts (both take Database by param).
+// ─────────────────────────────────────────────────────────────────────────────
+
+export type JobKind = 'fetch' | 'agent';
+
+/**
+ * A job's autonomy grant is an allowlist of coarse capabilities (default:
+ * read + notify). Sensitive capabilities (send/money/delete/secrets) never sit
+ * in a normal grant — they are gated separately (isSensitiveAction) and always
+ * queue an approval for unattended jobs.
+ */
+export type Capability = 'read' | 'notify' | 'write' | 'browse' | 'shell' | 'send' | 'delete' | 'money' | 'secrets';
+
+export type JobSchedule =
+  | { type: 'interval'; everyMs: number }
+  | { type: 'daily'; at: string /* HH:MM, local */ };
+
+export type JobPausedReason = 'budget' | 'approval' | 'error' | null;
+
+/** `fetch` job: a cheap code-level HTTP pull on a timer (zero AI tokens). */
+export interface JobSource {
+  url: string;
+  method?: 'GET';
+  headers?: Record<string, string>;
+  /** jsonpath-ish / template selecting the card value from the response. */
+  extract?: string;
+}
+
+export interface JobRender {
+  tier: 1 | 2 | 3;
+  /** builtin card id | 'html' | 'project'. */
+  card: string;
+}
+
+export interface JobPlacement {
+  displayId?: number;
+  corner?: 'tl' | 'tr' | 'bl' | 'br';
+}
+
+/** Mutable per-job runtime state, persisted so the scheduler survives restart. */
+export interface JobRuntime {
+  lastRunTs?: number;
+  nextRunTs?: number;
+  lastResult?: unknown;
+  tokensToday?: number;
+  /** YYYY-MM-DD the tokensToday counter belongs to (for the daily reset). */
+  tokensDay?: string;
+  pausedReason?: JobPausedReason;
+}
+
+export interface Job {
+  id: string;
+  title: string;
+  kind: JobKind;
+  schedule: JobSchedule;
+  // fetch:
+  source?: JobSource;
+  // agent:
+  prompt?: string;
+  grant?: Capability[];
+  tokenBudgetDaily?: number;
+  // render:
+  render: JobRender;
+  placement?: JobPlacement;
+  enabled: boolean;
+  runtime: JobRuntime;
+}
+
+/** Append-only run-log row. */
+export interface JobRun {
+  id: string;
+  jobId: string;
+  ts: number;
+  ok: boolean;
+  tokens: number;
+  summary?: string;
+  error?: string;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Chat / streaming
 // ─────────────────────────────────────────────────────────────────────────────
 

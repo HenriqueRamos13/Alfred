@@ -99,6 +99,36 @@ CREATE TABLE IF NOT EXISTS layout (
   -- Concrete display.id, or the 'main' / 'all' sentinels (see core/layout.ts).
   displayId TEXT NOT NULL DEFAULT 'main'
 );
+
+-- Scheduled jobs (Phase 4): one row per persisted job; JSON columns for the
+-- struct-y fields (schedule/source/render/placement/grant/runtime). The in-app
+-- scheduler (core/jobs.ts) re-arms these on boot. See core/jobs.ts / jobs-pure.ts.
+CREATE TABLE IF NOT EXISTS scheduled_jobs (
+  id                 TEXT PRIMARY KEY,
+  title              TEXT NOT NULL,
+  kind               TEXT NOT NULL,            -- 'fetch' | 'agent'
+  schedule           TEXT NOT NULL,            -- JSON JobSchedule
+  source             TEXT,                     -- JSON JobSource (fetch)
+  prompt             TEXT,                     -- agent task prompt
+  grant_json         TEXT,                     -- JSON Capability[] (default read+notify when null)
+  token_budget_daily INTEGER,                  -- per-job daily cap (agent)
+  render             TEXT NOT NULL,            -- JSON JobRender
+  placement          TEXT,                     -- JSON JobPlacement
+  enabled            INTEGER NOT NULL DEFAULT 1,
+  runtime            TEXT NOT NULL DEFAULT '{}' -- JSON JobRuntime (lastRun/nextRun/tokens/pause)
+);
+
+-- Append-only run log for scheduled jobs.
+CREATE TABLE IF NOT EXISTS job_runs (
+  id       TEXT PRIMARY KEY,
+  job_id   TEXT NOT NULL,
+  ts       INTEGER NOT NULL,
+  ok       INTEGER NOT NULL,
+  tokens   INTEGER NOT NULL DEFAULT 0,
+  summary  TEXT,
+  error    TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_job_runs_job ON job_runs(job_id, ts);
 `;
 
 export function openDb(dbPath: string): AlfredDb {

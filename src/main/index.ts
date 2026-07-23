@@ -19,6 +19,7 @@ import { join } from 'node:path';
 import { mkdirSync, readFileSync, existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { openDb } from './core/db.ts';
+import { JobScheduler } from './core/jobs.ts';
 import { createOrchestrator } from './core/orchestrator.ts';
 import { loadPricingOverrides } from './core/pricing.ts';
 import { reassignDisplayCards } from './core/layout.ts';
@@ -232,6 +233,7 @@ function createOverlayWindow(): BrowserWindow {
 }
 
 let displayManager: DisplayManager | undefined;
+let scheduler: JobScheduler | undefined;
 
 function boot(): void {
   loadEnv();
@@ -284,6 +286,13 @@ function boot(): void {
   }) as Orchestrator;
   registerIpc(core, emit);
   registerWindowIpc();
+
+  // Scheduled-jobs engine: re-arm persisted jobs on boot. Dormant-safe — with
+  // no jobs it stays idle, and its timers are .unref()'d so it never holds the
+  // process open. The real fetch/agent runner is wired in stage 2 (no-op stub
+  // for now); until then a due job just logs.
+  scheduler = new JobScheduler(db);
+  scheduler.start();
   // Displays for the renderer's "move card to next monitor" control.
   ipcMain.removeHandler('alfred:listDisplays');
   ipcMain.handle('alfred:listDisplays', () => displayManager?.list() ?? []);
@@ -324,6 +333,7 @@ app.whenReady().then(() => {
 
 app.on('will-quit', () => {
   globalShortcut.unregisterAll();
+  scheduler?.stop();
   displayManager?.dispose();
 });
 
