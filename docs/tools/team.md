@@ -224,3 +224,35 @@ indexUpdated, findings }`.
 ```json
 { "agentId": "researcher", "topic": "Rust async runtimes" }
 ```
+
+## TEAM card + routing (Phase 5, stage 5)
+
+The **TEAM card** (top strip: `👥 TEAM`, hidden by default) is the roster's
+management surface, mirroring the Scheduled Tasks card. It is **data-only** over
+IPC — the renderer never touches the DB or disk:
+
+- `listTeamAgents()` → per agent `{ id, name, delegationRole, provider, model,
+  tokenBudgetDaily, tokensToday, topics }`. `tokensToday` comes from
+  `agentTokensToday` (budget.ts), `topics` from `parseTopicsFromIndex` over the
+  shared `agents/index.md`.
+- `deleteTeamAgent(id)` — drops the row + index entry (folder left on disk),
+  behind a double confirm in the card.
+- Pending approvals are read with the existing `listPendingApprovals` and shown
+  under the agent whose scheduled **study** job raised them (mapped via
+  `job.study.agentId`); Approve/Deny call the existing `resolveJobApproval`.
+- The card stays live off the shared stream (`job.approval` / `job.data` /
+  `agent.status`). **create is NOT exposed over IPC** — agents are made by the
+  `team` command/tool; the "PAUSE SPAWN" strip toggle is the global kill-switch.
+
+Display strings come from the renderer-safe, unit-tested pure formatters in
+`team-format-pure.ts` (`humanizeRole`, `formatAgentBudget`,
+`parseTopicsFromIndex`) — a **separate** module from `team-pure.ts`, which
+value-imports `node:fs` (via `projects.ts`'s `slugify`) and is therefore not
+renderer-safe.
+
+**Routing = the brain reads the index.** There is no automatic router: the
+shared `agents/index.md` (who-knows-what MOC, with each agent's `· studied:`
+topics) is loaded into Alfred's system context alongside the other MOCs. Alfred
+consults it to pick the right specialist and delegates with `delegate_to_agent`.
+Keep an agent's specialty (`role`) and studied topics accurate so routing stays
+precise.

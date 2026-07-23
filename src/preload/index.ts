@@ -15,6 +15,7 @@ import type {
   DisplayInfo,
   Job,
   JobApproval,
+  TeamAgentInfo,
   WakeStatus,
 } from '../main/core/types.ts';
 import type { BrainInfo } from '../main/core/providers.ts';
@@ -149,6 +150,10 @@ const api = {
   resumeJob: (id: string): Promise<Job | null> => ipcRenderer.invoke('alfred:resumeJob', id),
   /** Delete a job (+ its runs/approvals). Resolves true on success. */
   deleteJob: (id: string): Promise<boolean> => ipcRenderer.invoke('alfred:deleteJob', id),
+  /** Team roster projection for the TEAM card (role/model, tokens today, studied topics). */
+  listTeamAgents: (): Promise<TeamAgentInfo[]> => ipcRenderer.invoke('alfred:listTeamAgents'),
+  /** Delete a roster agent (row + index entry). Resolves true when a row was removed. */
+  deleteTeamAgent: (id: string): Promise<boolean> => ipcRenderer.invoke('alfred:deleteTeamAgent', id),
   /** Overlay window controls (frameless HUD). */
   hideWindow: (): void => ipcRenderer.send('window:hide'),
   quitWindow: (): void => ipcRenderer.send('window:quit'),

@@ -1595,6 +1595,7 @@ import {
   DEFAULT_MAX_SPAWN_DEPTH,
   DEFAULT_MAX_CONCURRENT_CHILDREN,
 } from '../src/main/core/team-pure.ts';
+import { humanizeRole, formatAgentBudget, parseTopicsFromIndex } from '../src/main/core/team-format-pure.ts';
 
 test('catalog — listModels/findModel/priceOf, Anthropic shared by both Claude providers', () => {
   assert.ok(listModels('deepseek').length === 2);
@@ -2885,6 +2886,40 @@ test('addTopicToIndex — appends to the right agent, dedups, leaves others unto
   // unknown agent / blank topic → unchanged
   assert.equal(addTopicToIndex(index, 'ghost', 'X'), index);
   assert.equal(addTopicToIndex(index, 'coder', '   '), index);
+});
+
+// ── team card formatters (Phase 5, stage 5): renderer-safe, pure ─────────────
+
+test('humanizeRole — leaf vs orchestrator', () => {
+  assert.match(humanizeRole('leaf'), /leaf/i);
+  assert.equal(humanizeRole('orchestrator'), 'Orquestrador');
+  assert.notEqual(humanizeRole('leaf'), humanizeRole('orchestrator'));
+});
+
+test('formatAgentBudget — used / limit, ∞ when no cap', () => {
+  assert.equal(formatAgentBudget(0, undefined), '0 / ∞');
+  assert.equal(formatAgentBudget(12_000, 100_000), '12k / 100k');
+  assert.equal(formatAgentBudget(500, 1000), '500 / 1k');
+  // missing tokens counts as 0
+  assert.equal(formatAgentBudget(undefined, undefined), '0 / ∞');
+});
+
+test('parseTopicsFromIndex — extracts the right agent, empty when none, no cross-mixing', () => {
+  const index = buildAgentsIndex([
+    { id: 'coder', name: 'Coder', role: 'TS', model: 'claude-opus-4-8' },
+    { id: 'writer', name: 'Writer', role: 'prose', model: 'claude-sonnet-5' },
+  ]);
+  // no studied suffix yet → empty
+  assert.deepEqual(parseTopicsFromIndex(index, 'coder'), []);
+  const withTopics = addTopicToIndex(addTopicToIndex(index, 'coder', 'Rust async'), 'writer', 'Screenwriting');
+  assert.deepEqual(parseTopicsFromIndex(withTopics, 'coder'), ['Rust async']);
+  // does NOT bleed the writer's topic into coder
+  assert.deepEqual(parseTopicsFromIndex(withTopics, 'writer'), ['Screenwriting']);
+  // multiple topics on one line split cleanly
+  const two = addTopicToIndex(withTopics, 'coder', 'WASM');
+  assert.deepEqual(parseTopicsFromIndex(two, 'coder'), ['Rust async', 'WASM']);
+  // unknown agent → empty
+  assert.deepEqual(parseTopicsFromIndex(two, 'ghost'), []);
 });
 
 // ── Phase 5 stage 4: per-agent daily budget + scheduled study ────────────────

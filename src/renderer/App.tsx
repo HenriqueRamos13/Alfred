@@ -20,6 +20,7 @@ import { DraggableCard } from './components/DraggableCard.tsx';
 import { ReferenceChat } from './components/ReferenceChat.tsx';
 import { GraphCard } from './components/GraphCard.tsx';
 import { ScheduledTasksCard } from './components/ScheduledTasksCard.tsx';
+import { TeamCard } from './components/TeamCard.tsx';
 import { WidgetCard } from './components/WidgetCard.tsx';
 import { HtmlWidgetCard } from './components/HtmlWidgetCard.tsx';
 import type { ReferenceTarget } from '../main/core/reference.ts';
@@ -1025,6 +1026,11 @@ export default function App() {
           meta: <span className="panel-meta">{jobs.length} tasks · live</span>,
           body: <ScheduledTasksCard />,
         };
+      case 'team':
+        return {
+          meta: <span className="panel-meta">roster · live</span>,
+          body: <TeamCard />,
+        };
       case 'activity':
         return {
           meta: <span className="panel-meta">live tail —f · memory on</span>,
@@ -1226,6 +1232,19 @@ export default function App() {
             title="Open the isolated Reference panel for a note (Phase 3: the graph opens this per node)"
           >
             ◈ REFERENCE
+          </button>
+          <button
+            type="button"
+            className={`topbar-btn no-drag${cards.find((c) => c.id === 'team')?.visible ? ' on' : ''}`}
+            onClick={() => {
+              const team = cardsRef.current.find((c) => c.id === 'team');
+              const show = !team?.visible;
+              patchCard('team', { visible: show });
+              if (show) focusCard('team');
+            }}
+            title="Show/hide the TEAM card — specialist roster, models, studied topics, token budgets and pending approvals"
+          >
+            👥 TEAM
           </button>
           <button
             type="button"

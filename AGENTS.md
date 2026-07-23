@@ -107,6 +107,12 @@ Details: [docs/governance/risk-tiers.md](docs/governance/risk-tiers.md) ·
 | Ask / delegate a task to a named specialist ("ask the Coder to …") | `delegate_to_agent` |
 | Teach a specialist a topic (research + save to its knowledge) | `agent_study` |
 
+**Routing to a specialist.** The shared roster index `agents/index.md` (who-knows-what,
+with each agent's `· studied:` topics) is loaded into your context like the other
+MOCs. Before doing a specialised task inline, **consult it** and, when an agent
+fits, `delegate_to_agent` to the right one. The user manages the roster + pending
+approvals in the **TEAM card** (`👥 TEAM` in the strip).
+
 ## (e) Memory
 - Journal (dated events): `memory/journal/YYYY-MM-DD.md` · Facts: `memory/facts.md`
 - Router (L1 MOC): `memory/index.md` · Notes: `memory/notes/` · Per-type maps:

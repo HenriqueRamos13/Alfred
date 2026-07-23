@@ -16,7 +16,7 @@
  */
 
 import { randomUUID } from 'node:crypto';
-import { rm } from 'node:fs/promises';
+import { rm, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { streamText, tool, jsonSchema, stepCountIs } from 'ai';
 import type { LanguageModel, ToolSet } from 'ai';
@@ -32,6 +32,7 @@ import type {
   JobApproval,
   ProjectRecord,
   StreamEvent,
+  TeamAgentInfo,
   Tool,
   ToolCtx,
   WakeStatus,
@@ -84,6 +85,10 @@ import {
   updateJob as updateJobDb,
   deleteJob as deleteJobDb,
 } from './jobs.ts';
+import { listAgents, getAgent, deleteAgent } from './team.ts';
+import type { TeamAgent } from './team-pure.ts';
+import { agentTokensToday } from './budget.ts';
+import { parseTopicsFromIndex } from './team-format-pure.ts';
 import { grillMeEnabled } from './settings-pure.ts';
 import { enqueueTurn } from './turn-queue-pure.ts';
 import { dayKey } from './budget.ts';
@@ -474,6 +479,11 @@ export class Orchestrator {
     // L1: the index.md Map of Content — the router to every durable note.
     const index = await readIndex(ctx.workspace).catch(() => '');
     if (index.trim()) sys += `\n\n# Knowledge map (index — L1 router)\n${index}`;
+    // Team roster router: the shared who-knows-what index (agents/index.md). Load
+    // it like the other MOCs so Alfred can DELEGATE a task to the right specialist
+    // (delegate_to_agent) by learned topic instead of always doing it inline.
+    const team = await readFile(join(ctx.workspace, 'agents', 'index.md'), 'utf8').catch(() => '');
+    if (team.trim()) sys += `\n\n# Team — who knows what (delegate to the right specialist via delegate_to_agent)\n${team}`;
     const recent = await recentMemoryText(ctx.workspace).catch(() => '');
     if (recent.trim()) sys += `\n\n# Recent memory (last 7 days)\n${recent}`;
     // The just-sent user turn is persisted before run() and is passed as the
@@ -727,6 +737,13 @@ export interface OrchestratorHandle {
   deleteJob(id: string): void;
   /** Stop the in-app job scheduler (clears its timers) on shutdown. */
   stopScheduler(): void;
+  // ── Team roster (Phase 5, stage 5) — data-only for the TEAM card. ──
+  /** Roster projection for the TEAM card: role/model + tokens today + studied topics (from the shared index). */
+  listTeamAgents(): Promise<TeamAgentInfo[]>;
+  /** One roster agent (full record), or undefined. */
+  getTeamAgent(id: string): TeamAgent | undefined;
+  /** Delete a roster agent (row + index entry; folder left on disk). false if unknown. */
+  deleteTeamAgent(id: string): Promise<boolean>;
 }
 
 export function createOrchestrator(opts: CreateOrchestratorOpts): OrchestratorHandle {
@@ -1559,6 +1576,26 @@ export function createOrchestrator(opts: CreateOrchestratorOpts): OrchestratorHa
     },
     stopScheduler() {
       scheduler.stop();
+    },
+    async listTeamAgents() {
+      const index = await readFile(join(config.workspace, 'agents', 'index.md'), 'utf8').catch(() => '');
+      const today = dayKey();
+      return listAgents(db).map((a) => ({
+        id: a.id,
+        name: a.name,
+        delegationRole: a.delegationRole,
+        provider: a.provider,
+        model: a.model,
+        tokenBudgetDaily: a.dailyTokenBudget,
+        tokensToday: agentTokensToday(db, a.id, today),
+        topics: parseTopicsFromIndex(index, a.id),
+      }));
+    },
+    getTeamAgent(id) {
+      return getAgent(db, id);
+    },
+    deleteTeamAgent(id) {
+      return deleteAgent(db, config.workspace, id);
     },
   };
 }

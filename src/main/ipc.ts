@@ -21,6 +21,7 @@ import type {
   Job,
   JobApproval,
   StreamEvent,
+  TeamAgentInfo,
   WakeStatus,
 } from './core/types.ts';
 import type { BrainInfo } from './core/providers.ts';
@@ -131,6 +132,11 @@ export interface Orchestrator {
   deleteJob(id: string): void | Promise<void>;
   /** Stop the in-app job scheduler (clears its timers) on shutdown. */
   stopScheduler(): void;
+  // ── Team roster (Phase 5) — data-only for the TEAM card. ──
+  /** Roster projection for the TEAM card (role/model, tokens today, studied topics). */
+  listTeamAgents(): TeamAgentInfo[] | Promise<TeamAgentInfo[]>;
+  /** Delete a roster agent (row + index entry). Resolves to whether a row was removed. */
+  deleteTeamAgent(id: string): Promise<boolean>;
 }
 
 /** Trust boundary: keep only well-formed numeric/boolean fields from the renderer. */
@@ -422,6 +428,19 @@ export function registerIpc(core: Orchestrator, emit: (e: StreamEvent) => void):
       return true;
     } catch (err) {
       fail('delete job', err);
+      return false;
+    }
+  });
+
+  // ── Team roster — data-only. Read the roster projection; delete an agent.
+  // create is NOT exposed (agents are made by the `team` command/tool). ──
+  ipcMain.handle('alfred:listTeamAgents', guard('list team agents', () => core.listTeamAgents(), [] as TeamAgentInfo[]));
+  ipcMain.handle('alfred:deleteTeamAgent', async (_e, id: unknown): Promise<boolean> => {
+    if (typeof id !== 'string' || !id) return false;
+    try {
+      return await core.deleteTeamAgent(id);
+    } catch (err) {
+      fail('delete team agent', err);
       return false;
     }
   });

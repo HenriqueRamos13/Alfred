@@ -338,6 +338,26 @@ export interface JobApproval {
   resolvedTs?: number;
 }
 
+/**
+ * Data-only projection of a roster agent for the TEAM card (Phase 5, stage 5).
+ * Assembled main-side from team.ts (roster row), budget.ts (tokens today) and the
+ * shared index (studied topics) — the renderer never touches the DB or disk.
+ */
+export interface TeamAgentInfo {
+  id: string;
+  name: string;
+  /** Privilege role: leaf (no spawn) | orchestrator (may spawn). */
+  delegationRole: 'leaf' | 'orchestrator';
+  provider: string;
+  model: string;
+  /** Per-agent daily token cap, or undefined for unlimited (global kill-switch still applies). */
+  tokenBudgetDaily?: number;
+  /** Tokens this agent has spent today (day-keyed, summed across models). */
+  tokensToday: number;
+  /** Specialties/topics learned, parsed from the shared who-knows-what index. */
+  topics: string[];
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Chat / streaming
 // ─────────────────────────────────────────────────────────────────────────────
