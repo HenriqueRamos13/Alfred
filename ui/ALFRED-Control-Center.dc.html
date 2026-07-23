@@ -1,0 +1,613 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@500;600;700&family=Share+Tech+Mono&display=swap" rel="stylesheet">
+<style>
+body{margin:0;background:#04070d;color:#cfe8f2;font-family:Rajdhani,sans-serif;overflow:hidden}
+a{color:#59e8ff}a:hover{color:#9ff2ff}
+button{font-family:inherit}
+input{font-family:inherit;outline:none}
+::selection{background:rgba(89,232,255,.25)}
+::-webkit-scrollbar{width:8px;height:8px}
+::-webkit-scrollbar-track{background:transparent}
+::-webkit-scrollbar-thumb{background:rgba(89,232,255,.18);border-radius:4px}
+::-webkit-scrollbar-thumb:hover{background:rgba(89,232,255,.35)}
+@keyframes nodepulse{0%,100%{opacity:.12}50%{opacity:.9}}
+@keyframes blinkdot{0%,100%{opacity:1}50%{opacity:.25}}
+@keyframes eq1{0%,100%{height:4px}50%{height:14px}}
+@keyframes eq2{0%,100%{height:12px}40%{height:5px}}
+@keyframes eq3{0%,100%{height:7px}60%{height:15px}}
+@keyframes shimmer{0%{background-position:-300px 0}100%{background-position:300px 0}}
+@keyframes scanmove{0%{transform:translateY(-100%)}100%{transform:translateY(100vh)}}
+@media (prefers-reduced-motion: reduce){*{animation:none !important;transition:none !important}}
+</style>
+</helmet>
+<div ref="{{rootRef}}" data-screen-label="ALFRED" style="position:fixed; inset:0; overflow:hidden; --acc:#59e8ff; --amb:#ffb45e; --red:#ff5f6e; --grn:#4dffa6; --mag:#c77bff; --dim:#5b7a8a; --card:rgba(7,13,22,.88); font-family:Rajdhani,sans-serif; color:#cfe8f2; font-size:14px">
+  <div ref="{{gridRef}}" style="position:absolute; inset:0; pointer-events:none; background: radial-gradient(ellipse at 50% -10%, color-mix(in oklab, var(--acc) 7%, transparent), transparent 55%), linear-gradient(color-mix(in oklab, var(--acc) 6%, transparent) 1px, transparent 1px) 0 0/120px 120px, linear-gradient(90deg, color-mix(in oklab, var(--acc) 6%, transparent) 1px, transparent 1px) 0 0/120px 120px, linear-gradient(color-mix(in oklab, var(--acc) 4%, transparent) 1px, transparent 1px) 0 0/24px 24px, linear-gradient(90deg, color-mix(in oklab, var(--acc) 4%, transparent) 1px, transparent 1px) 0 0/24px 24px"></div>
+  <div ref="{{scanRef}}" style="position:absolute; inset:0; pointer-events:none; z-index:900; opacity:.5; background:repeating-linear-gradient(0deg, rgba(0,0,0,.16) 0 1px, transparent 1px 3px)"></div>
+  <div style="position:absolute; inset:0; pointer-events:none; z-index:901; box-shadow:inset 0 0 180px rgba(0,0,0,.75)"></div>
+  <div style="position:absolute; left:14px; bottom:10px; z-index:902; pointer-events:none; font-family:'Share Tech Mono',monospace; font-size:10px; letter-spacing:.22em; color:#33505e">◢ DADOS SIMULADOS · ALFRED v0.9 · {{time}}</div>
+  <div style="position:absolute; right:16px; bottom:10px; z-index:902; pointer-events:none; font-family:'Share Tech Mono',monospace; font-size:10px; letter-spacing:.3em; color:#2a4552">MONITOR {{monLabel}} / 2</div>
+
+  <div ref="{{wsRef}}" onPointerDown="{{wsDown}}" style="position:absolute; inset:0; z-index:5">
+
+    <!-- ═══ CONVERSATION ═══ -->
+    <div data-card="conversation" data-screen-label="CONVERSATION" style="position:absolute; left:18px; top:30px; width:352px; height:560px; display:flex; flex-direction:column; background:var(--card); border:1px solid color-mix(in oklab, var(--acc) 28%, transparent); box-shadow:0 0 22px color-mix(in oklab, var(--acc) 10%, transparent), 0 10px 34px rgba(0,0,0,.55); backdrop-filter:blur(7px); border-radius:3px; z-index:10" style-before="content:''; position:absolute; top:-1px; left:-1px; width:12px; height:12px; border-top:2px solid var(--acc); border-left:2px solid var(--acc); pointer-events:none" style-after="content:''; position:absolute; bottom:-1px; right:-1px; width:12px; height:12px; border-bottom:2px solid var(--acc); border-right:2px solid var(--acc); pointer-events:none">
+      <div data-drag style="display:flex; align-items:center; gap:8px; padding:6px 10px; cursor:move; user-select:none; border-bottom:1px solid color-mix(in oklab, var(--acc) 18%, transparent); background:linear-gradient(90deg, color-mix(in oklab, var(--acc) 12%, transparent), transparent 75%); font-family:'Share Tech Mono',monospace; font-size:11px; letter-spacing:.16em; color:var(--acc)">▣ CONVERSATION<span style="animation:blinkdot 2s infinite; color:var(--grn)">●</span><span style="flex:1"></span><button title="Mover para o outro monitor" onClick="{{sendMon}}" style="background:transparent; border:1px solid color-mix(in oklab, var(--acc) 30%, transparent); color:var(--acc); font-size:11px; width:22px; height:18px; line-height:1; cursor:pointer; padding:0" style-hover="background:color-mix(in oklab, var(--acc) 20%, transparent)">⇄</button><button title="Fechar" onClick="{{closeCard}}" style="background:transparent; border:1px solid color-mix(in oklab, var(--acc) 30%, transparent); color:var(--acc); font-size:11px; width:22px; height:18px; line-height:1; cursor:pointer; padding:0" style-hover="background:color-mix(in oklab, var(--red) 30%, transparent); color:var(--red); border-color:var(--red)">✕</button></div>
+      <div style="flex:1; overflow:auto; padding:12px; display:flex; flex-direction:column; gap:10px">
+        <sc-for list="{{msgs}}" as="m" hint-placeholder-count="3">
+          <div style="{{m.wrap}}"><div style="{{m.box}}">{{m.text}}</div></div>
+        </sc-for>
+        <sc-if value="{{chApPending}}" hint-placeholder-val="{{ false }}">
+          <div style="border:1px solid color-mix(in oklab, var(--amb) 45%, transparent); background:color-mix(in oklab, var(--amb) 8%, transparent); padding:8px 10px; border-radius:2px">
+            <div style="font-family:'Share Tech Mono',monospace; font-size:10px; letter-spacing:.16em; color:var(--amb); margin-bottom:6px">⚠ APROVAÇÃO · ESCRITA · RISCO MÉDIO</div>
+            <div style="font-size:13px; color:#cfe8f2; margin-bottom:8px">gmail.archive — 12 mensagens</div>
+            <div style="display:flex; gap:8px"><button data-act="ok" onClick="{{chatDecide}}" style="flex:1; background:color-mix(in oklab, var(--grn) 12%, transparent); border:1px solid var(--grn); color:var(--grn); font-family:'Share Tech Mono',monospace; font-size:11px; letter-spacing:.12em; padding:5px 0; cursor:pointer" style-hover="background:color-mix(in oklab, var(--grn) 25%, transparent)">APROVAR</button><button data-act="no" onClick="{{chatDecide}}" style="flex:1; background:transparent; border:1px solid color-mix(in oklab, var(--red) 60%, transparent); color:var(--red); font-family:'Share Tech Mono',monospace; font-size:11px; letter-spacing:.12em; padding:5px 0; cursor:pointer" style-hover="background:color-mix(in oklab, var(--red) 18%, transparent)">RECUSAR</button></div>
+          </div>
+        </sc-if>
+        <sc-if value="{{chApDone}}" hint-placeholder-val="{{ false }}">
+          <div style="{{chApStyle}}">{{chApText}}</div>
+        </sc-if>
+      </div>
+      <div style="padding:8px 10px; border-top:1px solid color-mix(in oklab, var(--acc) 15%, transparent); display:flex; gap:8px">
+        <input onKeyDown="{{chatKey}}" placeholder="Escreve ao Alfred…" style="flex:1; background:rgba(0,0,0,.35); border:1px solid color-mix(in oklab, var(--acc) 25%, transparent); color:#cfe8f2; padding:6px 10px; font-size:13px; border-radius:2px">
+        <button onClick="{{micToggle}}" title="Push-to-talk" style="background:transparent; border:1px solid color-mix(in oklab, var(--acc) 35%, transparent); color:var(--acc); width:32px; cursor:pointer; font-size:13px" style-hover="background:color-mix(in oklab, var(--acc) 18%, transparent)">🎙</button>
+      </div>
+      <div data-resize style="position:absolute; right:0; bottom:0; width:16px; height:16px; cursor:nwse-resize; background:linear-gradient(135deg, transparent 55%, color-mix(in oklab, var(--acc) 50%, transparent) 55%)"></div>
+    </div>
+
+    <!-- ═══ ACTIVITY ═══ -->
+    <div data-card="activity" data-screen-label="ACTIVITY" style="position:absolute; left:18px; top:610px; width:352px; height:315px; display:flex; flex-direction:column; background:var(--card); border:1px solid color-mix(in oklab, var(--acc) 28%, transparent); box-shadow:0 0 22px color-mix(in oklab, var(--acc) 10%, transparent), 0 10px 34px rgba(0,0,0,.55); backdrop-filter:blur(7px); border-radius:3px; z-index:10" style-before="content:''; position:absolute; top:-1px; left:-1px; width:12px; height:12px; border-top:2px solid var(--acc); border-left:2px solid var(--acc); pointer-events:none" style-after="content:''; position:absolute; bottom:-1px; right:-1px; width:12px; height:12px; border-bottom:2px solid var(--acc); border-right:2px solid var(--acc); pointer-events:none">
+      <div data-drag style="display:flex; align-items:center; gap:8px; padding:6px 10px; cursor:move; user-select:none; border-bottom:1px solid color-mix(in oklab, var(--acc) 18%, transparent); background:linear-gradient(90deg, color-mix(in oklab, var(--acc) 12%, transparent), transparent 75%); font-family:'Share Tech Mono',monospace; font-size:11px; letter-spacing:.16em; color:var(--acc)">▤ ACTIVITY · LIVE<span style="flex:1"></span><button title="Mover para o outro monitor" onClick="{{sendMon}}" style="background:transparent; border:1px solid color-mix(in oklab, var(--acc) 30%, transparent); color:var(--acc); font-size:11px; width:22px; height:18px; line-height:1; cursor:pointer; padding:0" style-hover="background:color-mix(in oklab, var(--acc) 20%, transparent)">⇄</button><button title="Fechar" onClick="{{closeCard}}" style="background:transparent; border:1px solid color-mix(in oklab, var(--acc) 30%, transparent); color:var(--acc); font-size:11px; width:22px; height:18px; line-height:1; cursor:pointer; padding:0" style-hover="background:color-mix(in oklab, var(--red) 30%, transparent); color:var(--red); border-color:var(--red)">✕</button></div>
+      <div style="flex:1; overflow:auto; padding:8px 10px; display:flex; flex-direction:column; gap:5px; font-family:'Share Tech Mono',monospace; font-size:11px">
+        <sc-for list="{{activity}}" as="a" hint-placeholder-count="8">
+          <div style="display:flex; gap:8px; align-items:baseline; white-space:nowrap"><span style="color:#3a5866">{{a.t}}</span><span style="{{a.tag}}">{{a.tool}}</span><span style="flex:1; color:#9db9c6; overflow:hidden; text-overflow:ellipsis">{{a.text}}</span></div>
+        </sc-for>
+      </div>
+      <div style="padding:5px 10px; border-top:1px solid color-mix(in oklab, var(--acc) 15%, transparent); font-family:'Share Tech Mono',monospace; font-size:10px; color:#3a5866; letter-spacing:.14em; display:flex; gap:14px"><span style="color:var(--acc)">■ LER</span><span style="color:var(--amb)">■ ESCREVER</span><span style="color:var(--grn)">■ OK</span><span style="color:var(--red)">■ NEGADO</span></div>
+      <div data-resize style="position:absolute; right:0; bottom:0; width:16px; height:16px; cursor:nwse-resize; background:linear-gradient(135deg, transparent 55%, color-mix(in oklab, var(--acc) 50%, transparent) 55%)"></div>
+    </div>
+
+    <!-- ═══ GENERATIVE SURFACE ═══ -->
+    <div data-card="surface" data-screen-label="GENERATIVE SURFACE" style="position:absolute; left:390px; top:30px; width:540px; height:485px; display:flex; flex-direction:column; background:var(--card); border:1px solid color-mix(in oklab, var(--acc) 28%, transparent); box-shadow:0 0 22px color-mix(in oklab, var(--acc) 10%, transparent), 0 10px 34px rgba(0,0,0,.55); backdrop-filter:blur(7px); border-radius:3px; z-index:10" style-before="content:''; position:absolute; top:-1px; left:-1px; width:12px; height:12px; border-top:2px solid var(--acc); border-left:2px solid var(--acc); pointer-events:none" style-after="content:''; position:absolute; bottom:-1px; right:-1px; width:12px; height:12px; border-bottom:2px solid var(--acc); border-right:2px solid var(--acc); pointer-events:none">
+      <div data-drag style="display:flex; align-items:center; gap:8px; padding:6px 10px; cursor:move; user-select:none; border-bottom:1px solid color-mix(in oklab, var(--acc) 18%, transparent); background:linear-gradient(90deg, color-mix(in oklab, var(--acc) 12%, transparent), transparent 75%); font-family:'Share Tech Mono',monospace; font-size:11px; letter-spacing:.16em; color:var(--acc)">◈ GENERATIVE SURFACE<span style="font-size:9px; color:#3a5866; letter-spacing:.1em">render_ui · sandbox</span><span style="flex:1"></span><button title="Mover para o outro monitor" onClick="{{sendMon}}" style="background:transparent; border:1px solid color-mix(in oklab, var(--acc) 30%, transparent); color:var(--acc); font-size:11px; width:22px; height:18px; line-height:1; cursor:pointer; padding:0" style-hover="background:color-mix(in oklab, var(--acc) 20%, transparent)">⇄</button><button title="Fechar" onClick="{{closeCard}}" style="background:transparent; border:1px solid color-mix(in oklab, var(--acc) 30%, transparent); color:var(--acc); font-size:11px; width:22px; height:18px; line-height:1; cursor:pointer; padding:0" style-hover="background:color-mix(in oklab, var(--red) 30%, transparent); color:var(--red); border-color:var(--red)">✕</button></div>
+      <div style="height:2px; background:linear-gradient(90deg, transparent, var(--acc), transparent) 0 0/600px 2px; animation:shimmer 3.2s linear infinite"></div>
+      <div style="flex:1; overflow:auto; padding:16px">
+        <div style="font-family:'Share Tech Mono',monospace; font-size:10px; letter-spacing:.2em; color:#3a5866; margin-bottom:10px">UI GERADA PELO ALFRED · 09:30 · «resume o gmail»</div>
+        <div style="font-size:19px; font-weight:700; letter-spacing:.04em; margin-bottom:14px">GMAIL — RESUMO DA MANHÃ</div>
+        <div style="display:grid; grid-template-columns:repeat(3,1fr); gap:10px; margin-bottom:16px">
+          <div style="border:1px solid color-mix(in oklab, var(--acc) 30%, transparent); padding:10px 12px; background:color-mix(in oklab, var(--acc) 5%, transparent)"><div style="font-size:26px; font-weight:700; color:var(--acc); font-family:'Share Tech Mono',monospace">14</div><div style="font-size:11px; letter-spacing:.14em; color:#7d9aa8">NOVOS</div></div>
+          <div style="border:1px solid color-mix(in oklab, var(--amb) 35%, transparent); padding:10px 12px; background:color-mix(in oklab, var(--amb) 6%, transparent)"><div style="font-size:26px; font-weight:700; color:var(--amb); font-family:'Share Tech Mono',monospace">2</div><div style="font-size:11px; letter-spacing:.14em; color:#7d9aa8">URGENTES</div></div>
+          <div style="border:1px solid rgba(120,150,160,.25); padding:10px 12px"><div style="font-size:26px; font-weight:700; color:#7d9aa8; font-family:'Share Tech Mono',monospace">12</div><div style="font-size:11px; letter-spacing:.14em; color:#7d9aa8">A ARQUIVAR</div></div>
+        </div>
+        <div style="display:flex; flex-direction:column; gap:8px">
+          <div style="display:flex; align-items:center; gap:10px"><span style="width:110px; font-size:12px; color:#9db9c6; font-family:'Share Tech Mono',monospace">finanças@cdn</span><div style="flex:1; height:10px; background:rgba(0,0,0,.4); border:1px solid color-mix(in oklab, var(--acc) 20%, transparent)"><div style="width:82%; height:100%; background:linear-gradient(90deg, color-mix(in oklab, var(--acc) 60%, transparent), var(--acc))"></div></div><span style="font-size:11px; color:var(--amb); font-family:'Share Tech Mono',monospace">URGENTE</span></div>
+          <div style="display:flex; align-items:center; gap:10px"><span style="width:110px; font-size:12px; color:#9db9c6; font-family:'Share Tech Mono',monospace">rita.m@…</span><div style="flex:1; height:10px; background:rgba(0,0,0,.4); border:1px solid color-mix(in oklab, var(--acc) 20%, transparent)"><div style="width:64%; height:100%; background:linear-gradient(90deg, color-mix(in oklab, var(--acc) 60%, transparent), var(--acc))"></div></div><span style="font-size:11px; color:var(--amb); font-family:'Share Tech Mono',monospace">URGENTE</span></div>
+          <div style="display:flex; align-items:center; gap:10px"><span style="width:110px; font-size:12px; color:#9db9c6; font-family:'Share Tech Mono',monospace">newsletters ×7</span><div style="flex:1; height:10px; background:rgba(0,0,0,.4); border:1px solid color-mix(in oklab, var(--acc) 20%, transparent)"><div style="width:30%; height:100%; background:color-mix(in oklab, var(--acc) 35%, transparent)"></div></div><span style="font-size:11px; color:#5b7a8a; font-family:'Share Tech Mono',monospace">baixa</span></div>
+          <div style="display:flex; align-items:center; gap:10px"><span style="width:110px; font-size:12px; color:#9db9c6; font-family:'Share Tech Mono',monospace">github ×5</span><div style="flex:1; height:10px; background:rgba(0,0,0,.4); border:1px solid color-mix(in oklab, var(--acc) 20%, transparent)"><div style="width:22%; height:100%; background:color-mix(in oklab, var(--acc) 35%, transparent)"></div></div><span style="font-size:11px; color:#5b7a8a; font-family:'Share Tech Mono',monospace">baixa</span></div>
+        </div>
+        <div style="margin-top:16px; padding:10px 12px; border:1px dashed color-mix(in oklab, var(--acc) 25%, transparent); font-size:12px; color:#7d9aa8">Sugestão do Alfred: arquivar as 12 de baixa prioridade e responder à rita.m antes das 11h. <span style="color:var(--amb)">1 aprovação pendente na Conversation.</span></div>
+      </div>
+      <div data-resize style="position:absolute; right:0; bottom:0; width:16px; height:16px; cursor:nwse-resize; background:linear-gradient(135deg, transparent 55%, color-mix(in oklab, var(--acc) 50%, transparent) 55%)"></div>
+    </div>
+
+    <!-- ═══ KNOWLEDGE GRAPH ═══ -->
+    <div data-card="graph" data-screen-label="KNOWLEDGE GRAPH" style="position:absolute; left:390px; top:535px; width:540px; height:390px; display:flex; flex-direction:column; background:var(--card); border:1px solid color-mix(in oklab, var(--acc) 28%, transparent); box-shadow:0 0 22px color-mix(in oklab, var(--acc) 10%, transparent), 0 10px 34px rgba(0,0,0,.55); backdrop-filter:blur(7px); border-radius:3px; z-index:10" style-before="content:''; position:absolute; top:-1px; left:-1px; width:12px; height:12px; border-top:2px solid var(--acc); border-left:2px solid var(--acc); pointer-events:none" style-after="content:''; position:absolute; bottom:-1px; right:-1px; width:12px; height:12px; border-bottom:2px solid var(--acc); border-right:2px solid var(--acc); pointer-events:none">
+      <div data-drag style="display:flex; align-items:center; gap:8px; padding:6px 10px; cursor:move; user-select:none; border-bottom:1px solid color-mix(in oklab, var(--acc) 18%, transparent); background:linear-gradient(90deg, color-mix(in oklab, var(--acc) 12%, transparent), transparent 75%); font-family:'Share Tech Mono',monospace; font-size:11px; letter-spacing:.16em; color:var(--acc)">◉ KNOWLEDGE GRAPH<span style="font-size:9px; color:#3a5866">142 notas · 388 ligações</span><span style="flex:1"></span><button title="Mover para o outro monitor" onClick="{{sendMon}}" style="background:transparent; border:1px solid color-mix(in oklab, var(--acc) 30%, transparent); color:var(--acc); font-size:11px; width:22px; height:18px; line-height:1; cursor:pointer; padding:0" style-hover="background:color-mix(in oklab, var(--acc) 20%, transparent)">⇄</button><button title="Fechar" onClick="{{closeCard}}" style="background:transparent; border:1px solid color-mix(in oklab, var(--acc) 30%, transparent); color:var(--acc); font-size:11px; width:22px; height:18px; line-height:1; cursor:pointer; padding:0" style-hover="background:color-mix(in oklab, var(--red) 30%, transparent); color:var(--red); border-color:var(--red)">✕</button></div>
+      <div style="flex:1; overflow:hidden; position:relative">
+        <svg viewBox="0 0 420 290" preserveAspectRatio="xMidYMid meet" style="width:100%; height:100%">
+          <g stroke="#16323e" stroke-width="1">
+            <line x1="210" y1="150" x2="120" y2="90"></line><line x1="210" y1="150" x2="150" y2="222"></line><line x1="210" y1="150" x2="300" y2="98"></line><line x1="210" y1="150" x2="90" y2="162"></line><line x1="210" y1="150" x2="330" y2="200"></line><line x1="210" y1="150" x2="250" y2="58"></line><line x1="210" y1="150" x2="352" y2="140"></line><line x1="120" y1="90" x2="60" y2="88"></line><line x1="120" y1="90" x2="140" y2="38"></line><line x1="90" y1="162" x2="40" y2="230"></line><line x1="150" y1="222" x2="278" y2="252"></line><line x1="300" y1="98" x2="352" y2="140"></line><line x1="330" y1="200" x2="352" y2="140"></line><line x1="250" y1="58" x2="300" y2="98"></line><line x1="150" y1="222" x2="90" y2="162"></line>
+          </g>
+          <circle cx="150" cy="222" r="13" fill="none" stroke="#ffb45e" stroke-width="1.5" style="animation:nodepulse 1.8s infinite"></circle>
+          <circle cx="330" cy="200" r="12" fill="none" stroke="#59e8ff" stroke-width="1.5" style="animation:nodepulse 2.6s infinite"></circle>
+          <circle cx="210" cy="150" r="9" fill="#59e8ff" opacity=".9"></circle>
+          <circle cx="120" cy="90" r="6" fill="#2e7d96"></circle><circle cx="150" cy="222" r="6" fill="#ffb45e"></circle><circle cx="300" cy="98" r="6" fill="#2e7d96"></circle><circle cx="90" cy="162" r="5" fill="#265f73"></circle><circle cx="330" cy="200" r="6" fill="#59e8ff"></circle><circle cx="250" cy="58" r="5" fill="#265f73"></circle><circle cx="352" cy="140" r="5" fill="#c77bff" opacity=".8"></circle><circle cx="60" cy="88" r="4" fill="#1f4c5c"></circle><circle cx="278" cy="252" r="5" fill="#1f4c5c"></circle><circle cx="140" cy="38" r="4" fill="#1f4c5c"></circle><circle cx="40" cy="230" r="4" fill="#1f4c5c"></circle>
+          <g font-family="Share Tech Mono, monospace" font-size="9" fill="#54727f">
+            <text x="222" y="146">ALFRED</text><text x="98" y="80">Projetos</text><text x="128" y="240">Journal 2026-07-23</text><text x="288" y="88">Factos</text><text x="58" y="158">Pessoas</text><text x="310" y="222">RAG evals</text><text x="238" y="46">Gmail</text><text x="342" y="128">CURIE</text><text x="40" y="78">Casa</text><text x="258" y="268">Finanças</text><text x="112" y="28">Viagem Tóquio</text><text x="14" y="248">Saúde</text>
+          </g>
+        </svg>
+      </div>
+      <div style="padding:6px 10px; border-top:1px solid color-mix(in oklab, var(--acc) 15%, transparent); font-family:'Share Tech Mono',monospace; font-size:10px; letter-spacing:.1em; display:flex; gap:16px; align-items:center"><span style="color:var(--amb); animation:blinkdot 1.8s infinite">● memory.write → Journal/2026-07-23.md</span><span style="color:var(--acc)">○ memory.read → RAG evals</span></div>
+      <div data-resize style="position:absolute; right:0; bottom:0; width:16px; height:16px; cursor:nwse-resize; background:linear-gradient(135deg, transparent 55%, color-mix(in oklab, var(--acc) 50%, transparent) 55%)"></div>
+    </div>
+
+    <!-- ═══ COST ═══ -->
+    <div data-card="cost" data-screen-label="COST" style="position:absolute; left:948px; top:30px; width:264px; height:280px; display:flex; flex-direction:column; background:var(--card); border:1px solid color-mix(in oklab, var(--acc) 28%, transparent); box-shadow:0 0 22px color-mix(in oklab, var(--acc) 10%, transparent), 0 10px 34px rgba(0,0,0,.55); backdrop-filter:blur(7px); border-radius:3px; z-index:10" style-before="content:''; position:absolute; top:-1px; left:-1px; width:12px; height:12px; border-top:2px solid var(--acc); border-left:2px solid var(--acc); pointer-events:none" style-after="content:''; position:absolute; bottom:-1px; right:-1px; width:12px; height:12px; border-bottom:2px solid var(--acc); border-right:2px solid var(--acc); pointer-events:none">
+      <div data-drag style="display:flex; align-items:center; gap:8px; padding:6px 10px; cursor:move; user-select:none; border-bottom:1px solid color-mix(in oklab, var(--acc) 18%, transparent); background:linear-gradient(90deg, color-mix(in oklab, var(--acc) 12%, transparent), transparent 75%); font-family:'Share Tech Mono',monospace; font-size:11px; letter-spacing:.16em; color:var(--acc)">◧ COST<span style="flex:1"></span><button title="Mover para o outro monitor" onClick="{{sendMon}}" style="background:transparent; border:1px solid color-mix(in oklab, var(--acc) 30%, transparent); color:var(--acc); font-size:11px; width:22px; height:18px; line-height:1; cursor:pointer; padding:0" style-hover="background:color-mix(in oklab, var(--acc) 20%, transparent)">⇄</button><button title="Fechar" onClick="{{closeCard}}" style="background:transparent; border:1px solid color-mix(in oklab, var(--acc) 30%, transparent); color:var(--acc); font-size:11px; width:22px; height:18px; line-height:1; cursor:pointer; padding:0" style-hover="background:color-mix(in oklab, var(--red) 30%, transparent); color:var(--red); border-color:var(--red)">✕</button></div>
+      <div style="flex:1; overflow:auto; padding:12px">
+        <div style="display:flex; align-items:baseline; gap:8px"><span style="font-size:30px; font-weight:700; font-family:'Share Tech Mono',monospace; color:var(--acc)">€7.84</span><span style="font-size:12px; color:#5b7a8a">/ €12.00 hoje</span></div>
+        <div style="font-family:'Share Tech Mono',monospace; font-size:11px; color:#7d9aa8; margin:2px 0 8px">412 830 tokens · 63 chamadas</div>
+        <div style="height:8px; background:rgba(0,0,0,.45); border:1px solid color-mix(in oklab, var(--acc) 25%, transparent); margin-bottom:12px"><div style="width:65%; height:100%; background:linear-gradient(90deg, var(--grn), var(--amb))"></div></div>
+        <div style="display:flex; flex-direction:column; gap:5px; font-family:'Share Tech Mono',monospace; font-size:11px; color:#9db9c6">
+          <div style="display:flex; justify-content:space-between"><span>Claude Opus 4.5</span><span style="color:var(--acc)">€5.10</span></div>
+          <div style="display:flex; justify-content:space-between"><span>GPT-5.2</span><span style="color:var(--acc)">€1.92</span></div>
+          <div style="display:flex; justify-content:space-between"><span>DeepSeek V4</span><span style="color:var(--acc)">€0.82</span></div>
+        </div>
+        <button onClick="{{toggleKill}}" style="{{killStyle}}">{{killLabel}}</button>
+      </div>
+      <div data-resize style="position:absolute; right:0; bottom:0; width:16px; height:16px; cursor:nwse-resize; background:linear-gradient(135deg, transparent 55%, color-mix(in oklab, var(--acc) 50%, transparent) 55%)"></div>
+    </div>
+
+    <!-- ═══ BITCOIN (widget) ═══ -->
+    <div data-card="btc" data-screen-label="BITCOIN WIDGET" style="--acc:#ffb45e; position:absolute; left:1230px; top:30px; width:252px; height:280px; display:flex; flex-direction:column; background:var(--card); border:1px solid color-mix(in oklab, var(--acc) 28%, transparent); box-shadow:0 0 22px color-mix(in oklab, var(--acc) 10%, transparent), 0 10px 34px rgba(0,0,0,.55); backdrop-filter:blur(7px); border-radius:3px; z-index:10" style-before="content:''; position:absolute; top:-1px; left:-1px; width:12px; height:12px; border-top:2px solid var(--acc); border-left:2px solid var(--acc); pointer-events:none" style-after="content:''; position:absolute; bottom:-1px; right:-1px; width:12px; height:12px; border-bottom:2px solid var(--acc); border-right:2px solid var(--acc); pointer-events:none">
+      <div data-drag style="display:flex; align-items:center; gap:8px; padding:6px 10px; cursor:move; user-select:none; border-bottom:1px solid color-mix(in oklab, var(--acc) 18%, transparent); background:linear-gradient(90deg, color-mix(in oklab, var(--acc) 12%, transparent), transparent 75%); font-family:'Share Tech Mono',monospace; font-size:11px; letter-spacing:.16em; color:var(--acc)">₿ BITCOIN<span style="font-size:9px; color:#3a5866">WIDGET · FETCH · 0 IA</span><span style="flex:1"></span><button title="Mover para o outro monitor" onClick="{{sendMon}}" style="background:transparent; border:1px solid color-mix(in oklab, var(--acc) 30%, transparent); color:var(--acc); font-size:11px; width:22px; height:18px; line-height:1; cursor:pointer; padding:0" style-hover="background:color-mix(in oklab, var(--acc) 20%, transparent)">⇄</button><button title="Fechar" onClick="{{closeCard}}" style="background:transparent; border:1px solid color-mix(in oklab, var(--acc) 30%, transparent); color:var(--acc); font-size:11px; width:22px; height:18px; line-height:1; cursor:pointer; padding:0" style-hover="background:color-mix(in oklab, var(--red) 30%, transparent); color:var(--red); border-color:var(--red)">✕</button></div>
+      <div style="flex:1; overflow:auto; padding:12px; display:flex; flex-direction:column">
+        <div style="display:flex; align-items:baseline; gap:10px; flex-wrap:wrap"><span style="font-size:26px; font-weight:700; font-family:'Share Tech Mono',monospace; color:#ffb45e">{{btcPrice}}</span><span style="{{btcDeltaStyle}}">{{btcDelta}}</span></div>
+        <div style="font-family:'Share Tech Mono',monospace; font-size:10px; color:#5b7a8a; letter-spacing:.14em; margin:2px 0 8px">BTC/USD · 30 DIAS · a cada 5 s</div>
+        <svg viewBox="0 0 220 70" preserveAspectRatio="none" style="flex:1; width:100%; min-height:0">
+          <polyline points="{{btcPts}}" fill="none" stroke="#ffb45e" stroke-width="1.6"></polyline>
+          <polyline points="{{btcArea}}" fill="rgba(255,180,94,.10)" stroke="none"></polyline>
+        </svg>
+      </div>
+      <div data-resize style="position:absolute; right:0; bottom:0; width:16px; height:16px; cursor:nwse-resize; background:linear-gradient(135deg, transparent 55%, color-mix(in oklab, var(--acc) 50%, transparent) 55%)"></div>
+    </div>
+
+    <!-- ═══ SCHEDULED TASKS ═══ -->
+    <div data-card="scheduled" data-screen-label="SCHEDULED TASKS" style="position:absolute; left:948px; top:325px; width:534px; height:300px; display:flex; flex-direction:column; background:var(--card); border:1px solid color-mix(in oklab, var(--acc) 28%, transparent); box-shadow:0 0 22px color-mix(in oklab, var(--acc) 10%, transparent), 0 10px 34px rgba(0,0,0,.55); backdrop-filter:blur(7px); border-radius:3px; z-index:10" style-before="content:''; position:absolute; top:-1px; left:-1px; width:12px; height:12px; border-top:2px solid var(--acc); border-left:2px solid var(--acc); pointer-events:none" style-after="content:''; position:absolute; bottom:-1px; right:-1px; width:12px; height:12px; border-bottom:2px solid var(--acc); border-right:2px solid var(--acc); pointer-events:none">
+      <div data-drag style="display:flex; align-items:center; gap:8px; padding:6px 10px; cursor:move; user-select:none; border-bottom:1px solid color-mix(in oklab, var(--acc) 18%, transparent); background:linear-gradient(90deg, color-mix(in oklab, var(--acc) 12%, transparent), transparent 75%); font-family:'Share Tech Mono',monospace; font-size:11px; letter-spacing:.16em; color:var(--acc)">◷ SCHEDULED TASKS<span style="flex:1"></span><button title="Mover para o outro monitor" onClick="{{sendMon}}" style="background:transparent; border:1px solid color-mix(in oklab, var(--acc) 30%, transparent); color:var(--acc); font-size:11px; width:22px; height:18px; line-height:1; cursor:pointer; padding:0" style-hover="background:color-mix(in oklab, var(--acc) 20%, transparent)">⇄</button><button title="Fechar" onClick="{{closeCard}}" style="background:transparent; border:1px solid color-mix(in oklab, var(--acc) 30%, transparent); color:var(--acc); font-size:11px; width:22px; height:18px; line-height:1; cursor:pointer; padding:0" style-hover="background:color-mix(in oklab, var(--red) 30%, transparent); color:var(--red); border-color:var(--red)">✕</button></div>
+      <div style="flex:1; overflow:auto; padding:10px 12px">
+        <div style="display:grid; grid-template-columns:1.4fr .9fr 1fr 1.1fr; gap:4px 10px; font-family:'Share Tech Mono',monospace; font-size:11px">
+          <span style="color:#3a5866; letter-spacing:.14em; font-size:10px">TAREFA</span><span style="color:#3a5866; font-size:10px; letter-spacing:.14em">AGENDA</span><span style="color:#3a5866; font-size:10px; letter-spacing:.14em">TOKENS HOJE</span><span style="color:#3a5866; font-size:10px; letter-spacing:.14em">ÚLTIMO → PRÓXIMO</span>
+          <span style="color:#cfe8f2">GMAIL DIGEST <span style="color:var(--mag)">AGENTE</span></span><span style="color:#7d9aa8">*/30 min</span><span style="color:#9db9c6">8.4k / 20k</span><span style="color:#7d9aa8"><span style="color:var(--grn)">09:30 ✓</span> → 10:00</span>
+          <span style="color:#cfe8f2">BTC WIDGET <span style="color:var(--acc)">FETCH</span></span><span style="color:#7d9aa8">5 min</span><span style="color:#9db9c6">0 (sem IA)</span><span style="color:#7d9aa8"><span style="color:var(--grn)">09:41 ✓</span> → 09:46</span>
+          <span style="color:#cfe8f2">METEO LISBOA <span style="color:var(--acc)">FETCH</span></span><span style="color:#7d9aa8">15 min</span><span style="color:#9db9c6">0 (sem IA)</span><span style="color:#7d9aa8"><span style="color:var(--grn)">09:35 ✓</span> → 09:50</span>
+          <span style="color:#cfe8f2">CURIE STUDY <span style="color:var(--mag)">AGENTE</span></span><span style="color:#7d9aa8">diário 18:00</span><span style="color:#9db9c6">0 / 50k</span><span style="color:#7d9aa8"><span style="color:var(--grn)">ontem ✓</span> → 18:00</span>
+          <span style="color:#cfe8f2">VAULT BACKUP <span style="color:var(--amb)">SHELL</span></span><span style="color:#7d9aa8">02:00</span><span style="color:#9db9c6">0 (sem IA)</span><span style="color:#7d9aa8"><span style="color:var(--red)">02:00 ✗ retry</span> → 02:00</span>
+        </div>
+        <div style="margin-top:12px; font-family:'Share Tech Mono',monospace; font-size:10px; letter-spacing:.18em; color:var(--amb)">⚠ APROVAÇÕES PENDENTES — {{apCount}}</div>
+        <div style="display:flex; flex-direction:column; gap:8px; margin-top:6px">
+          <sc-for list="{{approvals}}" as="ap" hint-placeholder-count="2">
+            <div style="border:1px solid color-mix(in oklab, var(--amb) 40%, transparent); background:color-mix(in oklab, var(--amb) 7%, transparent); padding:7px 10px; display:flex; align-items:center; gap:10px">
+              <div style="flex:1"><div style="font-family:'Share Tech Mono',monospace; font-size:10px; color:var(--amb); letter-spacing:.12em">{{ap.origin}} · RISCO {{ap.risk}}</div><div style="font-size:13px; color:#cfe8f2">{{ap.text}}</div></div>
+              <button data-act="ok" data-id="{{ap.id}}" onClick="{{decide}}" style="background:color-mix(in oklab, var(--grn) 12%, transparent); border:1px solid var(--grn); color:var(--grn); font-family:'Share Tech Mono',monospace; font-size:10px; letter-spacing:.1em; padding:4px 10px; cursor:pointer" style-hover="background:color-mix(in oklab, var(--grn) 25%, transparent)">APROVAR</button>
+              <button data-act="no" data-id="{{ap.id}}" onClick="{{decide}}" style="background:transparent; border:1px solid color-mix(in oklab, var(--red) 60%, transparent); color:var(--red); font-family:'Share Tech Mono',monospace; font-size:10px; letter-spacing:.1em; padding:4px 10px; cursor:pointer" style-hover="background:color-mix(in oklab, var(--red) 18%, transparent)">RECUSAR</button>
+            </div>
+          </sc-for>
+          <sc-if value="{{noAp}}" hint-placeholder-val="{{ false }}">
+            <div style="font-family:'Share Tech Mono',monospace; font-size:11px; color:#3a5866; padding:4px 0">— fila vazia —</div>
+          </sc-if>
+        </div>
+      </div>
+      <div data-resize style="position:absolute; right:0; bottom:0; width:16px; height:16px; cursor:nwse-resize; background:linear-gradient(135deg, transparent 55%, color-mix(in oklab, var(--acc) 50%, transparent) 55%)"></div>
+    </div>
+
+    <!-- ═══ TEMPERATURA (widget) ═══ -->
+    <div data-card="temp" data-screen-label="TEMPERATURA WIDGET" style="--acc:#ffb45e; position:absolute; left:948px; top:640px; width:534px; height:285px; display:flex; flex-direction:column; background:var(--card); border:1px solid color-mix(in oklab, var(--acc) 28%, transparent); box-shadow:0 0 22px color-mix(in oklab, var(--acc) 10%, transparent), 0 10px 34px rgba(0,0,0,.55); backdrop-filter:blur(7px); border-radius:3px; z-index:10" style-before="content:''; position:absolute; top:-1px; left:-1px; width:12px; height:12px; border-top:2px solid var(--acc); border-left:2px solid var(--acc); pointer-events:none" style-after="content:''; position:absolute; bottom:-1px; right:-1px; width:12px; height:12px; border-bottom:2px solid var(--acc); border-right:2px solid var(--acc); pointer-events:none">
+      <div data-drag style="display:flex; align-items:center; gap:8px; padding:6px 10px; cursor:move; user-select:none; border-bottom:1px solid color-mix(in oklab, var(--acc) 18%, transparent); background:linear-gradient(90deg, color-mix(in oklab, var(--acc) 12%, transparent), transparent 75%); font-family:'Share Tech Mono',monospace; font-size:11px; letter-spacing:.16em; color:var(--acc)">☀ TEMPERATURA · LISBOA<span style="font-size:9px; color:#3a5866">WIDGET · FETCH · 15 min</span><span style="flex:1"></span><button title="Mover para o outro monitor" onClick="{{sendMon}}" style="background:transparent; border:1px solid color-mix(in oklab, var(--acc) 30%, transparent); color:var(--acc); font-size:11px; width:22px; height:18px; line-height:1; cursor:pointer; padding:0" style-hover="background:color-mix(in oklab, var(--acc) 20%, transparent)">⇄</button><button title="Fechar" onClick="{{closeCard}}" style="background:transparent; border:1px solid color-mix(in oklab, var(--acc) 30%, transparent); color:var(--acc); font-size:11px; width:22px; height:18px; line-height:1; cursor:pointer; padding:0" style-hover="background:color-mix(in oklab, var(--red) 30%, transparent); color:var(--red); border-color:var(--red)">✕</button></div>
+      <div style="flex:1; overflow:hidden; padding:14px 16px; display:flex; gap:20px; align-items:stretch">
+        <div style="display:flex; flex-direction:column; justify-content:center; min-width:150px">
+          <div style="font-size:52px; font-weight:700; font-family:'Share Tech Mono',monospace; background:linear-gradient(180deg, #ffb45e, #59e8ff); -webkit-background-clip:text; background-clip:text; color:transparent; line-height:1">31.4°</div>
+          <div style="font-size:14px; color:#9db9c6; margin-top:4px">céu limpo · vento 12 km/h</div>
+          <div style="font-family:'Share Tech Mono',monospace; font-size:10px; color:#5b7a8a; letter-spacing:.14em; margin-top:4px">máx 33° · mín 21° · hum 44%</div>
+        </div>
+        <div style="flex:1; display:flex; gap:12px; align-items:flex-end; padding-bottom:4px">
+          <div style="flex:1; display:flex; flex-direction:column; align-items:center; gap:4px"><span style="font-family:'Share Tech Mono',monospace; font-size:11px; color:#ffb45e">29°</span><div style="width:100%; max-width:38px; height:58%; background:linear-gradient(180deg, #ffb45e, #59e8ff); opacity:.85; border-radius:2px 2px 0 0"></div><span style="font-family:'Share Tech Mono',monospace; font-size:10px; color:#5b7a8a">QUI</span></div>
+          <div style="flex:1; display:flex; flex-direction:column; align-items:center; gap:4px"><span style="font-family:'Share Tech Mono',monospace; font-size:11px; color:#ffb45e">31°</span><div style="width:100%; max-width:38px; height:70%; background:linear-gradient(180deg, #ffb45e, #59e8ff); opacity:.85; border-radius:2px 2px 0 0"></div><span style="font-family:'Share Tech Mono',monospace; font-size:10px; color:#5b7a8a">SEX</span></div>
+          <div style="flex:1; display:flex; flex-direction:column; align-items:center; gap:4px"><span style="font-family:'Share Tech Mono',monospace; font-size:11px; color:#ff8a5e">33°</span><div style="width:100%; max-width:38px; height:82%; background:linear-gradient(180deg, #ff8a5e, #ffb45e); opacity:.9; border-radius:2px 2px 0 0"></div><span style="font-family:'Share Tech Mono',monospace; font-size:10px; color:#5b7a8a">SÁB</span></div>
+          <div style="flex:1; display:flex; flex-direction:column; align-items:center; gap:4px"><span style="font-family:'Share Tech Mono',monospace; font-size:11px; color:#ffb45e">30°</span><div style="width:100%; max-width:38px; height:64%; background:linear-gradient(180deg, #ffb45e, #59e8ff); opacity:.85; border-radius:2px 2px 0 0"></div><span style="font-family:'Share Tech Mono',monospace; font-size:10px; color:#5b7a8a">DOM</span></div>
+          <div style="flex:1; display:flex; flex-direction:column; align-items:center; gap:4px"><span style="font-family:'Share Tech Mono',monospace; font-size:11px; color:#59e8ff">27°</span><div style="width:100%; max-width:38px; height:50%; background:linear-gradient(180deg, #8fd9ff, #59e8ff); opacity:.8; border-radius:2px 2px 0 0"></div><span style="font-family:'Share Tech Mono',monospace; font-size:10px; color:#5b7a8a">SEG</span></div>
+        </div>
+      </div>
+      <div data-resize style="position:absolute; right:0; bottom:0; width:16px; height:16px; cursor:nwse-resize; background:linear-gradient(135deg, transparent 55%, color-mix(in oklab, var(--acc) 50%, transparent) 55%)"></div>
+    </div>
+
+    <!-- ═══ MON 2 · TEAM ═══ -->
+    <div data-card="team" data-screen-label="TEAM" style="position:absolute; left:30px; top:45px; width:600px; height:515px; display:flex; flex-direction:column; background:var(--card); border:1px solid color-mix(in oklab, var(--acc) 28%, transparent); box-shadow:0 0 22px color-mix(in oklab, var(--acc) 10%, transparent), 0 10px 34px rgba(0,0,0,.55); backdrop-filter:blur(7px); border-radius:3px; z-index:10" style-before="content:''; position:absolute; top:-1px; left:-1px; width:12px; height:12px; border-top:2px solid var(--acc); border-left:2px solid var(--acc); pointer-events:none" style-after="content:''; position:absolute; bottom:-1px; right:-1px; width:12px; height:12px; border-bottom:2px solid var(--acc); border-right:2px solid var(--acc); pointer-events:none">
+      <div data-drag style="display:flex; align-items:center; gap:8px; padding:6px 10px; cursor:move; user-select:none; border-bottom:1px solid color-mix(in oklab, var(--acc) 18%, transparent); background:linear-gradient(90deg, color-mix(in oklab, var(--acc) 12%, transparent), transparent 75%); font-family:'Share Tech Mono',monospace; font-size:11px; letter-spacing:.16em; color:var(--acc)">◭ TEAM · 3 AGENTES<span style="font-size:9px; color:{{spawnColor}}">{{spawnLabel}}</span><span style="flex:1"></span><button title="Mover para o outro monitor" onClick="{{sendMon}}" style="background:transparent; border:1px solid color-mix(in oklab, var(--acc) 30%, transparent); color:var(--acc); font-size:11px; width:22px; height:18px; line-height:1; cursor:pointer; padding:0" style-hover="background:color-mix(in oklab, var(--acc) 20%, transparent)">⇄</button><button title="Fechar" onClick="{{closeCard}}" style="background:transparent; border:1px solid color-mix(in oklab, var(--acc) 30%, transparent); color:var(--acc); font-size:11px; width:22px; height:18px; line-height:1; cursor:pointer; padding:0" style-hover="background:color-mix(in oklab, var(--red) 30%, transparent); color:var(--red); border-color:var(--red)">✕</button></div>
+      <div style="flex:1; overflow:auto; padding:12px; display:flex; flex-direction:column; gap:10px">
+        <div style="border:1px solid color-mix(in oklab, var(--mag) 35%, transparent); padding:10px 12px; background:color-mix(in oklab, var(--mag) 5%, transparent)">
+          <div style="display:flex; align-items:center; gap:10px"><span style="font-size:16px; font-weight:700; letter-spacing:.06em">ATLAS</span><span style="font-family:'Share Tech Mono',monospace; font-size:9px; letter-spacing:.14em; color:var(--mag); border:1px solid var(--mag); padding:1px 6px">ORCHESTRATOR</span><span style="font-family:'Share Tech Mono',monospace; font-size:11px; color:#7d9aa8">Claude Opus 4.5</span><span style="flex:1"></span><span style="font-family:'Share Tech Mono',monospace; font-size:10px; color:var(--grn); animation:blinkdot 2s infinite">● ATIVO</span></div>
+          <div style="display:flex; gap:16px; margin-top:6px; font-family:'Share Tech Mono',monospace; font-size:11px; color:#9db9c6; flex-wrap:wrap"><span>orçamento <span style="color:var(--acc)">12k/40k tok</span></span><span>tópicos <span style="color:var(--acc)">8</span></span><span>spawns <span style="color:var(--acc)">2 leafs</span></span></div>
+          <div style="height:6px; background:rgba(0,0,0,.45); border:1px solid color-mix(in oklab, var(--acc) 20%, transparent); margin-top:6px"><div style="width:30%; height:100%; background:var(--mag); opacity:.7"></div></div>
+        </div>
+        <div style="border:1px solid color-mix(in oklab, var(--acc) 28%, transparent); padding:10px 12px">
+          <div style="display:flex; align-items:center; gap:10px"><span style="font-size:16px; font-weight:700; letter-spacing:.06em">CURIE</span><span style="font-family:'Share Tech Mono',monospace; font-size:9px; letter-spacing:.14em; color:var(--acc); border:1px solid var(--acc); padding:1px 6px">LEAF · INVESTIGAÇÃO</span><span style="font-family:'Share Tech Mono',monospace; font-size:11px; color:#7d9aa8">DeepSeek V4</span><span style="flex:1"></span><span style="font-family:'Share Tech Mono',monospace; font-size:10px; color:var(--amb)">◐ A ESTUDAR</span></div>
+          <div style="display:flex; gap:16px; margin-top:6px; font-family:'Share Tech Mono',monospace; font-size:11px; color:#9db9c6; flex-wrap:wrap"><span>orçamento <span style="color:var(--acc)">31k/50k tok</span></span><span>tópicos <span style="color:var(--acc)">23</span></span><span>último estudo <span style="color:var(--acc)">«RAG evals» +3 notas</span></span></div>
+          <div style="height:6px; background:rgba(0,0,0,.45); border:1px solid color-mix(in oklab, var(--acc) 20%, transparent); margin-top:6px"><div style="width:62%; height:100%; background:var(--acc); opacity:.7"></div></div>
+          <div style="margin-top:6px; font-family:'Share Tech Mono',monospace; font-size:10px; color:var(--amb)">⚠ 1 aprovação pendente — ver Scheduled Tasks</div>
+        </div>
+        <div style="border:1px solid color-mix(in oklab, var(--acc) 28%, transparent); padding:10px 12px">
+          <div style="display:flex; align-items:center; gap:10px"><span style="font-size:16px; font-weight:700; letter-spacing:.06em">TURING</span><span style="font-family:'Share Tech Mono',monospace; font-size:9px; letter-spacing:.14em; color:var(--acc); border:1px solid var(--acc); padding:1px 6px">LEAF · CÓDIGO</span><span style="font-family:'Share Tech Mono',monospace; font-size:11px; color:#7d9aa8">GPT-5.2</span><span style="flex:1"></span><span style="font-family:'Share Tech Mono',monospace; font-size:10px; color:#5b7a8a">○ INATIVO</span></div>
+          <div style="display:flex; gap:16px; margin-top:6px; font-family:'Share Tech Mono',monospace; font-size:11px; color:#9db9c6; flex-wrap:wrap"><span>orçamento <span style="color:var(--acc)">5k/30k tok</span></span><span>tópicos <span style="color:var(--acc)">11</span></span><span>último run <span style="color:var(--acc)">ontem 16:12 ✓</span></span></div>
+          <div style="height:6px; background:rgba(0,0,0,.45); border:1px solid color-mix(in oklab, var(--acc) 20%, transparent); margin-top:6px"><div style="width:17%; height:100%; background:var(--acc); opacity:.5"></div></div>
+        </div>
+      </div>
+      <div data-resize style="position:absolute; right:0; bottom:0; width:16px; height:16px; cursor:nwse-resize; background:linear-gradient(135deg, transparent 55%, color-mix(in oklab, var(--acc) 50%, transparent) 55%)"></div>
+    </div>
+
+    <!-- ═══ MON 2 · BRAINS ═══ -->
+    <div data-card="brains" data-screen-label="BRAINS" style="position:absolute; left:660px; top:45px; width:390px; height:280px; display:flex; flex-direction:column; background:var(--card); border:1px solid color-mix(in oklab, var(--acc) 28%, transparent); box-shadow:0 0 22px color-mix(in oklab, var(--acc) 10%, transparent), 0 10px 34px rgba(0,0,0,.55); backdrop-filter:blur(7px); border-radius:3px; z-index:10" style-before="content:''; position:absolute; top:-1px; left:-1px; width:12px; height:12px; border-top:2px solid var(--acc); border-left:2px solid var(--acc); pointer-events:none" style-after="content:''; position:absolute; bottom:-1px; right:-1px; width:12px; height:12px; border-bottom:2px solid var(--acc); border-right:2px solid var(--acc); pointer-events:none">
+      <div data-drag style="display:flex; align-items:center; gap:8px; padding:6px 10px; cursor:move; user-select:none; border-bottom:1px solid color-mix(in oklab, var(--acc) 18%, transparent); background:linear-gradient(90deg, color-mix(in oklab, var(--acc) 12%, transparent), transparent 75%); font-family:'Share Tech Mono',monospace; font-size:11px; letter-spacing:.16em; color:var(--acc)">◔ BRAINS<span style="font-size:9px; color:#3a5866">cérebro principal</span><span style="flex:1"></span><button title="Mover para o outro monitor" onClick="{{sendMon}}" style="background:transparent; border:1px solid color-mix(in oklab, var(--acc) 30%, transparent); color:var(--acc); font-size:11px; width:22px; height:18px; line-height:1; cursor:pointer; padding:0" style-hover="background:color-mix(in oklab, var(--acc) 20%, transparent)">⇄</button><button title="Fechar" onClick="{{closeCard}}" style="background:transparent; border:1px solid color-mix(in oklab, var(--acc) 30%, transparent); color:var(--acc); font-size:11px; width:22px; height:18px; line-height:1; cursor:pointer; padding:0" style-hover="background:color-mix(in oklab, var(--red) 30%, transparent); color:var(--red); border-color:var(--red)">✕</button></div>
+      <div style="flex:1; overflow:auto; padding:10px 12px; display:flex; flex-direction:column; gap:6px">
+        <sc-for list="{{brains}}" as="b" hint-placeholder-count="4">
+          <div data-i="{{b.i}}" onClick="{{selBrain}}" style="{{b.row}}"><span style="{{b.dot}}">●</span><span style="flex:1; font-size:14px; font-weight:600">{{b.name}}</span><span style="font-family:'Share Tech Mono',monospace; font-size:10px; color:{{b.stColor}}">{{b.status}}</span><span style="font-family:'Share Tech Mono',monospace; font-size:10px; letter-spacing:.1em; color:{{b.selColor}}">{{b.sel}}</span></div>
+        </sc-for>
+        <div style="margin-top:auto; font-family:'Share Tech Mono',monospace; font-size:10px; color:#3a5866; letter-spacing:.1em">clica para trocar o cérebro do chat principal</div>
+      </div>
+      <div data-resize style="position:absolute; right:0; bottom:0; width:16px; height:16px; cursor:nwse-resize; background:linear-gradient(135deg, transparent 55%, color-mix(in oklab, var(--acc) 50%, transparent) 55%)"></div>
+    </div>
+
+    <!-- ═══ MON 2 · ACCOUNTS ═══ -->
+    <div data-card="accounts" data-screen-label="ACCOUNTS" style="position:absolute; left:660px; top:340px; width:390px; height:215px; display:flex; flex-direction:column; background:var(--card); border:1px solid color-mix(in oklab, var(--acc) 28%, transparent); box-shadow:0 0 22px color-mix(in oklab, var(--acc) 10%, transparent), 0 10px 34px rgba(0,0,0,.55); backdrop-filter:blur(7px); border-radius:3px; z-index:10" style-before="content:''; position:absolute; top:-1px; left:-1px; width:12px; height:12px; border-top:2px solid var(--acc); border-left:2px solid var(--acc); pointer-events:none" style-after="content:''; position:absolute; bottom:-1px; right:-1px; width:12px; height:12px; border-bottom:2px solid var(--acc); border-right:2px solid var(--acc); pointer-events:none">
+      <div data-drag style="display:flex; align-items:center; gap:8px; padding:6px 10px; cursor:move; user-select:none; border-bottom:1px solid color-mix(in oklab, var(--acc) 18%, transparent); background:linear-gradient(90deg, color-mix(in oklab, var(--acc) 12%, transparent), transparent 75%); font-family:'Share Tech Mono',monospace; font-size:11px; letter-spacing:.16em; color:var(--acc)">◍ ACCOUNTS<span style="flex:1"></span><button title="Mover para o outro monitor" onClick="{{sendMon}}" style="background:transparent; border:1px solid color-mix(in oklab, var(--acc) 30%, transparent); color:var(--acc); font-size:11px; width:22px; height:18px; line-height:1; cursor:pointer; padding:0" style-hover="background:color-mix(in oklab, var(--acc) 20%, transparent)">⇄</button><button title="Fechar" onClick="{{closeCard}}" style="background:transparent; border:1px solid color-mix(in oklab, var(--acc) 30%, transparent); color:var(--acc); font-size:11px; width:22px; height:18px; line-height:1; cursor:pointer; padding:0" style-hover="background:color-mix(in oklab, var(--red) 30%, transparent); color:var(--red); border-color:var(--red)">✕</button></div>
+      <div style="flex:1; overflow:auto; padding:10px 12px; display:flex; flex-direction:column; gap:7px; font-size:13px">
+        <div style="display:flex; align-items:center; gap:10px; border:1px solid color-mix(in oklab, var(--grn) 25%, transparent); padding:7px 10px"><span style="color:var(--grn)">●</span><span style="flex:1; font-weight:600">Gmail — miguel@cdncore.eu</span><span style="font-family:'Share Tech Mono',monospace; font-size:10px; color:var(--acc); border:1px solid color-mix(in oklab, var(--acc) 40%, transparent); padding:1px 6px">READ-ONLY</span></div>
+        <div style="display:flex; align-items:center; gap:10px; border:1px solid color-mix(in oklab, var(--grn) 25%, transparent); padding:7px 10px"><span style="color:var(--grn)">●</span><span style="flex:1; font-weight:600">Obsidian Vault — ~/Vault</span><span style="font-family:'Share Tech Mono',monospace; font-size:10px; color:var(--amb); border:1px solid color-mix(in oklab, var(--amb) 40%, transparent); padding:1px 6px">R/W + APROVAÇÃO</span></div>
+        <div style="display:flex; align-items:center; gap:10px; border:1px solid color-mix(in oklab, var(--grn) 25%, transparent); padding:7px 10px"><span style="color:var(--grn)">●</span><span style="flex:1; font-weight:600">ElevenLabs — voz «Alfred»</span><span style="font-family:'Share Tech Mono',monospace; font-size:10px; color:#7d9aa8">chave OK</span></div>
+        <div style="display:flex; align-items:center; gap:10px; border:1px dashed rgba(120,150,160,.3); padding:7px 10px; color:#5b7a8a"><span>○</span><span style="flex:1">Calendário</span><span style="font-family:'Share Tech Mono',monospace; font-size:10px; letter-spacing:.1em; color:var(--acc); cursor:pointer">+ LIGAR</span></div>
+      </div>
+      <div data-resize style="position:absolute; right:0; bottom:0; width:16px; height:16px; cursor:nwse-resize; background:linear-gradient(135deg, transparent 55%, color-mix(in oklab, var(--acc) 50%, transparent) 55%)"></div>
+    </div>
+
+    <!-- ═══ MON 2 · PROJECTS ═══ -->
+    <div data-card="projects" data-screen-label="PROJECTS" style="position:absolute; left:1080px; top:45px; width:390px; height:375px; display:flex; flex-direction:column; background:var(--card); border:1px solid color-mix(in oklab, var(--acc) 28%, transparent); box-shadow:0 0 22px color-mix(in oklab, var(--acc) 10%, transparent), 0 10px 34px rgba(0,0,0,.55); backdrop-filter:blur(7px); border-radius:3px; z-index:10" style-before="content:''; position:absolute; top:-1px; left:-1px; width:12px; height:12px; border-top:2px solid var(--acc); border-left:2px solid var(--acc); pointer-events:none" style-after="content:''; position:absolute; bottom:-1px; right:-1px; width:12px; height:12px; border-bottom:2px solid var(--acc); border-right:2px solid var(--acc); pointer-events:none">
+      <div data-drag style="display:flex; align-items:center; gap:8px; padding:6px 10px; cursor:move; user-select:none; border-bottom:1px solid color-mix(in oklab, var(--acc) 18%, transparent); background:linear-gradient(90deg, color-mix(in oklab, var(--acc) 12%, transparent), transparent 75%); font-family:'Share Tech Mono',monospace; font-size:11px; letter-spacing:.16em; color:var(--acc)">▦ PROJECTS<span style="flex:1"></span><button title="Mover para o outro monitor" onClick="{{sendMon}}" style="background:transparent; border:1px solid color-mix(in oklab, var(--acc) 30%, transparent); color:var(--acc); font-size:11px; width:22px; height:18px; line-height:1; cursor:pointer; padding:0" style-hover="background:color-mix(in oklab, var(--acc) 20%, transparent)">⇄</button><button title="Fechar" onClick="{{closeCard}}" style="background:transparent; border:1px solid color-mix(in oklab, var(--acc) 30%, transparent); color:var(--acc); font-size:11px; width:22px; height:18px; line-height:1; cursor:pointer; padding:0" style-hover="background:color-mix(in oklab, var(--red) 30%, transparent); color:var(--red); border-color:var(--red)">✕</button></div>
+      <div style="flex:1; overflow:auto; padding:10px 12px; display:flex; flex-direction:column; gap:7px">
+        <div style="border:1px solid color-mix(in oklab, var(--acc) 40%, transparent); background:color-mix(in oklab, var(--acc) 6%, transparent); padding:8px 10px"><div style="display:flex; align-items:center; gap:8px"><span style="font-weight:700; font-size:14px">alfred-core</span><span style="font-family:'Share Tech Mono',monospace; font-size:9px; letter-spacing:.12em; color:var(--grn); border:1px solid var(--grn); padding:1px 5px">ATIVO</span></div><div style="font-family:'Share Tech Mono',monospace; font-size:10px; color:#5b7a8a">~/Dev/alfred · 38 ficheiros em contexto · há 2 min</div></div>
+        <div style="border:1px solid color-mix(in oklab, var(--acc) 25%, transparent); padding:8px 10px"><div style="font-weight:600; font-size:14px">cdnCore website</div><div style="font-family:'Share Tech Mono',monospace; font-size:10px; color:#5b7a8a">~/Dev/cdncore-web · há 3 h</div></div>
+        <div style="border:1px solid color-mix(in oklab, var(--acc) 25%, transparent); padding:8px 10px"><div style="font-weight:600; font-size:14px">Relatório Q3</div><div style="font-family:'Share Tech Mono',monospace; font-size:10px; color:#5b7a8a">~/Docs/q3 · ontem</div></div>
+        <div style="border:1px solid color-mix(in oklab, var(--acc) 25%, transparent); padding:8px 10px"><div style="font-weight:600; font-size:14px">Viagem Tóquio</div><div style="font-family:'Share Tech Mono',monospace; font-size:10px; color:#5b7a8a">~/Vault/Viagens/toquio · seg</div></div>
+        <div style="border:1px dashed rgba(120,150,160,.3); padding:8px 10px; color:#5b7a8a; font-family:'Share Tech Mono',monospace; font-size:11px; letter-spacing:.1em; text-align:center; cursor:pointer">+ NOVO PROJETO (pasta como contexto)</div>
+      </div>
+      <div data-resize style="position:absolute; right:0; bottom:0; width:16px; height:16px; cursor:nwse-resize; background:linear-gradient(135deg, transparent 55%, color-mix(in oklab, var(--acc) 50%, transparent) 55%)"></div>
+    </div>
+
+    <!-- ═══ MON 2 · SETTINGS ═══ -->
+    <div data-card="settings" data-screen-label="SETTINGS" style="position:absolute; left:660px; top:570px; width:390px; height:310px; display:flex; flex-direction:column; background:var(--card); border:1px solid color-mix(in oklab, var(--acc) 28%, transparent); box-shadow:0 0 22px color-mix(in oklab, var(--acc) 10%, transparent), 0 10px 34px rgba(0,0,0,.55); backdrop-filter:blur(7px); border-radius:3px; z-index:10" style-before="content:''; position:absolute; top:-1px; left:-1px; width:12px; height:12px; border-top:2px solid var(--acc); border-left:2px solid var(--acc); pointer-events:none" style-after="content:''; position:absolute; bottom:-1px; right:-1px; width:12px; height:12px; border-bottom:2px solid var(--acc); border-right:2px solid var(--acc); pointer-events:none">
+      <div data-drag style="display:flex; align-items:center; gap:8px; padding:6px 10px; cursor:move; user-select:none; border-bottom:1px solid color-mix(in oklab, var(--acc) 18%, transparent); background:linear-gradient(90deg, color-mix(in oklab, var(--acc) 12%, transparent), transparent 75%); font-family:'Share Tech Mono',monospace; font-size:11px; letter-spacing:.16em; color:var(--acc)">⚙ SETTINGS · MODELO POR AGENTE<span style="flex:1"></span><button title="Mover para o outro monitor" onClick="{{sendMon}}" style="background:transparent; border:1px solid color-mix(in oklab, var(--acc) 30%, transparent); color:var(--acc); font-size:11px; width:22px; height:18px; line-height:1; cursor:pointer; padding:0" style-hover="background:color-mix(in oklab, var(--acc) 20%, transparent)">⇄</button><button title="Fechar" onClick="{{closeCard}}" style="background:transparent; border:1px solid color-mix(in oklab, var(--acc) 30%, transparent); color:var(--acc); font-size:11px; width:22px; height:18px; line-height:1; cursor:pointer; padding:0" style-hover="background:color-mix(in oklab, var(--red) 30%, transparent); color:var(--red); border-color:var(--red)">✕</button></div>
+      <div style="flex:1; overflow:auto; padding:12px; display:flex; flex-direction:column; gap:8px">
+        <div style="display:flex; align-items:center; gap:10px"><span style="flex:1; font-size:14px; font-weight:600">CHAT principal</span><button data-agent="chat" onClick="{{cycleModel}}" style="background:color-mix(in oklab, var(--acc) 8%, transparent); border:1px solid color-mix(in oklab, var(--acc) 40%, transparent); color:var(--acc); font-family:'Share Tech Mono',monospace; font-size:11px; padding:4px 10px; cursor:pointer; min-width:160px; text-align:left" style-hover="background:color-mix(in oklab, var(--acc) 18%, transparent)">{{mChat}} ▾</button></div>
+        <div style="display:flex; align-items:center; gap:10px"><span style="flex:1; font-size:14px; font-weight:600">◈ REFERENCE</span><button data-agent="ref" onClick="{{cycleModel}}" style="background:color-mix(in oklab, var(--acc) 8%, transparent); border:1px solid color-mix(in oklab, var(--acc) 40%, transparent); color:var(--acc); font-family:'Share Tech Mono',monospace; font-size:11px; padding:4px 10px; cursor:pointer; min-width:160px; text-align:left" style-hover="background:color-mix(in oklab, var(--acc) 18%, transparent)">{{mRef}} ▾</button></div>
+        <div style="display:flex; align-items:center; gap:10px"><span style="flex:1; font-size:14px; font-weight:600">DELEGATE (claude -p)</span><button data-agent="del" onClick="{{cycleModel}}" style="background:color-mix(in oklab, var(--acc) 8%, transparent); border:1px solid color-mix(in oklab, var(--acc) 40%, transparent); color:var(--acc); font-family:'Share Tech Mono',monospace; font-size:11px; padding:4px 10px; cursor:pointer; min-width:160px; text-align:left" style-hover="background:color-mix(in oklab, var(--acc) 18%, transparent)">{{mDel}} ▾</button></div>
+        <div style="display:flex; align-items:center; gap:10px"><span style="flex:1; font-size:14px; font-weight:600">AGENT STUDY</span><button data-agent="study" onClick="{{cycleModel}}" style="background:color-mix(in oklab, var(--acc) 8%, transparent); border:1px solid color-mix(in oklab, var(--acc) 40%, transparent); color:var(--acc); font-family:'Share Tech Mono',monospace; font-size:11px; padding:4px 10px; cursor:pointer; min-width:160px; text-align:left" style-hover="background:color-mix(in oklab, var(--acc) 18%, transparent)">{{mStudy}} ▾</button></div>
+        <div style="margin-top:auto; padding-top:8px; border-top:1px solid color-mix(in oklab, var(--acc) 12%, transparent); font-family:'Share Tech Mono',monospace; font-size:10px; color:#3a5866; letter-spacing:.08em">clica no modelo para alternar · alterações aplicam já</div>
+      </div>
+      <div data-resize style="position:absolute; right:0; bottom:0; width:16px; height:16px; cursor:nwse-resize; background:linear-gradient(135deg, transparent 55%, color-mix(in oklab, var(--acc) 50%, transparent) 55%)"></div>
+    </div>
+
+    <!-- ═══ MON 2 · REFERENCE ═══ -->
+    <div data-card="reference" data-screen-label="REFERENCE" style="--acc:#c77bff; position:absolute; left:1080px; top:435px; width:390px; height:445px; display:flex; flex-direction:column; background:var(--card); border:1px solid color-mix(in oklab, var(--acc) 28%, transparent); box-shadow:0 0 22px color-mix(in oklab, var(--acc) 10%, transparent), 0 10px 34px rgba(0,0,0,.55); backdrop-filter:blur(7px); border-radius:3px; z-index:10" style-before="content:''; position:absolute; top:-1px; left:-1px; width:12px; height:12px; border-top:2px solid var(--acc); border-left:2px solid var(--acc); pointer-events:none" style-after="content:''; position:absolute; bottom:-1px; right:-1px; width:12px; height:12px; border-bottom:2px solid var(--acc); border-right:2px solid var(--acc); pointer-events:none">
+      <div data-drag style="display:flex; align-items:center; gap:8px; padding:6px 10px; cursor:move; user-select:none; border-bottom:1px solid color-mix(in oklab, var(--acc) 18%, transparent); background:linear-gradient(90deg, color-mix(in oklab, var(--acc) 12%, transparent), transparent 75%); font-family:'Share Tech Mono',monospace; font-size:11px; letter-spacing:.16em; color:var(--acc)">◈ REFERENCE<span style="font-size:9px; color:#3a5866">só-leitura · isolado</span><span style="flex:1"></span><button title="Mover para o outro monitor" onClick="{{sendMon}}" style="background:transparent; border:1px solid color-mix(in oklab, var(--acc) 30%, transparent); color:var(--acc); font-size:11px; width:22px; height:18px; line-height:1; cursor:pointer; padding:0" style-hover="background:color-mix(in oklab, var(--acc) 20%, transparent)">⇄</button><button title="Fechar" onClick="{{closeCard}}" style="background:transparent; border:1px solid color-mix(in oklab, var(--acc) 30%, transparent); color:var(--acc); font-size:11px; width:22px; height:18px; line-height:1; cursor:pointer; padding:0" style-hover="background:color-mix(in oklab, var(--red) 30%, transparent); color:var(--red); border-color:var(--red)">✕</button></div>
+      <div style="padding:7px 12px; border-bottom:1px solid color-mix(in oklab, var(--acc) 15%, transparent); font-family:'Share Tech Mono',monospace; font-size:11px; color:#9db9c6">nota: <span style="color:var(--acc)">Vault/Projetos/RAG evals.md</span></div>
+      <div style="flex:1; overflow:auto; padding:12px; display:flex; flex-direction:column; gap:10px">
+        <div style="align-self:flex-end; max-width:85%; border:1px solid color-mix(in oklab, var(--amb) 40%, transparent); background:color-mix(in oklab, var(--amb) 7%, transparent); padding:8px 10px; border-radius:2px; font-size:13px">O que diz esta nota sobre métricas de fidelidade?</div>
+        <div style="align-self:flex-start; max-width:88%; border:1px solid color-mix(in oklab, var(--acc) 35%, transparent); background:color-mix(in oklab, var(--acc) 6%, transparent); padding:8px 10px; border-radius:2px; font-size:13px">A nota lista 3 métricas: <b>faithfulness</b> (0–1, via juiz LLM), <b>answer relevancy</b> e <b>context precision</b>. A CURIE marcou faithfulness como a mais frágil em domínios técnicos — recomenda amostras de 50+ perguntas. <span style="font-family:'Share Tech Mono',monospace; font-size:10px; color:var(--acc)">[§ Avaliação, linhas 12–31]</span></div>
+      </div>
+      <div style="padding:8px 10px; border-top:1px solid color-mix(in oklab, var(--acc) 15%, transparent)">
+        <input placeholder="Pergunta sobre ESTA nota…" style="width:100%; box-sizing:border-box; background:rgba(0,0,0,.35); border:1px solid color-mix(in oklab, var(--acc) 25%, transparent); color:#cfe8f2; padding:6px 10px; font-size:13px; border-radius:2px">
+      </div>
+      <div data-resize style="position:absolute; right:0; bottom:0; width:16px; height:16px; cursor:nwse-resize; background:linear-gradient(135deg, transparent 55%, color-mix(in oklab, var(--acc) 50%, transparent) 55%)"></div>
+    </div>
+  </div>
+
+  <!-- ═══ TOP STRIP ═══ -->
+  <sc-if value="{{dangerOn}}" hint-placeholder-val="{{ false }}">
+    <div style="position:absolute; top:0; left:0; right:0; z-index:499; text-align:center; padding:2px 0; background:color-mix(in oklab, var(--red) 22%, transparent); border-bottom:1px solid var(--red); font-family:'Share Tech Mono',monospace; font-size:10px; letter-spacing:.24em; color:var(--red); animation:blinkdot 1.4s infinite; pointer-events:none">▲ MODO PERIGOSO — SEM APROVAÇÕES (exceto tarefas autónomas sensíveis) ▲</div>
+  </sc-if>
+  <div ref="{{stripRef}}" style="position:absolute; top:0; left:0; right:0; z-index:500; transform:translateY(calc(-100% + 10px)); transition:transform .35s cubic-bezier(.2,.8,.2,1); background:linear-gradient(180deg, rgba(5,10,18,.97), rgba(5,10,18,.88)); border-bottom:1px solid color-mix(in oklab, var(--acc) 35%, transparent); box-shadow:0 6px 30px rgba(0,0,0,.6), 0 1px 0 color-mix(in oklab, var(--acc) 50%, transparent); backdrop-filter:blur(10px)">
+    <div style="display:flex; align-items:center; gap:10px; padding:8px 14px 4px">
+      <div style="font-family:'Share Tech Mono',monospace; font-size:16px; letter-spacing:.3em; color:var(--acc); text-shadow:0 0 12px color-mix(in oklab, var(--acc) 60%, transparent)">◢ALFRED</div>
+      <div style="display:flex; align-items:center; gap:5px; border:1px solid color-mix(in oklab, var(--acc) 25%, transparent); padding:3px 9px; border-radius:2px"><span style="display:flex; align-items:flex-end; gap:2px; height:15px"><span style="{{eqStyle1}}"></span><span style="{{eqStyle2}}"></span><span style="{{eqStyle3}}"></span></span><span style="font-family:'Share Tech Mono',monospace; font-size:10px; letter-spacing:.16em; color:{{agentColor}}">{{agentLabel}}</span></div>
+      <input onKeyDown="{{cmdKey}}" placeholder="Comanda o Alfred… (Enter envia · diz «Alfred» para acordar)" style="flex:1; background:rgba(0,0,0,.4); border:1px solid color-mix(in oklab, var(--acc) 30%, transparent); color:#cfe8f2; padding:6px 12px; font-size:14px; border-radius:2px" style-focus="border-color:var(--acc); box-shadow:0 0 10px color-mix(in oklab, var(--acc) 25%, transparent)">
+      <button onClick="{{micToggle}}" title="Push-to-talk" style="{{micStyle}}">🎙</button>
+      <div style="position:relative">
+        <button onClick="{{toggleDd}}" style="background:color-mix(in oklab, var(--acc) 10%, transparent); border:1px solid color-mix(in oklab, var(--acc) 45%, transparent); color:var(--acc); font-family:'Share Tech Mono',monospace; font-size:11px; letter-spacing:.14em; padding:5px 12px; cursor:pointer" style-hover="background:color-mix(in oklab, var(--acc) 22%, transparent)">▦ CARDS ▾</button>
+        <sc-if value="{{ddOpen}}" hint-placeholder-val="{{ false }}">
+          <div style="position:absolute; right:0; top:calc(100% + 6px); width:250px; max-height:60vh; overflow:auto; background:rgba(5,10,18,.98); border:1px solid color-mix(in oklab, var(--acc) 40%, transparent); box-shadow:0 10px 40px rgba(0,0,0,.7); z-index:600; padding:6px">
+            <sc-for list="{{cardList}}" as="c" hint-placeholder-count="14">
+              <div data-id="{{c.id}}" onClick="{{toggleCard}}" style="{{c.row}}"><span style="{{c.dotStyle}}">{{c.dot}}</span><span style="flex:1; font-family:'Share Tech Mono',monospace; font-size:11px; letter-spacing:.1em">{{c.label}}</span><span style="font-family:'Share Tech Mono',monospace; font-size:9px; color:#3a5866">{{c.monTag}}</span></div>
+            </sc-for>
+          </div>
+        </sc-if>
+      </div>
+      <button onClick="{{arrange}}" title="Alinhar cards numa grelha" style="background:transparent; border:1px solid color-mix(in oklab, var(--acc) 45%, transparent); color:var(--acc); font-family:'Share Tech Mono',monospace; font-size:11px; letter-spacing:.14em; padding:5px 12px; cursor:pointer" style-hover="background:color-mix(in oklab, var(--acc) 22%, transparent)">⊞ ARRANGE</button>
+      <div style="display:flex; border:1px solid color-mix(in oklab, var(--acc) 30%, transparent)">
+        <button data-mon="1" onClick="{{setMon}}" style="{{mon1Style}}">MON 1</button>
+        <button data-mon="2" onClick="{{setMon}}" style="{{mon2Style}}">MON 2</button>
+      </div>
+      <button onClick="{{resetConv}}" title="Reset da conversa" style="background:transparent; border:1px solid rgba(120,150,160,.35); color:#7d9aa8; font-family:'Share Tech Mono',monospace; font-size:10px; letter-spacing:.1em; padding:5px 8px; cursor:pointer" style-hover="border-color:#9db9c6; color:#cfe8f2">RESET</button>
+      <button onClick="{{factoryReset}}" title="Apaga tudo" style="background:transparent; border:1px solid color-mix(in oklab, var(--red) 45%, transparent); color:var(--red); font-family:'Share Tech Mono',monospace; font-size:10px; letter-spacing:.1em; padding:5px 8px; cursor:pointer" style-hover="background:color-mix(in oklab, var(--red) 18%, transparent)">FACTORY ⟲</button>
+    </div>
+    <div style="display:flex; align-items:center; gap:6px; padding:4px 14px 8px; flex-wrap:wrap">
+      <sc-for list="{{pills}}" as="p" hint-placeholder-count="8">
+        <button data-key="{{p.key}}" onClick="{{togglePill}}" style="{{p.style}}">{{p.label}}</button>
+      </sc-for>
+      <span style="flex:1"></span>
+      <sc-if value="{{hasAp}}" hint-placeholder-val="{{ false }}">
+        <span style="font-family:'Share Tech Mono',monospace; font-size:10px; letter-spacing:.12em; color:var(--amb); border:1px solid color-mix(in oklab, var(--amb) 50%, transparent); padding:3px 9px; animation:blinkdot 2.2s infinite">⚠ {{apCount}} APROVAÇÕES PENDENTES</span>
+      </sc-if>
+      <span style="font-family:'Share Tech Mono',monospace; font-size:10px; letter-spacing:.16em; color:#3a5866">{{time}}</span>
+    </div>
+    <div style="position:absolute; left:50%; bottom:-9px; transform:translateX(-50%); width:70px; height:9px; background:rgba(5,10,18,.95); border:1px solid color-mix(in oklab, var(--acc) 40%, transparent); border-top:none; border-radius:0 0 4px 4px; display:flex; align-items:center; justify-content:center"><span style="font-size:6px; color:var(--acc); line-height:1">▼▼▼</span></div>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;accent&quot;:{&quot;editor&quot;:&quot;color&quot;,&quot;default&quot;:&quot;#59e8ff&quot;,&quot;options&quot;:[&quot;#59e8ff&quot;,&quot;#4dffa6&quot;,&quot;#c77bff&quot;,&quot;#ff9d5e&quot;],&quot;tsType&quot;:&quot;string&quot;,&quot;section&quot;:&quot;Aparência&quot;},&quot;scanlines&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:true,&quot;tsType&quot;:&quot;boolean&quot;,&quot;section&quot;:&quot;Aparência&quot;},&quot;gridIntensity&quot;:{&quot;editor&quot;:&quot;range&quot;,&quot;default&quot;:1.1,&quot;min&quot;:0.2,&quot;max&quot;:2,&quot;step&quot;:0.1,&quot;tsType&quot;:&quot;number&quot;,&quot;section&quot;:&quot;Aparência&quot;}}">
+class Component extends DCLogic {
+  MODELS = ['Claude Opus 4.5', 'GPT-5.2', 'DeepSeek V4', 'Claude Code CLI'];
+  CARD_LABELS = { conversation:'CONVERSATION', activity:'ACTIVITY', surface:'GENERATIVE SURFACE', graph:'KNOWLEDGE GRAPH', cost:'COST', scheduled:'SCHEDULED TASKS', team:'TEAM', brains:'BRAINS', accounts:'ACCOUNTS', projects:'PROJECTS', settings:'SETTINGS', reference:'REFERENCE ◈', temp:'⧉ TEMPERATURA (widget)', btc:'⧉ BITCOIN (widget)' };
+  LAYOUT = {
+    1: { conversation:[.012,.03,.235,.60], activity:[.012,.65,.235,.325], surface:[.26,.03,.36,.52], graph:[.26,.57,.36,.405], cost:[.632,.03,.176,.295], btc:[.82,.03,.168,.295], scheduled:[.632,.345,.356,.31], temp:[.632,.675,.356,.30] },
+    2: { team:[.02,.045,.40,.55], brains:[.44,.045,.26,.30], accounts:[.44,.365,.26,.23], projects:[.72,.045,.26,.40], settings:[.44,.615,.26,.33], reference:[.72,.465,.26,.48] }
+  };
+  ACT_POOL = [
+    ['fs.read','read','~/Vault/Journal/2026-07-23.md'],
+    ['gmail.list','read','14 mensagens · inbox'],
+    ['memory.write','write','facto: «preferes resumos às 09h»'],
+    ['shell','write','osascript · volume → 40%'],
+    ['browser','read','coindesk.com · sessão mantida'],
+    ['screenshot','read','ecrã 1 capturado · a analisar'],
+    ['schedule.run','ok','GMAIL DIGEST ✓ · 1.2k tok'],
+    ['policy.deny','deny','rm ~/Docs/old — sem aprovação'],
+    ['agent.study','write','CURIE · «RAG evals» +3 notas'],
+    ['recall','read','sessões: «orçamento tokens» · 4 hits'],
+    ['ui_layout','read','graph → 540×390'],
+    ['system','read','bateria 84% · Wi-Fi OK']
+  ];
+  state = {
+    mon: 1, ddOpen: false, time: '--:--:--', agentIdx: 0, micOn: false, kill: true, brain: 0,
+    pills: { voice:true, wake:true, autosend:false, eleven:true, widgetjs:false, grill:false, dangerous:false, pausespawn:false },
+    cards: { conversation:{o:true,m:1}, activity:{o:true,m:1}, surface:{o:true,m:1}, graph:{o:true,m:1}, cost:{o:true,m:1}, scheduled:{o:true,m:1}, temp:{o:true,m:1}, btc:{o:true,m:1}, team:{o:true,m:2}, brains:{o:true,m:2}, accounts:{o:true,m:2}, projects:{o:true,m:2}, settings:{o:true,m:2}, reference:{o:true,m:2} },
+    msgs: [
+      { who:'a', text:'Bom dia, Miguel. Li 14 emails novos — 2 relevantes. Pus o resumo na Generative Surface.' },
+      { who:'u', text:'Boa. Arquiva o resto e agenda o estudo da CURIE para as 18h.' },
+      { who:'a', text:'Estudo da CURIE agendado para as 18:00 ✓. Arquivar 12 emails é uma ação de escrita — precisa da tua aprovação:' }
+    ],
+    chatAp: 'pending',
+    activity: [],
+    approvals: [
+      { id:'a1', origin:'GMAIL DIGEST (tarefa autónoma)', risk:'MÉDIO', text:'Enviar resumo diário por email para miguel@cdncore.eu' },
+      { id:'a2', origin:'CURIE (agent_study)', risk:'BAIXO', text:'Guardar 3 factos novos no vault (Projetos/RAG evals.md)' }
+    ],
+    btcPts: [], btcPrice: 118342, btcDelta: 2.4,
+    agents: { chat:0, ref:2, del:3, study:1 }
+  };
+  wsRef = React.createRef(); stripRef = React.createRef(); gridRef = React.createRef(); scanRef = React.createRef(); rootRef = React.createRef();
+
+  componentDidMount() {
+    let pts = [], v = 112000;
+    for (let i = 0; i < 30; i++) { v += (Math.random() - .42) * 2600; pts.push(v); }
+    const seed = this.ACT_POOL.slice(0, 7).map((a, i) => this.mkAct(a, this.tstr(Date.now() - (7 - i) * 40000)));
+    this.setState({ btcPts: pts, activity: seed.reverse(), time: this.tstr() });
+    this.applyProps(); this.layout(); this.applyVis();
+    this.ivs = [
+      setInterval(() => this.setState({ time: this.tstr() }), 1000),
+      setInterval(() => this.pushAct(this.ACT_POOL[Math.floor(Math.random() * this.ACT_POOL.length)]), 4200),
+      setInterval(() => this.tickBtc(), 5000),
+      setInterval(() => this.setState(s => ({ agentIdx: (s.agentIdx + 1) % 4 })), 6500)
+    ];
+    const st = this.stripRef.current;
+    if (st) {
+      st.style.transform = 'translateY(0)';
+      this.hideTo = setTimeout(() => { if (!this.pinned) st.style.transform = ''; }, 4200);
+      st.addEventListener('mouseenter', () => { st.style.transform = 'translateY(0)'; });
+      st.addEventListener('mouseleave', () => { if (!this.pinned && !this.state.ddOpen) st.style.transform = ''; });
+      st.addEventListener('focusin', () => { this.pinned = true; st.style.transform = 'translateY(0)'; });
+      st.addEventListener('focusout', () => { this.pinned = false; });
+    }
+    this.onWinResize = () => { if (!this.userMoved) this.layout(); };
+    window.addEventListener('resize', this.onWinResize);
+  }
+  componentWillUnmount() { (this.ivs || []).forEach(clearInterval); clearTimeout(this.hideTo); window.removeEventListener('resize', this.onWinResize); }
+  componentDidUpdate() { this.applyProps(); this.applyVis(); }
+
+  applyProps() {
+    const r = this.rootRef.current; if (!r) return;
+    r.style.setProperty('--acc', this.props.accent ?? '#59e8ff');
+    if (this.gridRef.current) this.gridRef.current.style.opacity = String(this.props.gridIntensity ?? 1);
+    if (this.scanRef.current) this.scanRef.current.style.display = (this.props.scanlines ?? true) ? 'block' : 'none';
+  }
+  tstr(t) { return new Date(t || Date.now()).toTimeString().slice(0, 8); }
+  mkAct(a, t) { return { t: t || this.tstr(), tool: a[0], type: a[1], text: a[2] }; }
+  pushAct(a) { this.setState(s => ({ activity: [this.mkAct(a), ...s.activity].slice(0, 40) })); }
+  tickBtc() {
+    this.setState(s => {
+      const last = s.btcPts[s.btcPts.length - 1] + (Math.random() - .48) * 1800;
+      const pts = [...s.btcPts.slice(1), last];
+      return { btcPts: pts, btcPrice: Math.round(last), btcDelta: +((last / pts[0] - 1) * 100).toFixed(1) };
+    });
+  }
+  cardEls() { return Array.from(this.wsRef.current.querySelectorAll('[data-card]')); }
+  applyVis() {
+    if (!this.wsRef.current) return;
+    this.cardEls().forEach(el => {
+      const c = this.state.cards[el.dataset.card];
+      el.style.display = c && c.o && c.m === this.state.mon ? 'flex' : 'none';
+    });
+  }
+  layout() {
+    const ws = this.wsRef.current; if (!ws) return;
+    const W = ws.clientWidth, H = ws.clientHeight;
+    this.cardEls().forEach(el => {
+      for (const m of [1, 2]) {
+        const f = this.LAYOUT[m][el.dataset.card];
+        if (f) { el.style.left = f[0] * W + 'px'; el.style.top = f[1] * H + 14 + 'px'; el.style.width = f[2] * W + 'px'; el.style.height = f[3] * H - 20 + 'px'; }
+      }
+    });
+  }
+  front(el) { this.zTop = (this.zTop || 30) + 1; el.style.zIndex = this.zTop; }
+  wsDown = (e) => {
+    const card = e.target.closest('[data-card]'); if (!card) return;
+    this.front(card);
+    if (e.target.closest('button,input,select,a')) return;
+    const rz = e.target.closest('[data-resize]'), dg = e.target.closest('[data-drag]');
+    if (!rz && !dg) return;
+    e.preventDefault(); this.userMoved = true;
+    const r = card.getBoundingClientRect(), wr = this.wsRef.current.getBoundingClientRect();
+    const sx = e.clientX, sy = e.clientY;
+    const move = (ev) => {
+      const dx = ev.clientX - sx, dy = ev.clientY - sy;
+      if (rz) {
+        card.style.width = Math.max(250, r.width + dx) + 'px';
+        card.style.height = Math.max(150, r.height + dy) + 'px';
+      } else {
+        card.style.left = Math.min(Math.max(r.left - wr.left + dx, -r.width + 70), wr.width - 70) + 'px';
+        card.style.top = Math.min(Math.max(r.top - wr.top + dy, 0), wr.height - 40) + 'px';
+      }
+    };
+    const up = () => { window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', up); };
+    window.addEventListener('pointermove', move); window.addEventListener('pointerup', up);
+  };
+  arrange = () => {
+    const ws = this.wsRef.current;
+    const els = this.cardEls().filter(el => { const c = this.state.cards[el.dataset.card]; return c.o && c.m === this.state.mon; });
+    const n = els.length; if (!n) return;
+    const W = ws.clientWidth, H = ws.clientHeight - 16;
+    const cols = Math.ceil(Math.sqrt(n * (W / H) / 1.6)) || 1, rows = Math.ceil(n / cols);
+    const pad = 14, cw = (W - pad * (cols + 1)) / cols, ch = (H - pad * (rows + 1)) / rows;
+    const anim = !window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    els.sort((a, b) => (parseFloat(a.style.top) - parseFloat(b.style.top)) || (parseFloat(a.style.left) - parseFloat(b.style.left)));
+    els.forEach((el, i) => {
+      const c = i % cols, rw = Math.floor(i / cols);
+      if (anim) { el.style.transition = 'left .45s cubic-bezier(.2,.8,.2,1), top .45s cubic-bezier(.2,.8,.2,1), width .45s, height .45s'; setTimeout(() => { el.style.transition = ''; }, 500); }
+      el.style.left = pad + c * (cw + pad) + 'px'; el.style.top = 16 + pad + rw * (ch + pad) + 'px';
+      el.style.width = cw + 'px'; el.style.height = ch + 'px';
+    });
+    this.pushAct(['ui_layout', 'ok', 'ARRANGE · ' + n + ' cards · MON ' + this.state.mon]);
+  };
+  closeCard = (e) => { const id = e.currentTarget.closest('[data-card]').dataset.card; this.setState(s => ({ cards: { ...s.cards, [id]: { ...s.cards[id], o: false } } })); };
+  sendMon = (e) => {
+    const el = e.currentTarget.closest('[data-card]'), id = el.dataset.card;
+    this.setState(s => {
+      const to = s.cards[id].m === 1 ? 2 : 1;
+      return { cards: { ...s.cards, [id]: { ...s.cards[id], m: to } } };
+    }, () => this.pushAct(['ui_layout', 'write', this.CARD_LABELS[id] + ' → MON ' + this.state.cards[id].m]));
+  };
+  toggleCard = (e) => {
+    const id = e.currentTarget.dataset.id;
+    this.setState(s => {
+      const c = s.cards[id], o = !c.o;
+      return { cards: { ...s.cards, [id]: { o, m: o ? s.mon : c.m } } };
+    });
+  };
+  toggleDd = () => this.setState(s => ({ ddOpen: !s.ddOpen }));
+  setMon = (e) => { this.setState({ mon: +e.currentTarget.dataset.mon }); };
+  togglePill = (e) => { const k = e.currentTarget.dataset.key; this.setState(s => ({ pills: { ...s.pills, [k]: !s.pills[k] } })); };
+  toggleKill = () => this.setState(s => ({ kill: !s.kill }));
+  micToggle = () => { this.setState(s => ({ micOn: !s.micOn, agentIdx: s.micOn ? 0 : 3 })); };
+  selBrain = (e) => { const i = +e.currentTarget.dataset.i; if (i !== 2) this.setState({ brain: i }); };
+  cycleModel = (e) => { const a = e.currentTarget.dataset.agent; this.setState(s => ({ agents: { ...s.agents, [a]: (s.agents[a] + 1) % 4 } })); };
+  decide = (e) => {
+    const { id, act } = e.currentTarget.dataset;
+    this.setState(s => ({ approvals: s.approvals.filter(a => a.id !== id) }));
+    const ap = this.state.approvals.find(a => a.id === id);
+    this.pushAct(act === 'ok' ? ['approval', 'ok', 'APROVADO · ' + (ap ? ap.origin : id)] : ['approval', 'deny', 'RECUSADO · ' + (ap ? ap.origin : id)]);
+  };
+  chatDecide = (e) => {
+    const ok = e.currentTarget.dataset.act === 'ok';
+    this.setState({ chatAp: ok ? 'ok' : 'no' });
+    this.pushAct(ok ? ['gmail.archive', 'ok', '12 mensagens arquivadas ✓'] : ['policy.deny', 'deny', 'gmail.archive recusado pelo utilizador']);
+  };
+  sendCmd(text) {
+    if (!text.trim()) return;
+    this.setState(s => ({ msgs: [...s.msgs, { who: 'u', text }], agentIdx: 0 }));
+    setTimeout(() => this.setState(s => ({ msgs: [...s.msgs, { who: 'a', text: 'Entendido — «' + text + '». A executar; segue o progresso no card Activity.' }], agentIdx: 1 })), 1100);
+  }
+  cmdKey = (e) => { if (e.key === 'Enter') { this.sendCmd(e.target.value); e.target.value = ''; } };
+  chatKey = (e) => { if (e.key === 'Enter') { this.sendCmd(e.target.value); e.target.value = ''; } };
+  resetConv = () => { this.setState({ msgs: [{ who: 'a', text: 'Conversa reiniciada. Em que posso ajudar?' }], chatAp: 'done' }); this.pushAct(['session', 'write', 'reset da conversa']); };
+  factoryReset = () => {
+    if (!window.confirm('FACTORY RESET — apaga conversas, memória e layout. Continuar?')) return;
+    this.userMoved = false;
+    this.setState({ msgs: [{ who: 'a', text: 'Sistema reposto de fábrica. Olá — sou o Alfred.' }], activity: [], approvals: [], chatAp: 'done', mon: 1 }, () => this.layout());
+    this.pushAct(['system', 'deny', 'FACTORY RESET executado']);
+  };
+
+  renderVals() {
+    const s = this.state;
+    const TYPE_COLOR = { read: '#59e8ff', write: '#ffb45e', ok: '#4dffa6', deny: '#ff5f6e' };
+    const mono = "'Share Tech Mono', monospace";
+    const AG = [['A PENSAR', '#59e8ff'], ['A EXECUTAR', '#ffb45e'], ['A FALAR', '#4dffa6'], ['À ESCUTA', '#c77bff']];
+    const [agentLabel, agentColor] = AG[s.agentIdx];
+    const eq = (n) => ({ display: 'inline-block', width: '3px', background: agentColor, animation: `eq${n} ${.7 + n * .13}s ease-in-out infinite`, height: '8px' });
+    const msgs = s.msgs.map(m => ({
+      text: m.text,
+      wrap: { display: 'flex', justifyContent: m.who === 'u' ? 'flex-end' : 'flex-start' },
+      box: m.who === 'u'
+        ? { maxWidth: '85%', border: '1px solid rgba(255,180,94,.4)', background: 'rgba(255,180,94,.07)', padding: '8px 10px', borderRadius: '2px', fontSize: '13px' }
+        : { maxWidth: '88%', border: '1px solid rgba(89,232,255,.35)', background: 'rgba(89,232,255,.06)', padding: '8px 10px', borderRadius: '2px', fontSize: '13px' }
+    }));
+    const activity = s.activity.map(a => ({ ...a, tag: { color: TYPE_COLOR[a.type], minWidth: '86px' } }));
+    const pillDefs = [
+      ['voice', '🔊 VOICE'], ['wake', s.pills.wake ? (s.agentIdx === 2 ? '👂 WAKE · MUTE' : '👂 WAKE · A OUVIR') : '👂 WAKE · OFF'],
+      ['autosend', '⏎ AUTO-SEND'], ['eleven', '🗣 11LABS'], ['widgetjs', '</> WIDGET JS'],
+      ['grill', '☰ GRILL'], ['dangerous', '⚠ DANGEROUS'], ['pausespawn', '⏸ PAUSE SPAWN']
+    ];
+    const pills = pillDefs.map(([key, label]) => {
+      const on = s.pills[key], danger = key === 'dangerous';
+      return {
+        key, label,
+        style: {
+          fontFamily: mono, fontSize: '10px', letterSpacing: '.1em', padding: '4px 10px', cursor: 'pointer', borderRadius: '2px', lineHeight: 1.4,
+          background: on ? (danger ? 'rgba(255,95,110,.14)' : 'rgba(77,255,166,.08)') : 'transparent',
+          border: '1px solid ' + (on ? (danger ? '#ff5f6e' : '#4dffa6') : 'rgba(120,150,160,.3)'),
+          color: on ? (danger ? '#ff5f6e' : '#4dffa6') : '#5b7a8a',
+          boxShadow: on ? `0 0 10px ${danger ? 'rgba(255,95,110,.25)' : 'rgba(77,255,166,.18)'}` : 'none'
+        }
+      };
+    });
+    const cardList = Object.keys(this.CARD_LABELS).map(id => {
+      const c = s.cards[id];
+      return {
+        id, label: this.CARD_LABELS[id], dot: c.o ? '◉' : '○', monTag: c.o ? 'MON ' + c.m : '',
+        dotStyle: { color: c.o ? '#4dffa6' : '#3a5866', width: '14px' },
+        row: { display: 'flex', alignItems: 'center', gap: '8px', padding: '6px 8px', cursor: 'pointer', color: c.o ? '#cfe8f2' : '#5b7a8a', borderLeft: c.o ? '2px solid #4dffa6' : '2px solid transparent' }
+      };
+    });
+    const BR = [['Claude Opus 4.5', 'ONLINE'], ['GPT-5.2', 'ONLINE'], ['DeepSeek V4', 'OFFLINE'], ['Claude Code CLI', 'ONLINE']];
+    const brains = BR.map(([name, status], i) => ({
+      i, name, status,
+      stColor: status === 'ONLINE' ? '#4dffa6' : '#ff5f6e',
+      dot: { color: status === 'ONLINE' ? '#4dffa6' : '#3a5866', fontSize: '10px' },
+      sel: i === s.brain ? '◄ ATIVO' : '', selColor: '#59e8ff',
+      row: {
+        display: 'flex', alignItems: 'center', gap: '10px', padding: '8px 10px', cursor: status === 'OFFLINE' ? 'not-allowed' : 'pointer',
+        border: '1px solid ' + (i === s.brain ? 'rgba(89,232,255,.6)' : 'rgba(89,232,255,.18)'),
+        background: i === s.brain ? 'rgba(89,232,255,.07)' : 'transparent', opacity: status === 'OFFLINE' ? .5 : 1
+      }
+    }));
+    const btcMin = Math.min(...(s.btcPts.length ? s.btcPts : [0])), btcMax = Math.max(...(s.btcPts.length ? s.btcPts : [1]));
+    const pts = s.btcPts.map((v, i) => `${(i / 29 * 220).toFixed(1)},${(64 - (v - btcMin) / (btcMax - btcMin || 1) * 58).toFixed(1)}`).join(' ');
+    const monBtn = (m) => ({
+      fontFamily: mono, fontSize: '10px', letterSpacing: '.12em', padding: '5px 10px', cursor: 'pointer', border: 'none',
+      background: s.mon === m ? 'rgba(89,232,255,.2)' : 'transparent', color: s.mon === m ? '#59e8ff' : '#5b7a8a'
+    });
+    return {
+      rootRef: this.rootRef, wsRef: this.wsRef, stripRef: this.stripRef, gridRef: this.gridRef, scanRef: this.scanRef,
+      time: s.time, monLabel: s.mon, wsDown: this.wsDown,
+      msgs, chatKey: this.chatKey, cmdKey: this.cmdKey,
+      chApPending: s.chatAp === 'pending', chApDone: s.chatAp === 'ok' || s.chatAp === 'no',
+      chApText: s.chatAp === 'ok' ? '✓ Aprovado — 12 emails arquivados.' : '✗ Recusado — nada foi arquivado.',
+      chApStyle: { fontFamily: mono, fontSize: '11px', letterSpacing: '.08em', color: s.chatAp === 'ok' ? '#4dffa6' : '#ff5f6e', padding: '2px 0' },
+      activity, approvals: s.approvals, apCount: s.approvals.length, hasAp: s.approvals.length > 0, noAp: s.approvals.length === 0,
+      decide: this.decide, chatDecide: this.chatDecide,
+      closeCard: this.closeCard, sendMon: this.sendMon, toggleCard: this.toggleCard, toggleDd: this.toggleDd, ddOpen: s.ddOpen, cardList,
+      arrange: this.arrange, setMon: this.setMon, mon1Style: monBtn(1), mon2Style: monBtn(2),
+      resetConv: this.resetConv, factoryReset: this.factoryReset,
+      pills, togglePill: this.togglePill, dangerOn: s.pills.dangerous,
+      agentLabel, agentColor, eqStyle1: eq(1), eqStyle2: eq(2), eqStyle3: eq(3),
+      micToggle: this.micToggle,
+      micStyle: { background: s.micOn ? 'rgba(255,95,110,.18)' : 'transparent', border: '1px solid ' + (s.micOn ? '#ff5f6e' : 'rgba(89,232,255,.35)'), color: s.micOn ? '#ff5f6e' : '#59e8ff', width: '34px', height: '30px', cursor: 'pointer', fontSize: '14px', borderRadius: '2px', boxShadow: s.micOn ? '0 0 12px rgba(255,95,110,.35)' : 'none' },
+      killStyle: { marginTop: '12px', width: '100%', fontFamily: mono, fontSize: '10px', letterSpacing: '.14em', padding: '6px 0', cursor: 'pointer', background: s.kill ? 'rgba(255,95,110,.1)' : 'transparent', border: '1px solid ' + (s.kill ? '#ff5f6e' : 'rgba(120,150,160,.35)'), color: s.kill ? '#ff5f6e' : '#5b7a8a' },
+      killLabel: s.kill ? '◉ KILL-SWITCH ARMADO @ €12.00' : '○ KILL-SWITCH DESARMADO',
+      spawnLabel: s.pills.pausespawn ? 'SPAWN CONGELADO' : 'spawn livre', spawnColor: s.pills.pausespawn ? '#ff5f6e' : '#3a5866',
+      brains, selBrain: this.selBrain,
+      cycleModel: this.cycleModel, mChat: this.MODELS[s.agents.chat], mRef: this.MODELS[s.agents.ref], mDel: this.MODELS[s.agents.del], mStudy: this.MODELS[s.agents.study],
+      btcPrice: '$' + s.btcPrice.toLocaleString('en-US'), btcDelta: (s.btcDelta >= 0 ? '+' : '') + s.btcDelta + '%',
+      btcDeltaStyle: { fontFamily: mono, fontSize: '13px', color: s.btcDelta >= 0 ? '#4dffa6' : '#ff5f6e' },
+      btcPts: pts, btcArea: pts ? pts + ' 220,70 0,70' : ''
+    };
+  }
+}
+</script>
+</body>
+</html>

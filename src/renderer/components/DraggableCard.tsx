@@ -152,6 +152,11 @@ export function DraggableCard({ card, meta, onChange, onFocus, onHide, onMoveDis
         </div>
       </div>
       <div className="dcard-body">{children}</div>
+      {/* Decorative HUD corner brackets (pointer-events:none — never intercept drag/resize). */}
+      <span className="dcard-corner tl" aria-hidden />
+      <span className="dcard-corner tr" aria-hidden />
+      <span className="dcard-corner bl" aria-hidden />
+      <span className="dcard-corner br" aria-hidden />
       <div className="dcard-resize-edge right no-drag" onPointerDown={start('resize', 'x')} title="Resize width" />
       <div className="dcard-resize-edge bottom no-drag" onPointerDown={start('resize', 'y')} title="Resize height" />
       <div className="dcard-resize no-drag" onPointerDown={start('resize', 'both')} title="Resize" />
