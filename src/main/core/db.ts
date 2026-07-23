@@ -109,6 +109,7 @@ CREATE TABLE IF NOT EXISTS scheduled_jobs (
   kind               TEXT NOT NULL,            -- 'fetch' | 'agent'
   schedule           TEXT NOT NULL,            -- JSON JobSchedule
   source             TEXT,                     -- JSON JobSource (fetch)
+  study              TEXT,                     -- JSON {agentId, topic} (study kind)
   prompt             TEXT,                     -- agent task prompt
   grant_json         TEXT,                     -- JSON Capability[] (default read+notify when null)
   token_budget_daily INTEGER,                  -- per-job daily cap (agent)
@@ -155,6 +156,7 @@ CREATE TABLE IF NOT EXISTS team_agents (
   provider    TEXT NOT NULL,
   model       TEXT NOT NULL,
   grant_json  TEXT,                              -- per-agent autonomy allowlist; null → default read+notify
+  daily_token_budget INTEGER,                    -- per-agent daily token cap; null → unlimited (global kill-switch only)
   created_ts  INTEGER NOT NULL
 );
 `;
@@ -180,6 +182,16 @@ export function openDb(dbPath: string): AlfredDb {
     (c) => c.name === 'grant_json',
   );
   if (!hasGrant) db.exec('ALTER TABLE team_agents ADD COLUMN grant_json TEXT');
+  // Idempotent migration: `team_agents.daily_token_budget` (per-agent cap, Phase 5 stage 4).
+  const hasAgentBudget = (db.prepare('PRAGMA table_info(team_agents)').all() as { name: string }[]).some(
+    (c) => c.name === 'daily_token_budget',
+  );
+  if (!hasAgentBudget) db.exec('ALTER TABLE team_agents ADD COLUMN daily_token_budget INTEGER');
+  // Idempotent migration: `scheduled_jobs.study` (study-job params, Phase 5 stage 4).
+  const hasStudy = (db.prepare('PRAGMA table_info(scheduled_jobs)').all() as { name: string }[]).some(
+    (c) => c.name === 'study',
+  );
+  if (!hasStudy) db.exec('ALTER TABLE scheduled_jobs ADD COLUMN study TEXT');
   return db;
 }
 

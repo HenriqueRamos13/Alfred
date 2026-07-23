@@ -242,7 +242,7 @@ export type AiComponent = (typeof AI_COMPONENTS)[number];
 // persistence + the timer engine in jobs.ts (both take Database by param).
 // ─────────────────────────────────────────────────────────────────────────────
 
-export type JobKind = 'fetch' | 'agent';
+export type JobKind = 'fetch' | 'agent' | 'study';
 
 /**
  * A job's autonomy grant is an allowlist of coarse capabilities (default:
@@ -302,6 +302,8 @@ export interface Job {
   prompt?: string;
   grant?: Capability[];
   tokenBudgetDaily?: number;
+  // study: a roster agent learns a topic on a schedule (per-agent budget governs cost).
+  study?: { agentId: string; topic: string };
   // render:
   render: JobRender;
   placement?: JobPlacement;

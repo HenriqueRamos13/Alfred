@@ -13,7 +13,7 @@ This tool **persists + scaffolds** an agent; you **run** one with
 ## Ops, args, output
 | op | args | output | risk |
 |----|------|--------|------|
-| `create` | `name`, `provider`, `model`, `role?`, `grant?` | `{ agent }` | **T2** |
+| `create` | `name`, `provider`, `model`, `role?`, `grant?`, `dailyTokenBudget?` | `{ agent }` | **T2** |
 | `list` | — | `{ agents: [...] }` | T0 |
 | `delete` | `id` | `{ deleted }` | **T2** |
 
@@ -35,9 +35,19 @@ T0.
   an array of capabilities (`read`, `notify`, `write`, `browse`, `shell`, `send`,
   `delete`, `money`, `secrets`). Defaults to `["read","notify"]`. Rows written
   before this column existed load with the default (tolerant `parseGrant`).
+- **`dailyTokenBudget`** (optional) — a **per-agent daily token cap** for
+  autonomous runs (`delegate_to_agent` + `agent_study` + scheduled `study`). A
+  positive number; omitted → **unlimited** beyond the global kill-switch. Usage
+  is tracked per-agent per-day (the day-keyed `usage_by_model` rows recorded under
+  the `agent:<id>` session), so no separate counter is maintained. The decision is
+  pure (`agentBudgetDecision` in `team-pure.ts`): daily reset, then
+  `spent + estimate <= cap`; on exhaustion an attended run returns a clear error
+  and a scheduled `study` **pauses** its job. *(claude-cli agents can't be metered
+  — the external `claude -p` child has no token accounting — so their per-agent
+  cap can't bite, same as the global kill-switch.)*
 
 On create it:
-1. persists a row in `team_agents` `{ id, name, role, provider, model, grant_json, created_ts }`;
+1. persists a row in `team_agents` `{ id, name, role, provider, model, grant_json, daily_token_budget, created_ts }`;
 2. scaffolds `<workspace>/agents/<id>/knowledge/` with a seed `role.md`;
 3. rebuilds the shared **who-knows-what** index `<workspace>/agents/index.md`
    (one line per agent, name → specialty), so Alfred can route a task to the right
@@ -90,8 +100,12 @@ another's notes.
   **normal** approval — never the unattended fail-closed queue, and dangerous mode
   bypasses approvals but **not** the grant allowlist.
 
-**Budget.** Token spend counts against the **global** daily kill-switch. The
-per-agent daily budget arrives in a later stage.
+**Budget.** Token spend counts against the agent's **per-agent daily budget**
+(`dailyTokenBudget`, if set) checked **before** the turn — an exhausted agent
+returns `{ ok:false, error:"orçamento diário do agente … esgotado" }` and never
+starts — **and** the **global** daily kill-switch on top. Per-agent usage is the
+day-keyed `usage_by_model` spend under the `agent:<id>` session (no separate
+counter).
 
 ```json
 { "agentId": "coder", "task": "Refactor src/foo.ts to use async/await", "model": "claude-sonnet-5" }
@@ -111,13 +125,25 @@ gated once before it runs.
 - **`model`** (optional) — overrides the agent's model, same rule as
   `delegate_to_agent` (`resolveTeamModel`).
 
-**How it runs.** It **reuses the `delegate_to_agent` runner verbatim** — same
-model, same assembled context, same per-tool grant enforcement, same attended
-governance, same per-run trifecta escalation, same **global** daily token
-kill-switch — handing the agent a fixed research brief: *research the topic with
-the browser (read-only), then output the synthesis as the final message; do not
-save files*. To avoid recursion, a studying/delegated agent's toolset excludes
-both `delegate_to_agent` and `agent_study`.
+**How it runs.** Both `agent_study` (attended) and scheduled `study` jobs call
+one factored core, **`runStudy(ctx, agentId, topic, { unattended })`** (exported
+from `agent-study.ts`). The **attended** path reuses the `delegate_to_agent`
+runner verbatim — same model, same assembled context, same per-tool grant
+enforcement, same attended governance, same per-run trifecta escalation, same
+**per-agent + global** daily token budgets — handing the agent a fixed research
+brief: *research the topic with the browser (read-only), then output the
+synthesis as the final message; do not save files*. To avoid recursion, a
+studying/delegated agent's toolset excludes both `delegate_to_agent` and
+`agent_study`.
+
+**Scheduled study (unattended).** `schedule` with `kind:"study"` and
+`study:{agentId, topic}` runs the SAME `runStudy` with `{ unattended:true }` on a
+timer. There is **no human**, so governance is fail-closed: every tool call is
+gated by `jobActionDecision` + trifecta escalation — sensitive/outbound actions
+**queue** for the user's later approval (never auto-run, even in dangerous mode),
+benign in-grant reads proceed. The scheduled agent must be an **API brain**
+(`claude-cli` can't run unattended in-process). On per-agent budget exhaustion
+the job is **paused** (like a Phase-4 agent job) and the user is notified.
 
 **Grant / governance.**
 - Web research is browser **read** (read-only egress) → the `read` capability.

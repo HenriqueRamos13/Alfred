@@ -25,6 +25,7 @@ interface Row {
   provider: string;
   model: string;
   grant_json: string | null;
+  daily_token_budget: number | null;
   created_ts: number;
 }
 
@@ -37,6 +38,7 @@ function rowToAgent(r: Row): TeamAgent {
     model: r.model,
     // Tolerant of rows written before the grant_json column existed.
     grant: parseGrant(r.grant_json),
+    dailyTokenBudget: r.daily_token_budget ?? undefined,
     createdTs: r.created_ts,
   };
 }
@@ -65,8 +67,8 @@ export async function createAgent(db: DB, workspace: string, spec: AgentSpec, no
   const id = agentIdFromName(spec.name, listAgents(db).map((a) => a.id));
   const agent: TeamAgent = { id, ...spec, createdTs: now.getTime() };
   db.prepare(
-    'INSERT INTO team_agents (id, name, role, provider, model, grant_json, created_ts) VALUES (@id, @name, @role, @provider, @model, @grant, @createdTs)',
-  ).run({ ...agent, grant: JSON.stringify(agent.grant) });
+    'INSERT INTO team_agents (id, name, role, provider, model, grant_json, daily_token_budget, created_ts) VALUES (@id, @name, @role, @provider, @model, @grant, @dailyTokenBudget, @createdTs)',
+  ).run({ ...agent, grant: JSON.stringify(agent.grant), dailyTokenBudget: agent.dailyTokenBudget ?? null });
 
   const knowledgeDir = join(workspace, 'agents', id, 'knowledge');
   await mkdir(knowledgeDir, { recursive: true });

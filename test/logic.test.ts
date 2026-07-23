@@ -1547,6 +1547,7 @@ import {
   studyNoteSlug,
   composeStudyNote,
   addTopicToIndex,
+  agentBudgetDecision,
 } from '../src/main/core/team-pure.ts';
 
 test('catalog — listModels/findModel/priceOf, Anthropic shared by both Claude providers', () => {
@@ -2474,7 +2475,16 @@ test('validateAgentSpec — ok, defaults role, rejects bad provider/model/name',
     provider: 'claude-cli',
     model: 'claude-opus-4-8',
     grant: ['read', 'notify'],
+    dailyTokenBudget: undefined, // omitted → unlimited (global kill-switch only)
   });
+  // a per-agent daily budget passes through; a non-positive value is rejected
+  assert.equal(
+    validateAgentSpec({ name: 'B', provider: 'deepseek', model: 'deepseek-v4-flash', dailyTokenBudget: 200_000 }).ok &&
+      (validateAgentSpec({ name: 'B', provider: 'deepseek', model: 'deepseek-v4-flash', dailyTokenBudget: 200_000 }) as { spec: { dailyTokenBudget?: number } }).spec.dailyTokenBudget,
+    200_000,
+  );
+  assert.equal(validateAgentSpec({ name: 'B', provider: 'deepseek', model: 'deepseek-v4-flash', dailyTokenBudget: 0 }).ok, false);
+  assert.equal(validateAgentSpec({ name: 'B', provider: 'deepseek', model: 'deepseek-v4-flash', dailyTokenBudget: -5 }).ok, false);
   // an explicit, valid grant passes through
   const withGrant = validateAgentSpec({ name: 'Ops', provider: 'deepseek', model: 'deepseek-v4-flash', grant: ['read', 'write', 'shell'] });
   assert.ok(withGrant.ok && withGrant.spec.grant!.join(',') === 'read,write,shell');
@@ -2616,4 +2626,57 @@ test('addTopicToIndex — appends to the right agent, dedups, leaves others unto
   // unknown agent / blank topic → unchanged
   assert.equal(addTopicToIndex(index, 'ghost', 'X'), index);
   assert.equal(addTopicToIndex(index, 'coder', '   '), index);
+});
+
+// ── Phase 5 stage 4: per-agent daily budget + scheduled study ────────────────
+
+test('agentBudgetDecision — no cap set → unlimited (global kill-switch still applies)', () => {
+  const now = Date.now();
+  const day = jobDayKey(now);
+  const d = agentBudgetDecision({}, now, 999_999, { tokens: 5_000_000, day });
+  assert.equal(d.allowed, true);
+  assert.equal(d.pausedReason, null);
+});
+
+test('agentBudgetDecision — within / at the cap allows, over pauses', () => {
+  const now = Date.now();
+  const day = jobDayKey(now);
+  const agent = { dailyTokenBudget: 200_000 };
+  assert.equal(agentBudgetDecision(agent, now, 50_000, { tokens: 100_000, day }).allowed, true); // 150k < cap
+  const atCap = agentBudgetDecision(agent, now, 50_000, { tokens: 150_000, day }); // 200k == cap
+  assert.equal(atCap.allowed, true);
+  assert.equal(atCap.pausedReason, null);
+  const over = agentBudgetDecision(agent, now, 20_000, { tokens: 190_000, day }); // 210k > cap
+  assert.equal(over.allowed, false);
+  assert.equal(over.pausedReason, 'budget');
+  assert.equal(over.spentToday, 190_000); // no reset within the same day
+});
+
+test('agentBudgetDecision — daily reset zeroes the counter on a new day', () => {
+  const now = new Date(2026, 6, 23, 9, 0, 0, 0).getTime();
+  const d = agentBudgetDecision({ dailyTokenBudget: 1000 }, now, 500, { tokens: 999_999, day: '2026-07-22' });
+  assert.equal(d.reset, true);
+  assert.equal(d.spentToday, 0); // yesterday's spend discarded
+  assert.equal(d.day, jobDayKey(now));
+  assert.equal(d.allowed, true); // 0 + 500 <= 1000
+  assert.equal(d.pausedReason, null);
+});
+
+test('validateJobSpec — study job requires agentId + topic + a well-formed schedule', () => {
+  const base = { title: 'Daily Rust study', kind: 'study', schedule: { type: 'daily', at: '09:00' } };
+  // missing study block / agentId
+  assert.equal(validateJobSpec({ ...base }).ok, false);
+  assert.equal(validateJobSpec({ ...base, study: { topic: 'Rust async' } }).ok, false);
+  // missing topic
+  assert.equal(validateJobSpec({ ...base, study: { agentId: 'coder' } }).ok, false);
+  // bad schedule
+  assert.equal(validateJobSpec({ ...base, schedule: { type: 'daily', at: '99:99' }, study: { agentId: 'coder', topic: 'x' } }).ok, false);
+  // valid → normalised
+  const ok = validateJobSpec({ ...base, study: { agentId: '  coder  ', topic: '  Rust async  ' } });
+  assert.equal(ok.ok, true);
+  if (ok.ok) {
+    assert.equal(ok.spec.kind, 'study');
+    assert.deepEqual(ok.spec.study, { agentId: 'coder', topic: 'Rust async' });
+    assert.deepEqual(ok.spec.schedule, { type: 'daily', at: '09:00' });
+  }
 });

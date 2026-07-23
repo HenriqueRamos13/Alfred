@@ -10,7 +10,7 @@
 
 import { slugify } from './projects.ts';
 import { isProviderId, findModel, PROVIDER_IDS, type ProviderId } from './modelCatalog.ts';
-import { DEFAULT_GRANT } from './jobs-pure.ts';
+import { DEFAULT_GRANT, dayKey } from './jobs-pure.ts';
 import type { Capability } from './types.ts';
 
 /** Every capability a per-agent grant may list (mirrors jobs-pure's ALL_CAPS). */
@@ -25,6 +25,8 @@ export interface TeamAgent {
   model: string;
   /** Autonomy allowlist for a delegated run (default read+notify). */
   grant: Capability[];
+  /** Per-agent daily token cap for autonomous runs. undefined → unlimited (only the global kill-switch applies). */
+  dailyTokenBudget?: number;
   createdTs: number;
 }
 
@@ -35,6 +37,7 @@ export interface AgentSpecInput {
   provider?: string;
   model?: string;
   grant?: unknown;
+  dailyTokenBudget?: unknown;
 }
 
 /** Validated create spec (id is assigned by createAgent, not here). */
@@ -44,6 +47,7 @@ export interface AgentSpec {
   provider: ProviderId;
   model: string;
   grant: Capability[];
+  dailyTokenBudget?: number;
 }
 
 /**
@@ -104,7 +108,59 @@ export function validateAgentSpec(spec: AgentSpecInput): { ok: true; spec: Agent
   } else {
     grant = spec.grant as Capability[];
   }
-  return { ok: true, spec: { name, role: (spec.role ?? '').trim(), provider: spec.provider, model, grant } };
+  // Optional per-agent daily token cap. Absent → undefined (unlimited beyond the global kill-switch).
+  let dailyTokenBudget: number | undefined;
+  if (spec.dailyTokenBudget !== undefined) {
+    if (typeof spec.dailyTokenBudget !== 'number' || !Number.isFinite(spec.dailyTokenBudget) || spec.dailyTokenBudget <= 0) {
+      return { ok: false, error: 'dailyTokenBudget must be a positive number' };
+    }
+    dailyTokenBudget = spec.dailyTokenBudget;
+  }
+  return { ok: true, spec: { name, role: (spec.role ?? '').trim(), provider: spec.provider, model, grant, dailyTokenBudget } };
+}
+
+// ── per-agent daily budget (Phase 5, stage 4) ────────────────────────────────
+
+/** Today's per-agent token usage as stored (day-keyed counter). */
+export interface AgentUsage {
+  tokens: number;
+  /** YYYY-MM-DD the `tokens` counter belongs to (for the daily reset). */
+  day: string;
+}
+
+export interface AgentBudgetDecision {
+  /** May the agent spend `addTokens` more today? */
+  allowed: boolean;
+  /** Spend counter AFTER any daily reset, BEFORE adding the estimate. */
+  spentToday: number;
+  /** Today's day key. */
+  day: string;
+  /** 'budget' when the estimate would blow the cap (pause, don't kill). */
+  pausedReason: 'budget' | null;
+  /** True when a new day rolled the counter back to 0. */
+  reset: boolean;
+}
+
+/**
+ * Per-agent daily budget decision — mirrors jobs-pure's budgetDecision but for a
+ * roster agent (the counter lives externally, day-keyed, so it is passed in as
+ * `usage`). Applies the daily reset first; an agent with NO cap is always allowed
+ * (the global kill-switch in budget.ts still applies on top). On exhaustion the
+ * caller blocks the attended run / pauses the scheduled study. Pure.
+ */
+export function agentBudgetDecision(
+  agent: { dailyTokenBudget?: number },
+  now: number,
+  addTokens: number,
+  usage: AgentUsage,
+): AgentBudgetDecision {
+  const day = dayKey(now);
+  const reset = usage.day !== day;
+  const spentToday = reset ? 0 : usage.tokens ?? 0;
+  const cap = agent.dailyTokenBudget;
+  if (cap == null) return { allowed: true, spentToday, day, pausedReason: null, reset };
+  const allowed = spentToday + addTokens <= cap;
+  return { allowed, spentToday, day, pausedReason: allowed ? null : 'budget', reset };
 }
 
 /**

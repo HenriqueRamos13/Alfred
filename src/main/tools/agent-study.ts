@@ -15,10 +15,11 @@
  *
  * T2 (egress research + persisted knowledge), gated once before it runs.
  */
-import { getAgent, saveStudyNote, addStudyTopicToIndex } from '../core/team.ts';
+import { getAgent, loadAgentContext, saveStudyNote, addStudyTopicToIndex } from '../core/team.ts';
 import { grantAllows } from '../core/jobs-pure.ts';
-import { delegateToAgent } from './delegate-to-agent.ts';
-import type { Tool } from './types.ts';
+import { resolveTeamModel } from '../core/team-pure.ts';
+import { delegateToAgent, runAgentTurn } from './delegate-to-agent.ts';
+import type { Tool, ToolCtx } from './types.ts';
 
 interface Args {
   agentId: string;
@@ -35,6 +36,97 @@ function researchPrompt(topic: string): string {
     'do NOT try to save files (your notes are persisted for you automatically).\n\n' +
     `# Topic to study\n${topic}`
   );
+}
+
+export interface RunStudyOpts {
+  /** true = scheduled/unattended (fail-closed governance); false = agent_study tool (attended). */
+  unattended: boolean;
+  model?: string;
+  /** UNATTENDED only: DANGEROUS-mode state (still never auto-runs sensitive) + the sensitive-action queue. */
+  dangerous?: boolean;
+  queueApproval?: (toolName: string, args: unknown) => void;
+}
+
+export interface RunStudyResult {
+  ok: boolean;
+  error?: string;
+  /** The per-agent daily budget is exhausted — a scheduled study pauses its job. */
+  budgetExhausted?: boolean;
+  /** Tokens the research turn spent (unattended path only; attended is tracked globally). */
+  tokens?: number;
+  result?: {
+    agent: string;
+    topic: string;
+    note: string;
+    mode: 'create' | 'append';
+    indexUpdated: string;
+    findings: string;
+  };
+}
+
+/**
+ * The core of agent_study, FACTORED so BOTH the tool (attended) and the
+ * JobScheduler (unattended, kind:"study") call it. A roster agent runs ONE
+ * read-only web-research turn on ITS model + context + grant; then the TRUSTED
+ * runner (not the agent) persists the synthesis as a confined knowledge note and
+ * adds the topic to the shared index. Enforces the per-agent daily budget +
+ * global kill-switch (both inside runAgentTurn). Never throws.
+ */
+export async function runStudy(ctx: ToolCtx, agentId: string, topic: string, opts: RunStudyOpts): Promise<RunStudyResult> {
+  if (!agentId) return { ok: false, error: 'agentId is required' };
+  if (!topic || !topic.trim()) return { ok: false, error: 'topic is required' };
+
+  const agent = getAgent(ctx.db, agentId);
+  if (!agent) {
+    return { ok: false, error: `no roster agent with id "${agentId}" (create one with the team tool, or team op=list to see them)` };
+  }
+
+  // Research is browser READ (read-only egress) → the 'read' capability. Fail
+  // early with a clear ask instead of burning a turn if the grant lacks it.
+  if (!grantAllows(agent.grant, 'browser', { op: 'goto' })) {
+    return {
+      ok: false,
+      error: `${agent.id}'s grant does not permit web research — grant it "read" (team op=create … grant:["read", …]) so it can browse read-only`,
+    };
+  }
+
+  const t = topic.trim();
+
+  if (opts.unattended) {
+    // Scheduled study runs the agent IN-PROCESS (fail-closed governance), so a
+    // claude-cli agent (external spawn, attended-only) can't run unattended.
+    if (agent.provider === 'claude-cli') {
+      return { ok: false, error: `scheduled study needs an API-brain agent; ${agent.id} is a claude-cli agent (run it attended via agent_study)` };
+    }
+    const context = await loadAgentContext(ctx.workspace, agent);
+    const model = resolveTeamModel(opts.model, agent);
+    const turn = await runAgentTurn(ctx, {
+      agentId: agent.id,
+      provider: agent.provider,
+      model,
+      grant: agent.grant,
+      dailyTokenBudget: agent.dailyTokenBudget,
+      system: context,
+      task: researchPrompt(t),
+      unattended: { dangerous: opts.dangerous ?? false, queue: opts.queueApproval ?? (() => {}) },
+    });
+    if (!turn.ok) return { ok: false, error: turn.error, budgetExhausted: turn.budgetExhausted };
+    const findings = (turn.result?.text ?? '').trim();
+    if (!findings) return { ok: false, error: 'the agent returned no findings to save' };
+    const note = await saveStudyNote(ctx.workspace, agent.id, t, findings);
+    await addStudyTopicToIndex(ctx.workspace, agent.id, t);
+    return { ok: true, tokens: turn.tokens, result: { agent: agent.id, topic: t, note: note.relativePath, mode: note.mode, indexUpdated: 'agents/index.md', findings } };
+  }
+
+  // Attended: reuse the delegate runner verbatim (model/context/grant/governance/
+  // trifecta/global+per-agent budget). A human is present → sensitive → approval.
+  const run = await delegateToAgent.execute({ agentId: agent.id, task: researchPrompt(t), model: opts.model }, ctx);
+  if (!run.ok) return run as RunStudyResult;
+  const findings = ((run.result as { text?: string } | undefined)?.text ?? '').trim();
+  if (!findings) return { ok: false, error: 'the agent returned no findings to save' };
+  const note = await saveStudyNote(ctx.workspace, agent.id, t, findings);
+  await addStudyTopicToIndex(ctx.workspace, agent.id, t);
+  return { ok: true, result: { agent: agent.id, topic: t, note: note.relativePath, mode: note.mode, indexUpdated: 'agents/index.md', findings } };
 }
 
 export const agentStudy: Tool<Args> = {
@@ -63,45 +155,9 @@ export const agentStudy: Tool<Args> = {
   risk: () => 'T2',
 
   async execute(a, ctx) {
-    if (!a.agentId) return { ok: false, error: 'agentId is required' };
-    if (!a.topic || !a.topic.trim()) return { ok: false, error: 'topic is required' };
-
-    const agent = getAgent(ctx.db, a.agentId);
-    if (!agent) {
-      return { ok: false, error: `no roster agent with id "${a.agentId}" (create one with the team tool, or team op=list to see them)` };
-    }
-
-    // Research is browser READ (read-only egress) → the 'read' capability. If the
-    // agent's grant lacks it the runner would refuse every browse call, so fail
-    // early with a clear ask instead of burning a turn.
-    if (!grantAllows(agent.grant, 'browser', { op: 'goto' })) {
-      return {
-        ok: false,
-        error: `${agent.id}'s grant does not permit web research — grant it "read" (team op=create … grant:["read", …]) so it can browse read-only`,
-      };
-    }
-
-    const topic = a.topic.trim();
-    // Reuse the delegate runner verbatim (model/context/grant/governance/trifecta/budget).
-    const run = await delegateToAgent.execute({ agentId: agent.id, task: researchPrompt(topic), model: a.model }, ctx);
-    if (!run.ok) return run;
-    const findings = ((run.result as { text?: string } | undefined)?.text ?? '').trim();
-    if (!findings) return { ok: false, error: 'the agent returned no findings to save' };
-
-    // Trusted persistence: confined note write + shared-index topic (local, not egress).
-    const note = await saveStudyNote(ctx.workspace, agent.id, topic, findings);
-    await addStudyTopicToIndex(ctx.workspace, agent.id, topic);
-
-    return {
-      ok: true,
-      result: {
-        agent: agent.id,
-        topic,
-        note: note.relativePath,
-        mode: note.mode,
-        indexUpdated: 'agents/index.md',
-        findings,
-      },
-    };
+    // Thin wrapper over the factored runStudy (attended). The scheduler calls the
+    // same runStudy with {unattended:true} for kind:"study" jobs.
+    const run = await runStudy(ctx, a.agentId, (a.topic ?? '').trim(), { unattended: false, model: a.model });
+    return run.ok ? { ok: true, result: run.result } : { ok: false, error: run.error };
   },
 };

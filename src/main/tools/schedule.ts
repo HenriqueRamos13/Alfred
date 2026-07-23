@@ -14,6 +14,7 @@ import type { Tool } from './types.ts';
 import type { Job } from '../core/types.ts';
 import { validateJobSpec, mergeJobSpec, nextRun, type JobSpecInput } from '../core/jobs-pure.ts';
 import { createJob, getJob, listJobs, updateJob, deleteJob, rescheduleJob } from '../core/jobs.ts';
+import { getAgent } from '../core/team.ts';
 import { getLayout } from '../core/layout.ts';
 
 type Op = 'create' | 'list' | 'pause' | 'resume' | 'delete' | 'edit';
@@ -38,7 +39,11 @@ function summarize(job: Job): Record<string, unknown> {
     lastRunTs: job.runtime.lastRunTs ?? null,
     nextRunTs: job.runtime.nextRunTs ?? null,
     lastResult: job.runtime.lastResult ?? null,
-    ...(job.kind === 'fetch' ? { source: job.source } : { grant: job.grant, prompt: job.prompt }),
+    ...(job.kind === 'fetch'
+      ? { source: job.source }
+      : job.kind === 'study'
+        ? { study: job.study }
+        : { grant: job.grant, prompt: job.prompt }),
   };
 }
 
@@ -46,13 +51,16 @@ export const schedule: Tool<Args> = {
   name: 'schedule',
   description:
     'Create and manage Scheduled Jobs — recurring tasks that persist across restarts and re-arm on boot. ' +
-    'A job is either a `fetch` (a cheap HTTP GET on a timer that pulls a value to show — ZERO AI tokens) or an ' +
-    '`agent` (an autonomous Alfred turn from a prompt — costs tokens, runs unattended; the agent runner ships in a ' +
-    'later stage). This tool only PERSISTS and (re)schedules jobs; it never runs one. ops: ' +
+    'A job is a `fetch` (a cheap HTTP GET on a timer that pulls a value to show — ZERO AI tokens), an ' +
+    '`agent` (an autonomous Alfred turn from a prompt — costs tokens, runs unattended), or a `study` (a roster agent ' +
+    'learns a topic on a schedule — read-only web research saved to its private knowledge + the shared index, bounded ' +
+    'by that agent\'s OWN per-agent daily token budget). This tool only PERSISTS and (re)schedules jobs; it never runs one. ops: ' +
     'create (title, kind, schedule, and per-kind fields), list, pause {id}, resume {id}, delete {id}, edit {id, ...fields to change} (MERGES onto the current spec — send only what changes; omitted fields keep their value, so editing just the schedule preserves a custom render.html). ' +
     'schedule is {type:"interval", everyMs} (everyMs >= 30000) or {type:"daily", at:"HH:MM"} (24h local). ' +
     'For kind:"fetch" pass source:{url (http/https), method?:"GET", headers?, extract?} where extract is a dot/bracket ' +
     'path into the JSON response (e.g. "current.temperature_2m"). ' +
+    'For kind:"study" pass study:{agentId, topic} — the agent must exist (team op=list) and be an API brain (not claude-cli); ' +
+    'the scheduled study runs UNATTENDED (sensitive actions queue for approval, never auto-run) and its cost is capped by the agent\'s per-agent daily budget. ' +
     'For kind:"agent" pass prompt and grant (an allowlist of capabilities the unattended job may use). ' +
     'BEFORE creating an agent job you MUST ASK the user how much autonomy to grant (default ["read","notify"] — ' +
     'read + notify only); sensitive actions (send/pay/delete/secrets) never auto-run unattended regardless of grant. ' +
@@ -63,7 +71,7 @@ export const schedule: Tool<Args> = {
       op: { type: 'string', enum: ['create', 'list', 'pause', 'resume', 'delete', 'edit'] },
       id: { type: 'string', description: 'Job id — required for pause/resume/delete/edit.' },
       title: { type: 'string', description: 'Human-readable job title.' },
-      kind: { type: 'string', enum: ['fetch', 'agent'], description: 'fetch = HTTP pull (0 tokens); agent = autonomous turn.' },
+      kind: { type: 'string', enum: ['fetch', 'agent', 'study'], description: 'fetch = HTTP pull (0 tokens); agent = autonomous turn; study = a roster agent learns a topic (per-agent budget).' },
       schedule: {
         type: 'object',
         description: '{type:"interval", everyMs>=30000} or {type:"daily", at:"HH:MM"} (24h local time).',
@@ -81,6 +89,14 @@ export const schedule: Tool<Args> = {
           method: { type: 'string', enum: ['GET'] },
           headers: { type: 'object', description: 'Optional request headers.' },
           extract: { type: 'string', description: 'Dot/bracket path into the JSON response, e.g. "current.temperature_2m". Omit to keep the whole payload.' },
+        },
+      },
+      study: {
+        type: 'object',
+        description: 'study jobs: {agentId, topic} — the roster agent to teach (must exist + be an API brain) and what to research each run.',
+        properties: {
+          agentId: { type: 'string', description: 'The roster agent id (team op=list).' },
+          topic: { type: 'string', description: 'What to study each run (e.g. "Rust async runtimes").' },
         },
       },
       prompt: { type: 'string', description: 'agent jobs: the initial task prompt run each time the job fires.' },
@@ -136,6 +152,15 @@ export const schedule: Tool<Args> = {
     if (op === 'create') {
       const v = validateJobSpec(a);
       if (!v.ok) return { ok: false, error: v.error };
+      // A study job's agent must exist and be an API brain (scheduled study runs
+      // unattended in-process; a claude-cli agent can only run attended).
+      if (v.spec.kind === 'study') {
+        const agent = getAgent(ctx.db, v.spec.study!.agentId);
+        if (!agent) return { ok: false, error: `no roster agent with id "${v.spec.study!.agentId}" (team op=list to see them)` };
+        if (agent.provider === 'claude-cli') {
+          return { ok: false, error: `${agent.id} is a claude-cli agent — scheduled study needs an API-brain agent (claude-api / openai / deepseek)` };
+        }
+      }
       const job: Job = { id: randomUUID(), ...v.spec, enabled: true, runtime: {} };
       createJob(ctx.db, job);
       rescheduleJob(job.id);
@@ -159,6 +184,7 @@ export const schedule: Tool<Args> = {
         kind: cur.kind,
         schedule: cur.schedule,
         source: cur.source,
+        study: cur.study,
         prompt: cur.prompt,
         grant: cur.grant,
         tokenBudgetDaily: cur.tokenBudgetDaily,
@@ -175,6 +201,7 @@ export const schedule: Tool<Args> = {
         kind: v.spec.kind,
         schedule: v.spec.schedule,
         source: v.spec.source,
+        study: v.spec.study,
         prompt: v.spec.prompt,
         grant: v.spec.grant,
         tokenBudgetDaily: v.spec.tokenBudgetDaily,

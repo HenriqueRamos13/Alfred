@@ -377,6 +377,7 @@ export interface ValidatedJobSpec {
   prompt?: string;
   grant?: Capability[];
   tokenBudgetDaily?: number;
+  study?: { agentId: string; topic: string };
   render: JobRender;
   placement?: JobPlacement;
 }
@@ -446,6 +447,7 @@ export interface JobSpecInput {
   prompt?: unknown;
   grant?: unknown;
   tokenBudgetDaily?: unknown;
+  study?: unknown;
   render?: unknown;
   placement?: unknown;
 }
@@ -468,6 +470,7 @@ export function mergeJobSpec(current: JobSpecInput, patch: JobSpecInput): JobSpe
     prompt: pick('prompt'),
     grant: pick('grant'),
     tokenBudgetDaily: pick('tokenBudgetDaily'),
+    study: pick('study'),
     render: pick('render'),
     placement: pick('placement'),
   };
@@ -480,7 +483,9 @@ export function mergeJobSpec(current: JobSpecInput, patch: JobSpecInput): JobSpe
 export function validateJobSpec(input: JobSpecInput): ValidateResult {
   const title = typeof input.title === 'string' ? input.title.trim() : '';
   if (!title) return { ok: false, error: 'title is required' };
-  if (input.kind !== 'fetch' && input.kind !== 'agent') return { ok: false, error: 'kind must be "fetch" or "agent"' };
+  if (input.kind !== 'fetch' && input.kind !== 'agent' && input.kind !== 'study') {
+    return { ok: false, error: 'kind must be "fetch", "agent" or "study"' };
+  }
 
   const sched = validateSchedule(input.schedule);
   if (!sched.ok) return sched;
@@ -512,6 +517,18 @@ export function validateJobSpec(input: JobSpecInput): ValidateResult {
     if (src.headers) source.headers = src.headers as Record<string, string>;
     if (typeof src.extract === 'string') source.extract = src.extract;
     return { ok: true, spec: { title, kind: 'fetch', schedule: sched.schedule, source, render: render.render, placement } };
+  }
+
+  if (input.kind === 'study') {
+    // Study jobs run a named roster agent unattended (its own grant + per-agent
+    // budget govern it); only agentId + topic are needed here. The agent's
+    // existence is checked by the schedule tool (IO), not this pure validator.
+    const st = (input.study ?? {}) as Record<string, unknown>;
+    const agentId = typeof st.agentId === 'string' ? st.agentId.trim() : '';
+    if (!agentId) return { ok: false, error: 'study job needs study.agentId' };
+    const topic = typeof st.topic === 'string' ? st.topic.trim() : '';
+    if (!topic) return { ok: false, error: 'study job needs study.topic' };
+    return { ok: true, spec: { title, kind: 'study', schedule: sched.schedule, study: { agentId, topic }, render: render.render, placement } };
   }
 
   // agent

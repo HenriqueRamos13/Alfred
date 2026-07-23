@@ -28,6 +28,7 @@ import { addWidgetCard, removeWidgetCard, widgetBox, WIDGET_PREFIX, DISPLAY_MAIN
 import { getSetting } from './db.ts';
 import { BudgetTracker, isOverDailyBudget } from './budget.ts';
 import { resolveProvider } from './providers.ts';
+import { runStudy } from '../tools/agent-study.ts';
 import type { Capability, Governance, Job, JobApproval, JobRun, JobRuntime, StreamEvent, Tool, ToolCtx } from './types.ts';
 
 type DB = import('better-sqlite3').Database;
@@ -44,6 +45,7 @@ interface JobRow {
   kind: string;
   schedule: string;
   source: string | null;
+  study: string | null;
   prompt: string | null;
   grant_json: string | null;
   token_budget_daily: number | null;
@@ -60,6 +62,7 @@ function rowToJob(r: JobRow): Job {
     kind: r.kind as Job['kind'],
     schedule: JSON.parse(r.schedule),
     source: r.source ? JSON.parse(r.source) : undefined,
+    study: r.study ? JSON.parse(r.study) : undefined,
     prompt: r.prompt ?? undefined,
     grant: r.grant_json ? JSON.parse(r.grant_json) : undefined,
     tokenBudgetDaily: r.token_budget_daily ?? undefined,
@@ -96,14 +99,15 @@ function registerJobWidget(db: DB, job: Job): void {
 export function createJob(db: DB, job: Job): Job {
   db.prepare(
     `INSERT INTO scheduled_jobs
-       (id, title, kind, schedule, source, prompt, grant_json, token_budget_daily, render, placement, enabled, runtime)
-     VALUES (@id, @title, @kind, @schedule, @source, @prompt, @grant, @budget, @render, @placement, @enabled, @runtime)`,
+       (id, title, kind, schedule, source, study, prompt, grant_json, token_budget_daily, render, placement, enabled, runtime)
+     VALUES (@id, @title, @kind, @schedule, @source, @study, @prompt, @grant, @budget, @render, @placement, @enabled, @runtime)`,
   ).run({
     id: job.id,
     title: job.title,
     kind: job.kind,
     schedule: JSON.stringify(job.schedule),
     source: J(job.source),
+    study: J(job.study),
     prompt: job.prompt ?? null,
     grant: J(job.grant),
     budget: job.tokenBudgetDaily ?? null,
@@ -142,7 +146,7 @@ export function updateJob(db: DB, id: string, patch: Partial<Job>): Job | undefi
   const next: Job = { ...cur, ...patch };
   db.prepare(
     `UPDATE scheduled_jobs SET
-       title=@title, kind=@kind, schedule=@schedule, source=@source, prompt=@prompt,
+       title=@title, kind=@kind, schedule=@schedule, source=@source, study=@study, prompt=@prompt,
        grant_json=@grant, token_budget_daily=@budget, render=@render, placement=@placement,
        enabled=@enabled, runtime=@runtime
      WHERE id=@id`,
@@ -152,6 +156,7 @@ export function updateJob(db: DB, id: string, patch: Partial<Job>): Job | undefi
     kind: next.kind,
     schedule: JSON.stringify(next.schedule),
     source: J(next.source),
+    study: J(next.study),
     prompt: next.prompt ?? null,
     grant: J(next.grant),
     budget: next.tokenBudgetDaily ?? null,
@@ -405,6 +410,7 @@ export class JobScheduler {
       opts.runJob ??
       (async (job) => {
         if (job.kind === 'fetch') return this.runFetch(job);
+        if (job.kind === 'study') return this.runStudyJob(job);
         return this.runAgent(job);
       });
     activeScheduler = this;
@@ -583,6 +589,75 @@ export class JobScheduler {
       this.log(`agent job ${job.id} "${job.title}" failed: ${msg}`);
       logRun(this.db, { jobId: job.id, ts: startTs, ok: false, tokens: 0, error: msg });
     }
+  }
+
+  /**
+   * The STUDY runner (Phase 5 stage 4): a scheduled `study` job runs a named
+   * roster agent's read-only research turn UNATTENDED via the factored runStudy,
+   * then the trusted runner persists the note + updates the shared index. Bounded
+   * by the agent's per-agent daily budget (pause the job on exhaustion) + the
+   * global kill-switch. Sensitive actions queue for later approval (fail-closed).
+   * Never throws — a failed run is logged and the scheduler survives.
+   */
+  private async runStudyJob(job: Job): Promise<void> {
+    const env = this.agentEnv;
+    const ts = this.now();
+    if (!env) {
+      this.log(`study job ${job.id} "${job.title}" skipped: no agent environment wired`);
+      logRun(this.db, { jobId: job.id, ts, ok: false, tokens: 0, error: 'agent runner not available' });
+      return;
+    }
+    const s = job.study;
+    if (!s?.agentId || !s?.topic) {
+      logRun(this.db, { jobId: job.id, ts, ok: false, tokens: 0, error: 'study job missing study.agentId/topic' });
+      return;
+    }
+
+    // Global kill-switch on top of the per-agent budget (enforced inside runStudy).
+    const tracker = new BudgetTracker(
+      this.db,
+      { dailyLimit: env.dailyTokenBudget, stepCap: env.stepCap, dailyUsdBudget: env.dailyUsdBudget },
+      `agent:${s.agentId}`,
+    );
+    if (isOverDailyBudget(tracker.snapshot())) {
+      logRun(this.db, { jobId: job.id, ts, ok: false, tokens: 0, error: 'global daily token budget exhausted' });
+      return; // global resets daily and is app-wide — don't pause the job itself
+    }
+
+    let res;
+    try {
+      res = await runStudy(env.ctx, s.agentId, s.topic, {
+        unattended: true,
+        dangerous: env.dangerous?.() ?? false,
+        // A sensitive action the studying agent attempts is parked for the user (fail-closed).
+        queueApproval: (toolName, args) => {
+          const appr = createApproval(this.db, { jobId: job.id, toolName, args });
+          env.notify?.('Alfred — aprovação pendente', `"${job.title}" quer executar ${toolName}; aprova na app.`);
+          this.emit?.({ kind: 'job.approval', action: 'created', approval: maskApproval(appr) });
+        },
+      });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      this.log(`study job ${job.id} "${job.title}" threw: ${msg}`);
+      logRun(this.db, { jobId: job.id, ts, ok: false, tokens: 0, error: msg });
+      return;
+    }
+
+    if (res.budgetExhausted) {
+      const cur = getJob(this.db, job.id);
+      if (cur) updateJob(this.db, job.id, { runtime: { ...cur.runtime, pausedReason: 'budget' } });
+      logRun(this.db, { jobId: job.id, ts, ok: false, tokens: 0, error: `per-agent daily token budget exhausted (${s.agentId})` });
+      env.notify?.('Alfred — estudo pausado', `"${job.title}" atingiu o orçamento de tokens do agente.`);
+      return;
+    }
+    if (!res.ok) {
+      this.log(`study job ${job.id} "${job.title}" failed: ${res.error}`);
+      logRun(this.db, { jobId: job.id, ts, ok: false, tokens: res.tokens ?? 0, error: res.error });
+      return;
+    }
+    const findings = res.result?.findings ?? '';
+    logRun(this.db, { jobId: job.id, ts, ok: true, tokens: res.tokens ?? 0, summary: `studied "${s.topic}" → ${res.result?.note ?? ''}` });
+    this.emit?.({ kind: 'job.data', jobId: job.id, title: job.title, value: findings.slice(0, 2000), ts });
   }
 
   /**

@@ -21,17 +21,18 @@
  * Token spend counts against the GLOBAL daily kill-switch (BudgetTracker). The
  * per-agent daily budget lands in stage 4.
  */
+import { randomUUID } from 'node:crypto';
 import { streamText, tool, jsonSchema, stepCountIs } from 'ai';
 import type { ToolSet } from 'ai';
 import { getAgent, loadAgentContext } from '../core/team.ts';
-import { resolveTeamModel } from '../core/team-pure.ts';
-import { grantAllows } from '../core/jobs-pure.ts';
+import { resolveTeamModel, agentBudgetDecision } from '../core/team-pure.ts';
+import { grantAllows, jobActionDecision, escalateForTrifecta, type JobRunState } from '../core/jobs-pure.ts';
 import { resolveProvider } from '../core/providers.ts';
 import { agentToSpec, modelSupportsVision, buildToolModelOutput } from '../core/modelCatalog.ts';
-import { runGovernedTool, classifyAction, maskSecrets } from '../core/governance.ts';
-import { BudgetTracker, isOverDailyBudget } from '../core/budget.ts';
+import { runGovernedTool, classifyAction, maskSecrets, trifectaImpact } from '../core/governance.ts';
+import { BudgetTracker, isOverDailyBudget, agentTokensToday, dayKey } from '../core/budget.ts';
 import { spawnClaudeCli, dangerousArgs } from '../core/claudeSpawn.ts';
-import type { Tool, ToolCtx } from './types.ts';
+import type { Capability, Governance, Tool, ToolCtx } from '../core/types.ts';
 
 interface Args {
   agentId: string;
@@ -55,7 +56,8 @@ export const delegateToAgent: Tool<Args> = {
     'private knowledge as context, bounded by its grant (capabilities outside the grant are refused). Sensitive actions ' +
     'still go through normal approval (a human is present). {agentId, task, model?} — model optionally overrides the ' +
     'agent\'s model (must be in that agent\'s provider catalog, else the agent\'s model is used). Returns the agent\'s result. ' +
-    'Requires approval (T2).',
+    'Token spend counts against the agent\'s per-agent daily budget (if set) AND the global daily kill-switch; an exhausted ' +
+    'per-agent budget returns a clear error. Requires approval (T2).',
   inputSchema: {
     type: 'object',
     properties: {
@@ -83,9 +85,46 @@ export const delegateToAgent: Tool<Args> = {
     const context = await loadAgentContext(ctx.workspace, agent);
 
     if (agent.provider === 'claude-cli') return runClaudeCli(ctx, context, a.task.trim(), model);
-    return runApiTurn(ctx, agent.id, agent.provider, model, agent.grant, context, a.task.trim());
+    return runAgentTurn(ctx, {
+      agentId: agent.id,
+      provider: agent.provider,
+      model,
+      grant: agent.grant,
+      dailyTokenBudget: agent.dailyTokenBudget,
+      system: context,
+      task: a.task.trim(),
+    });
   },
 };
+
+/** Result of one in-process agent turn (API brains). */
+export interface AgentTurnResult {
+  ok: boolean;
+  result?: { model: string; text: string };
+  error?: string;
+  /** The per-agent daily budget is spent — the caller pauses a scheduled study / reports it attended. */
+  budgetExhausted?: boolean;
+  /** Tokens this turn spent (0 when unavailable, e.g. aborted). */
+  tokens?: number;
+}
+
+export interface AgentTurnSpec {
+  agentId: string;
+  provider: Parameters<typeof agentToSpec>[0]['provider'];
+  model: string;
+  grant: Capability[];
+  dailyTokenBudget?: number;
+  system: string;
+  task: string;
+  /**
+   * UNATTENDED governance (scheduled study): sensitive actions never auto-run —
+   * jobActionDecision + per-run trifecta escalation gate every tool call. A
+   * queued (sensitive) action is handed to `queue` and refused to the model;
+   * execute-time sensitive sub-ops are DENIED (fail-closed). Absent → ATTENDED
+   * (a human is present; sensitive actions take the normal approval path).
+   */
+  unattended?: { dangerous: boolean; queue: (toolName: string, args: unknown) => void };
+}
 
 /**
  * claude-cli path: spawn `claude -p --model` with the assembled context prepended
@@ -117,19 +156,18 @@ async function runClaudeCli(ctx: ToolCtx, context: string, task: string, model: 
 
 /**
  * API path (claude-api / openai / deepseek): one in-process AI-SDK turn whose
- * every tool call is gated — out-of-grant → refused to the model; in-grant → run
- * through the shared governed executor (normal attended approvals for sensitive
- * actions). Never throws; a failed run surfaces as { ok:false }.
+ * every tool call is gated. Shared by delegate_to_agent (ATTENDED) and scheduled
+ * study (UNATTENDED, via `spec.unattended`):
+ *   - out-of-grant → refused to the model.
+ *   - in-grant, ATTENDED → run through the shared governed executor (normal
+ *     approvals for sensitive actions — a human is present).
+ *   - in-grant, UNATTENDED → jobActionDecision + trifecta escalation: sensitive
+ *     queues (handed to `queue`) or is denied; benign in-grant runs fail-closed.
+ * Bounded by the GLOBAL kill-switch AND the per-agent daily budget (both checked
+ * before the turn). Never throws; a failed run surfaces as { ok:false }.
  */
-async function runApiTurn(
-  ctx: ToolCtx,
-  agentId: string,
-  provider: Parameters<typeof agentToSpec>[0]['provider'],
-  model: string,
-  grant: Parameters<typeof grantAllows>[0],
-  system: string,
-  task: string,
-) {
+export async function runAgentTurn(ctx: ToolCtx, spec: AgentTurnSpec): Promise<AgentTurnResult> {
+  const { agentId, provider, model, grant, system, task, unattended } = spec;
   let resolved: ReturnType<typeof resolveProvider>;
   try {
     resolved = resolveProvider(agentToSpec({ name: agentId, provider, model }), process.env);
@@ -143,7 +181,33 @@ async function runApiTurn(
   if (isOverDailyBudget(tracker.snapshot())) {
     return { ok: false, error: 'daily token budget exhausted — try again tomorrow' };
   }
+  // Per-agent daily budget (Phase 5 stage 4): the agent's own day-keyed spend
+  // (usage_by_model, session agent:<id>) capped by its dailyTokenBudget. Checked
+  // BEFORE the turn so an exhausted agent never starts one.
+  const day = dayKey();
+  const agentBudget = agentBudgetDecision({ dailyTokenBudget: spec.dailyTokenBudget }, Date.now(), 1, {
+    tokens: agentTokensToday(ctx.db, agentId, day),
+    day,
+  });
+  if (!agentBudget.allowed) {
+    return { ok: false, budgetExhausted: true, error: `orçamento diário do agente ${agentId} esgotado — tenta amanhã` };
+  }
   const stepCap = cfg.stepCap;
+
+  // Fail-closed governance for the UNATTENDED path: no human to approve, so an
+  // execute-time sensitive sub-op is DENIED (mirrors the JobScheduler's job ctx).
+  const runState: JobRunState = { readUntrusted: false };
+  const unattendedCtx: ToolCtx = unattended
+    ? {
+        ...ctx,
+        governance: {
+          classify: classifyAction,
+          requestApproval: async () => ({ id: randomUUID(), decision: 'deny', note: 'unattended study — no human to approve' }),
+          markTrifecta: () => {},
+          trifecta: () => ({ readUntrusted: false, hasPrivate: false, canEgress: false }),
+        } satisfies Governance,
+      }
+    : ctx;
 
   const { tools: allTools } = (await import('./index.ts')) as { tools: Tool[] };
   // No trivial self-recursion: a delegated/studying agent can't spawn more delegations or studies.
@@ -158,15 +222,32 @@ async function runApiTurn(
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       inputSchema: jsonSchema(t.inputSchema as any),
       execute: async (args: unknown) => {
-        // Grant enforce (attended): a capability outside the agent's grant is
-        // refused to the model — NOT auto-allowed by dangerous mode (dangerous
-        // bypasses approvals, not the per-agent allowlist).
+        if (unattended) {
+          // UNATTENDED: sensitive → queue/deny (pierces dangerous), in-grant benign → allow.
+          let decision = jobActionDecision({ grant, dangerous: unattended.dangerous, unattended: true }, t.name, args);
+          decision = escalateForTrifecta(decision, runState, t.name, args);
+          if (decision === 'deny') {
+            ctx.emit({ kind: 'tool.start', sessionId: ctx.sessionId, toolName: t.name, args: maskSecrets(args), tier: classifyAction(t.name, args) });
+            ctx.emit({ kind: 'tool.end', sessionId: ctx.sessionId, toolName: t.name, status: 'blocked', error: 'out of grant (unattended)' });
+            return { ok: false, error: `não permitido nesta corrida não-supervisionada: ${t.name}` };
+          }
+          if (decision === 'queue-approval') {
+            unattended.queue(t.name, args);
+            ctx.emit({ kind: 'tool.start', sessionId: ctx.sessionId, toolName: t.name, args: maskSecrets(args), tier: classifyAction(t.name, args) });
+            ctx.emit({ kind: 'tool.end', sessionId: ctx.sessionId, toolName: t.name, status: 'blocked', error: 'queued for approval' });
+            return { ok: false, error: 'ação sensível colocada em fila para a tua aprovação' };
+          }
+          const out = await runGovernedTool(t, args, unattendedCtx);
+          if (trifectaImpact(t.name).readUntrusted) runState.readUntrusted = true;
+          return out;
+        }
+        // ATTENDED: a capability outside the agent's grant is refused to the model —
+        // NOT auto-allowed by dangerous mode (dangerous bypasses approvals, not the grant).
         if (!grantAllows(grant, t.name, args)) {
           ctx.emit({ kind: 'tool.start', sessionId: ctx.sessionId, toolName: t.name, args: maskSecrets(args), tier: classifyAction(t.name, args) });
           ctx.emit({ kind: 'tool.end', sessionId: ctx.sessionId, toolName: t.name, status: 'blocked', error: 'out of agent grant' });
           return { ok: false, error: `not permitted by ${agentId}'s grant: ${t.name}` };
         }
-        // In-grant → normal attended governance (sensitive → approval / dangerous).
         return runGovernedTool(t, args, ctx);
       },
       toModelOutput: ({ output }) => buildToolModelOutput(output, brainHasVision),
@@ -200,7 +281,14 @@ async function runApiTurn(
       if (part.type === 'text-delta') text += part.text;
       else if (part.type === 'error') throw part.error instanceof Error ? part.error : new Error(String(part.error));
     }
-    return { ok: true, result: { model, text: text.trim() } };
+    let tokens = 0;
+    try {
+      const u = await result.usage;
+      tokens = (u.inputTokens ?? 0) + (u.outputTokens ?? 0);
+    } catch {
+      /* usage unavailable (e.g. aborted) — leave 0 */
+    }
+    return { ok: true, result: { model, text: text.trim() }, tokens };
   } catch (err) {
     return { ok: false, error: `delegate_to_agent run failed: ${err instanceof Error ? err.message : String(err)}` };
   }

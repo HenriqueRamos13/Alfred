@@ -74,6 +74,25 @@ export function isLoop(history: readonly string[], sig: string, limit = 3): bool
   return count >= limit;
 }
 
+/**
+ * Tokens a roster agent has spent TODAY, summed across models. Reuses the
+ * day-keyed usage_by_model rows already written by every agent run (delegate /
+ * study), which use the sessionId convention `agent:<agentId>` — so there is no
+ * separate per-agent counter to maintain. Returns 0 before an agent's first run.
+ * ponytail: only API-brain runs record usage (claude-cli spawns an external child
+ * with no token accounting), so a claude-cli agent's per-agent cap can't bite —
+ * same limitation as the global kill-switch. Upgrade path: parse `claude -p`'s
+ * usage JSON and record it here too.
+ */
+export function agentTokensToday(db: DB, agentId: string, day: string = dayKey()): number {
+  const r = db
+    .prepare(
+      "SELECT COALESCE(SUM(input_tokens + output_tokens), 0) AS t FROM usage_by_model WHERE session_id = ? AND day = ?",
+    )
+    .get(`agent:${agentId}`, day) as { t: number };
+  return r.t;
+}
+
 // ── persistence ───────────────────────────────────────────────────────────────
 
 export class BudgetTracker {

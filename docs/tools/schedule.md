@@ -2,13 +2,17 @@
 
 Create and manage **Scheduled Jobs** — recurring tasks that persist in the DB
 and **re-arm on boot** (the scheduler is in-app, not OS cron). A job is one of
-two kinds:
+three kinds:
 
 - **`fetch`** — a cheap HTTP `GET` on a timer that pulls a value to display.
   **Zero AI tokens.** (The weather widget.)
 - **`agent`** — an autonomous Alfred turn from a prompt. Costs tokens, runs
-  unattended, bounded by a per-job daily budget and an autonomy grant. *(The
-  agent runner ships in a later stage; creating an agent job persists it now.)*
+  unattended, bounded by a per-job daily budget and an autonomy grant.
+- **`study`** — a **roster agent** learns a topic on a timer (`study:{agentId,
+  topic}`): a read-only web-research turn saved to the agent's private knowledge
+  + the shared index, capped by that agent's **own per-agent daily token budget**.
+  Runs the factored `runStudy` unattended; the agent must exist and be an API
+  brain (not `claude-cli`). See [team.md](team.md).
 
 This tool **only persists and (re)schedules** jobs — it never runs one. The
 timer engine fires due jobs; a `fetch` refresh emits a `job.data` stream event.
@@ -53,6 +57,19 @@ actions never auto-run unattended even in dangerous mode.)
 `grant` values: `read`, `notify`, `write`, `browse`, `shell`, `send`, `delete`,
 `money`, `secrets`. The sensitive ones (`send`/`money`/`delete`/`secrets`) never
 auto-run unattended regardless of the grant — they queue an approval.
+
+### kind:"study" — `study`
+| field | notes |
+|-------|-------|
+| `study.agentId` | required; a roster agent id (`team op=list`). Must **exist** and be an **API brain** (not `claude-cli`) — checked at create. |
+| `study.topic` | required; what to research each run (e.g. `Rust async runtimes`). |
+
+A `study` job runs `runStudy(ctx, agentId, topic, { unattended:true })` on the
+schedule — the SAME core as the `agent_study` tool. Cost is capped by the
+**agent's** `dailyTokenBudget` (not a per-job `tokenBudgetDaily`); on exhaustion
+the job is **paused** and the user notified. Governance is fail-closed:
+sensitive/outbound actions **queue** for approval (never auto-run), like an
+`agent` job. The agent's grant must include `read` (browse read-only).
 
 ### render / placement (optional)
 - `render` — `{ tier: 1|2|3, card: string, html? }`; default `{ tier:1, card:"value" }`.
@@ -147,8 +164,8 @@ prompt-injected page can only draw junk in its own card:
 
 ## `list` / result summary (per job)
 `{ id, title, kind, schedule, enabled, pausedReason, tokensToday,
-tokenBudgetDaily, lastRunTs, nextRunTs, lastResult }` plus `source` (fetch) or
-`grant`+`prompt` (agent).
+tokenBudgetDaily, lastRunTs, nextRunTs, lastResult }` plus `source` (fetch),
+`grant`+`prompt` (agent), or `study` (study).
 
 `pause` disables the job (`enabled:false`); `resume` re-enables it **and** clears
 any auto-pause reason (`budget`/`error`), then re-arms. `edit` **merges** the
