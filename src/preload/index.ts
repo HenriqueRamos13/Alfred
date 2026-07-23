@@ -113,6 +113,9 @@ const api = {
   /** Voice output toggle (Alfred speaks replies) — persisted; read on mount. */
   getTts: (): Promise<boolean> => ipcRenderer.invoke('alfred:getTts'),
   setTts: (on: boolean): Promise<boolean> => ipcRenderer.invoke('alfred:setTts', on),
+  /** ElevenLabs cloud voice toggle (which voice, orthogonal to VOICE on/off) — persisted; read on mount. */
+  getElevenlabs: (): Promise<boolean> => ipcRenderer.invoke('alfred:getElevenlabs'),
+  setElevenlabs: (on: boolean): Promise<boolean> => ipcRenderer.invoke('alfred:setElevenlabs', on),
   /** Auto-send (submit dictation on stt.final) toggle — persisted; read on mount. */
   getAutosend: (): Promise<boolean> => ipcRenderer.invoke('alfred:getAutosend'),
   setAutosend: (on: boolean): Promise<boolean> => ipcRenderer.invoke('alfred:setAutosend', on),

@@ -1,6 +1,11 @@
 /**
- * Text-to-speech — Alfred speaks his replies. Two interchangeable engines,
- * picked with ALFRED_TTS_ENGINE (both share the same queue, epoch and stop()):
+ * Text-to-speech — Alfred speaks his replies. Three interchangeable engines,
+ * picked with ALFRED_TTS_ENGINE / the 11LABS runtime override (all share the same
+ * queue, epoch, stop() and half-duplex speaking state):
+ *
+ * - 'elevenlabs' (runtime toggle, cloud): POST to the ElevenLabs API, play the
+ *   returned mp3 with afplay. Needs ELEVENLABS_API_KEY + ELEVENLABS_VOICE_ID;
+ *   missing/failing → falls back to 'say' (never silent). See elevenPlay.
  *
  * - 'say' (default, macOS built-in `say`): has pt-BR voices (Luciana, Felipe)
  *   and natural enhanced/premium voices. `say` plays the audio itself — no WAV,
@@ -26,21 +31,50 @@
  */
 import { spawn, type ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { unlink } from 'node:fs/promises';
+import { unlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 const MODEL_ID = 'onnx-community/Kokoro-82M-v1.0-ONNX';
 const DEFAULT_KOKORO_VOICE = 'af_heart';
 const DEFAULT_SAY_VOICE = 'Luciana'; // pt-BR female
+const DEFAULT_ELEVEN_VOICE = 'JTMaHm6sHVI3NZgPaWDz'; // default ElevenLabs voice (voice library)
 
 type Dtype = 'q8' | 'q4' | 'fp16' | 'fp32';
 const DEFAULT_DTYPE: Dtype = 'fp32';
 
+type Engine = 'elevenlabs' | 'kokoro' | 'say';
+
+/** Runtime override for the engine, set by the orchestrator from the persisted
+ * `elevenlabs_enabled` toggle (tts.ts itself has no DB). When set it wins over
+ * ALFRED_TTS_ENGINE; null → the env-configured engine. */
+let engineOverride: 'elevenlabs' | null = null;
+
+/** Orchestrator syncs this on boot (from the setting) and on the 11LABS toggle. */
+export function setEngineOverride(v: 'elevenlabs' | null): void {
+  engineOverride = v;
+}
+
+/**
+ * PURE — decide the engine from the runtime override + ALFRED_TTS_ENGINE.
+ * The override ('elevenlabs' when the 11LABS toggle is ON) always wins; else
+ * the env picks 'kokoro' or falls back to 'say' (default, pt-BR). Unit-tested.
+ */
+export function resolveEngine(override: 'elevenlabs' | null, envEngine: string | undefined): Engine {
+  if (override === 'elevenlabs') return 'elevenlabs';
+  return envEngine?.trim() === 'kokoro' ? 'kokoro' : 'say';
+}
+
+/** PURE — the fallback gate: ElevenLabs needs BOTH a key and a voice id (non-blank),
+ * otherwise synthAndPlay falls back to `say` so Alfred never goes silent. */
+export function elevenlabsConfigured(apiKey: string | undefined, voiceId: string | undefined): boolean {
+  return !!apiKey?.trim() && !!voiceId?.trim();
+}
+
 /** Selected engine — 'say' (default) only works on macOS; 'kokoro' is
- * cross-platform. pt-BR is the default voice, so 'say' is the default engine. */
-function getEngine(): 'kokoro' | 'say' {
-  return process.env.ALFRED_TTS_ENGINE?.trim() === 'kokoro' ? 'kokoro' : 'say';
+ * cross-platform; 'elevenlabs' is cloud (needs a key+voice_id, else falls back). */
+function getEngine(): Engine {
+  return resolveEngine(engineOverride, process.env.ALFRED_TTS_ENGINE);
 }
 
 /** Kokoro precision. Unknown/unset → fp32 (least robotic). */
@@ -215,14 +249,16 @@ export function stop(): void {
   setSpeaking(false);
 }
 
-/** Optional: trigger the model download ahead of the first speak(). No-op for
- * the 'say' engine (nothing to download). */
+/** Optional: trigger the model download ahead of the first speak(). Only kokoro
+ * downloads weights; 'say' and 'elevenlabs' have nothing to pre-warm. */
 export function prewarm(): Promise<unknown> {
-  return getEngine() === 'say' ? Promise.resolve() : getModel();
+  return getEngine() === 'kokoro' ? getModel() : Promise.resolve();
 }
 
 async function synthAndPlay(text: string, live: () => boolean): Promise<void> {
-  if (getEngine() === 'say') return sayPlay(text, live);
+  const engine = getEngine();
+  if (engine === 'say') return sayPlay(text, live);
+  if (engine === 'elevenlabs') return elevenPlay(text, live);
 
   const model = await getModel();
   if (!live()) return;
@@ -235,6 +271,45 @@ async function synthAndPlay(text: string, live: () => boolean): Promise<void> {
     await runPlayer('afplay', [wav], live, text);
   } finally {
     await unlink(wav).catch(() => {});
+  }
+}
+
+/** ElevenLabs cloud TTS: POST the text, get back audio/mpeg, save a temp mp3 and
+ * play it with afplay (macOS plays mp3), then delete it — mirrors the kokoro WAV
+ * path. FALLBACK: if the key/voice_id is missing OR the request fails (network /
+ * HTTP error) we log a warning (never the key) and fall back to `say` so Alfred
+ * never goes silent. Uses Node's global fetch. */
+async function elevenPlay(text: string, live: () => boolean): Promise<void> {
+  const apiKey = process.env.ELEVENLABS_API_KEY?.trim();
+  const voiceId = process.env.ELEVENLABS_VOICE_ID?.trim() || DEFAULT_ELEVEN_VOICE;
+  if (!elevenlabsConfigured(apiKey, voiceId)) {
+    console.warn('[alfred] tts: ElevenLabs on but ELEVENLABS_API_KEY / ELEVENLABS_VOICE_ID missing — using `say`');
+    return sayPlay(text, live);
+  }
+  try {
+    const res = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${voiceId}`, {
+      method: 'POST',
+      headers: { 'xi-api-key': apiKey as string, 'content-type': 'application/json', accept: 'audio/mpeg' },
+      body: JSON.stringify({
+        text,
+        model_id: 'eleven_multilingual_v2',
+        voice_settings: { stability: 0.5, similarity_boost: 0.75 },
+      }),
+    });
+    if (!res.ok) throw new Error(`ElevenLabs HTTP ${res.status}`);
+    const buf = Buffer.from(await res.arrayBuffer());
+    if (!live()) return;
+    const mp3 = join(tmpdir(), `alfred-tts-${randomUUID()}.mp3`);
+    await writeFile(mp3, buf);
+    try {
+      await runPlayer('afplay', [mp3], live, text);
+    } finally {
+      await unlink(mp3).catch(() => {});
+    }
+  } catch (err) {
+    // Never print the key; message only. Fall back to `say` unless we were stopped.
+    console.warn('[alfred] tts: ElevenLabs failed — falling back to `say`:', err instanceof Error ? err.message : err);
+    if (live()) return sayPlay(text, live);
   }
 }
 

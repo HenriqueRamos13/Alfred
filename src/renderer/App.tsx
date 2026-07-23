@@ -23,7 +23,7 @@ import { ScheduledTasksCard } from './components/ScheduledTasksCard.tsx';
 import { WidgetCard } from './components/WidgetCard.tsx';
 import { HtmlWidgetCard } from './components/HtmlWidgetCard.tsx';
 import type { ReferenceTarget } from '../main/core/reference.ts';
-import { clampBox, tileLayout, cardOnDisplay, nextDisplayId, type Bounds } from '../main/core/layout.ts';
+import { clampBox, tileLayout, cardOnDisplay, nextDisplayId, panelCards, type Bounds } from '../main/core/layout.ts';
 import { initialDictation, dictationReduce, shouldAutoSend } from '../main/core/dictation.ts';
 import { confirmMatches } from '../main/core/reset-pure.ts';
 import type { FactoryResetInfo } from '../main/core/orchestrator.ts';
@@ -121,7 +121,10 @@ export default function App() {
   const [factoryConfirm, setFactoryConfirm] = useState('');
   const [factoryBusy, setFactoryBusy] = useState(false);
   const [tts, setTts] = useState(false);
+  const [elevenlabs, setElevenlabs] = useState(false); // ElevenLabs cloud voice (orthogonal to VOICE on/off)
   const [wake, setWake] = useState(false);
+  // Header CARDS dropdown (show/hide panels). Closes on click-outside / Esc.
+  const [cardsMenuOpen, setCardsMenuOpen] = useState(false);
   // Auto-send: on stt.final, submit the dictated text automatically (no "Alfred
   // enviar"). Default OFF. The onStream closure is mount-once, so it reads the
   // live toggle + submit fn via refs (below).
@@ -170,6 +173,7 @@ export default function App() {
   const logRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLDivElement>(null);
   const stripRef = useRef<HTMLDivElement>(null);
+  const cardsMenuRef = useRef<HTMLDivElement>(null);
   const commandInputRef = useRef<HTMLTextAreaElement>(null);
   const cardsRef = useRef<CardLayout[]>([]);
   cardsRef.current = cards;
@@ -201,6 +205,23 @@ export default function App() {
       clearTimeout(hideTimer);
     };
   }, [autoHide]);
+
+  // CARDS dropdown: close on click-outside or Esc (keyboard-accessible).
+  useEffect(() => {
+    if (!cardsMenuOpen) return;
+    const onDown = (e: MouseEvent) => {
+      if (!cardsMenuRef.current?.contains(e.target as Node)) setCardsMenuOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setCardsMenuOpen(false);
+    };
+    window.addEventListener('mousedown', onDown);
+    window.addEventListener('keydown', onKey);
+    return () => {
+      window.removeEventListener('mousedown', onDown);
+      window.removeEventListener('keydown', onKey);
+    };
+  }, [cardsMenuOpen]);
 
   // ⌘/Ctrl+K reveals the strip and focuses the command input.
   useEffect(() => {
@@ -405,6 +426,8 @@ export default function App() {
     alfred.getGrillMe().then(setGrill).catch(() => {});
     // Reflect the persisted voice-output toggle.
     alfred.getTts().then(setTts).catch(() => {});
+    // Reflect the persisted ElevenLabs voice toggle (default off).
+    alfred.getElevenlabs().then(setElevenlabs).catch(() => {});
     // Reflect the persisted auto-send toggle (default off).
     alfred.getAutosend().then(setAutosend).catch(() => {});
     // Reflect the persisted wake-word toggle (default on when the STT binary exists).
@@ -691,6 +714,13 @@ export default function App() {
     setTts(next); // optimistic
     alfred.setTts(next).then(setTts).catch(() => setTts(!next));
     pushLog({ tag: 'VOICE', tone: next ? 'lime' : 'dim', msg: next ? 'voice output on' : 'voice output off' });
+  };
+
+  const toggleElevenlabs = () => {
+    const next = !elevenlabs;
+    setElevenlabs(next); // optimistic
+    alfred.setElevenlabs(next).then(setElevenlabs).catch(() => setElevenlabs(!next));
+    pushLog({ tag: 'VOICE', tone: next ? 'lime' : 'dim', msg: next ? '11labs voice on (cloud)' : '11labs off — normal voice' });
   };
 
   const toggleAutosend = () => {
@@ -987,8 +1017,6 @@ export default function App() {
     }
   };
 
-  const hidden = cards.filter((c) => !c.visible);
-
   // WAKE button face: the toggle says whether it's ARMED; the live status says
   // what it's actually doing right now, so a stuck/failed mic is visible at a glance.
   const wakeFace = ((): { label: string; tone: '' | ' on' | ' danger'; title: string } => {
@@ -1024,17 +1052,39 @@ export default function App() {
       >
         <div className="topbar">
           <span className="topbar-title">◆ ALFRED</span>
-          {hidden.map((c) => (
+          <div className="cards-menu no-drag" ref={cardsMenuRef}>
             <button
-              key={c.id}
               type="button"
-              className="topbar-btn no-drag"
-              title={`Show ${c.title}`}
-              onClick={() => patchCard(c.id, { visible: true })}
+              className={`topbar-btn no-drag${cardsMenuOpen ? ' on' : ''}`}
+              aria-haspopup="menu"
+              aria-expanded={cardsMenuOpen}
+              onClick={() => setCardsMenuOpen((v) => !v)}
+              title="Show or hide control-centre cards"
             >
-              + {c.title}
+              ▦ CARDS ▾
             </button>
-          ))}
+            {cardsMenuOpen && (
+              <div className="cards-menu-pop" role="menu">
+                {panelCards(cards).map((c) => (
+                  <button
+                    key={c.id}
+                    type="button"
+                    role="menuitemcheckbox"
+                    aria-checked={c.visible}
+                    className="cards-menu-item no-drag"
+                    onClick={() => {
+                      const show = !c.visible;
+                      patchCard(c.id, { visible: show });
+                      if (show) focusCard(c.id);
+                    }}
+                  >
+                    <span className="cards-menu-check">{c.visible ? '✓' : ''}</span>
+                    {c.title}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
           <span className="topbar-spacer" />
           <button
             type="button"
@@ -1049,6 +1099,18 @@ export default function App() {
             }
           >
             {speaking ? '🗣 SPEAKING' : tts ? '🔊 VOICE ON' : '🔈 VOICE OFF'}
+          </button>
+          <button
+            type="button"
+            className={`topbar-btn no-drag${elevenlabs ? ' on' : ''}`}
+            onClick={toggleElevenlabs}
+            title={
+              elevenlabs
+                ? 'ElevenLabs cloud voice ON — click for the normal (say/kokoro) voice.'
+                : 'ElevenLabs cloud voice OFF — click to use ElevenLabs (needs ELEVENLABS_API_KEY + ELEVENLABS_VOICE_ID; falls back to the normal voice if missing).'
+            }
+          >
+            {elevenlabs ? '🗣 11LABS ON' : '🗣 11LABS'}
           </button>
           <button
             type="button"
@@ -1116,28 +1178,6 @@ export default function App() {
             title="Open the isolated Reference panel for a note (Phase 3: the graph opens this per node)"
           >
             ◈ REFERENCE
-          </button>
-          <button
-            type="button"
-            className="topbar-btn no-drag"
-            onClick={() => {
-              patchCard('jobs', { visible: true });
-              focusCard('jobs');
-            }}
-            title="Scheduled Tasks — manage jobs (pause/resume/delete) and pending approvals"
-          >
-            ⏱ SCHEDULED
-          </button>
-          <button
-            type="button"
-            className="topbar-btn no-drag"
-            onClick={() => {
-              patchCard('settings', { visible: true });
-              focusCard('settings');
-            }}
-            title="Settings — provider + model per agent (main / reference / curator)"
-          >
-            ⚙ SETTINGS
           </button>
           <button
             type="button"

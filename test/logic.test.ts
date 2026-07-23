@@ -34,7 +34,7 @@ import {
   speechContainsWake,
   resolveWakeWords,
 } from '../src/main/core/wakeword.ts';
-import { watchdogAction } from '../src/main/core/tts.ts';
+import { watchdogAction, resolveEngine, elevenlabsConfigured } from '../src/main/core/tts.ts';
 import { initialDictation, dictationReduce, shouldAutoSend } from '../src/main/core/dictation.ts';
 import { shell } from '../src/main/tools/shell.ts';
 import { filesystem } from '../src/main/tools/filesystem.ts';
@@ -95,6 +95,7 @@ import {
   displayForCard,
   resolveMoveTarget,
   mergeLayout,
+  panelCards,
   widgetBox,
   DISPLAY_MAIN,
   DISPLAY_ALL,
@@ -443,6 +444,39 @@ test('mergeLayout titles panels fixed, widgets from the job, drops stale + orpha
 
   // a widget row with no matching job title is dropped as an orphan
   assert.equal(mergeLayout([rows[3]], {}).length, 0);
+});
+
+test('panelCards — keeps kind:panel (any visibility), drops job widgets, sorted by title', () => {
+  const rows = [
+    { id: 'settings', x: 0, y: 0, w: 400, h: 400, z: 2, visible: 0, displayId: 'main' }, // hidden panel still listed
+    { id: 'conversation', x: 0, y: 0, w: 400, h: 400, z: 1, visible: 1, displayId: 'main' },
+    { id: 'widget:abc', x: 0, y: 0, w: 220, h: 160, z: 3, visible: 1, displayId: 'main' }, // job widget → excluded
+  ];
+  const cards = mergeLayout(rows, { 'widget:abc': 'Lisbon °C' });
+  const panels = panelCards(cards);
+  assert.deepEqual(panels.map((c) => c.id), ['conversation', 'settings']); // widget dropped, sorted by title
+  assert.ok(panels.every((c) => c.kind === 'panel'));
+  assert.equal(panels.find((c) => c.id === 'settings')?.visible, false); // hidden panels are still in the menu
+});
+
+// ── tts engine resolution + elevenlabs fallback gate (pure) ──
+
+test('resolveEngine — override wins, else env picks kokoro, else say', () => {
+  assert.equal(resolveEngine('elevenlabs', undefined), 'elevenlabs');
+  assert.equal(resolveEngine('elevenlabs', 'kokoro'), 'elevenlabs'); // override beats env
+  assert.equal(resolveEngine(null, 'kokoro'), 'kokoro');
+  assert.equal(resolveEngine(null, '  kokoro  '), 'kokoro'); // trimmed
+  assert.equal(resolveEngine(null, undefined), 'say'); // default
+  assert.equal(resolveEngine(null, 'anything'), 'say');
+});
+
+test('elevenlabsConfigured — needs a non-blank key AND voice id', () => {
+  assert.equal(elevenlabsConfigured('k', 'v'), true);
+  assert.equal(elevenlabsConfigured(undefined, 'v'), false);
+  assert.equal(elevenlabsConfigured('k', undefined), false);
+  assert.equal(elevenlabsConfigured('  ', 'v'), false);
+  assert.equal(elevenlabsConfigured('k', '  '), false);
+  assert.equal(elevenlabsConfigured('', ''), false);
 });
 
 test('widgetBox places by placement corner, clears the command strip, staggers', () => {

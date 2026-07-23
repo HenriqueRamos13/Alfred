@@ -94,6 +94,9 @@ export interface Orchestrator {
   /** Voice output toggle (Alfred speaks replies): read/set, persisted. */
   getTts(): boolean | Promise<boolean>;
   setTts(on: boolean): boolean | Promise<boolean>;
+  /** ElevenLabs cloud voice toggle (which voice, not whether to speak): read/set, persisted. */
+  getElevenlabs(): boolean | Promise<boolean>;
+  setElevenlabs(on: boolean): boolean | Promise<boolean>;
   /** Auto-send toggle (submit dictation on stt.final): read/set, persisted. */
   getAutosend(): boolean | Promise<boolean>;
   setAutosend(on: boolean): boolean | Promise<boolean>;
@@ -224,6 +227,16 @@ export function registerIpc(core: Orchestrator, emit: (e: StreamEvent) => void):
       return await core.setTts(on === true);
     } catch (err) {
       fail('set tts', err);
+      return false;
+    }
+  });
+
+  ipcMain.handle('alfred:getElevenlabs', guard('get elevenlabs', () => core.getElevenlabs(), false));
+  ipcMain.handle('alfred:setElevenlabs', async (_e, on: unknown) => {
+    try {
+      return await core.setElevenlabs(on === true);
+    } catch (err) {
+      fail('set elevenlabs', err);
       return false;
     }
   });

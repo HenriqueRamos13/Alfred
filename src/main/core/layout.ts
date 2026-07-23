@@ -248,6 +248,16 @@ export function mergeLayout(rows: readonly Row[], widgetTitles: Record<string, s
     .sort((a, b) => a.z - b.z);
 }
 
+/**
+ * Panels (kind:"panel") for the header CARDS dropdown — job widgets (kind:"widget")
+ * are excluded (managed in the Scheduled Tasks card). Hidden panels stay in the
+ * list (that's how the menu offers to show them). Sorted by title so the menu is
+ * stable regardless of z-order. Pure + unit-tested.
+ */
+export function panelCards(cards: readonly CardLayout[]): CardLayout[] {
+  return cards.filter((c) => c.kind === 'panel').sort((a, b) => a.title.localeCompare(b.title));
+}
+
 /** Live job titles keyed by their widget card id, for getLayout's dynamic titling. */
 function widgetTitles(db: AlfredDb): Record<string, string> {
   const out: Record<string, string> = {};

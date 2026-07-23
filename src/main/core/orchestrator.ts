@@ -96,6 +96,12 @@ are, you are Alfred; do not introduce yourself as "DeepSeek", "ChatGPT" or
 "Claude", and name the underlying model only if the user explicitly asks which
 model powers you.
 
+In the MAIN CHAT you are ALWAYS direct, short and to the point. When you do or
+change something, reply briefly and confirm — do NOT dump internal detail
+(pixels, dimensions, colours, coordinates, step-by-step logs) unless the user
+explicitly asks for it. Be verbose ONLY when explicitly asked. The main chat is
+not a project-executor agent, so keep it brief.
+
 Governance you must respect:
 - Every tool call is risk-tiered. T0 (read/search/list) and T1 (reversible
   workspace writes) run freely; T2 (delete/send/install/egress/delegation) and
@@ -549,6 +555,10 @@ export interface OrchestratorHandle {
   /** Voice output (Alfred speaks replies): read/toggle, persisted, default OFF. */
   getTts(): boolean;
   setTts(on: boolean): boolean;
+  /** ElevenLabs cloud voice on/off — orthogonal to tts_enabled (speaks or not);
+   * this picks WHICH voice. Persisted, default OFF. */
+  getElevenlabs(): boolean;
+  setElevenlabs(on: boolean): boolean;
   /** Auto-send (submit dictation on stt.final, no "Alfred enviar"): read/toggle, persisted, default OFF. */
   getAutosend(): boolean;
   setAutosend(on: boolean): boolean;
@@ -1001,6 +1011,10 @@ export function createOrchestrator(opts: CreateOrchestratorOpts): OrchestratorHa
   });
   scheduler.start();
 
+  // Sync the ElevenLabs voice override from its persisted toggle at boot (tts.ts
+  // has no DB, so the engine override lives here).
+  tts.setEngineOverride(getSetting(db, 'elevenlabs_enabled') === '1' ? 'elevenlabs' : null);
+
   // Arm the wake listener at startup when enabled (no-op without the binary).
   startWake();
 
@@ -1229,6 +1243,15 @@ export function createOrchestrator(opts: CreateOrchestratorOpts): OrchestratorHa
     setTts(on) {
       setSetting(db, 'tts_enabled', on ? '1' : '0');
       if (!on) tts.stop(); // silence anything mid-utterance immediately
+      return on;
+    },
+    getElevenlabs() {
+      return getSetting(db, 'elevenlabs_enabled') === '1';
+    },
+    setElevenlabs(on) {
+      setSetting(db, 'elevenlabs_enabled', on ? '1' : '0');
+      tts.setEngineOverride(on ? 'elevenlabs' : null);
+      tts.stop(); // switch voice cleanly — drop anything mid-utterance
       return on;
     },
     getAutosend() {
