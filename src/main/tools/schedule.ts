@@ -14,6 +14,7 @@ import type { Tool } from './types.ts';
 import type { Job } from '../core/types.ts';
 import { validateJobSpec, nextRun, type JobSpecInput } from '../core/jobs-pure.ts';
 import { createJob, getJob, listJobs, updateJob, deleteJob, rescheduleJob } from '../core/jobs.ts';
+import { getLayout } from '../core/layout.ts';
 
 type Op = 'create' | 'list' | 'pause' | 'resume' | 'delete' | 'edit';
 
@@ -132,6 +133,9 @@ export const schedule: Tool<Args> = {
         const job: Job = { id: randomUUID(), ...v.spec, enabled: true, runtime: {} };
         createJob(ctx.db, job);
         rescheduleJob(job.id);
+        // A tier-1/2 job registered a widget layout row — push the new layout so
+        // the widget card appears (and get_layout/move_card can reach it).
+        ctx.emit({ kind: 'layout', cards: getLayout(ctx.db) });
         // Re-read so the returned nextRunTs reflects what the scheduler armed.
         const armed = getJob(ctx.db, job.id) ?? job;
         return { ok: true, result: { job: summarize(armed), nextRun: armed.runtime.nextRunTs ?? nextRun(job.schedule, Date.now()) } };
@@ -156,6 +160,7 @@ export const schedule: Tool<Args> = {
         runtime,
       });
       rescheduleJob(id);
+      ctx.emit({ kind: 'layout', cards: getLayout(ctx.db) }); // reflect a retitled widget
       const after = getJob(ctx.db, id)!;
       return { ok: true, result: { job: summarize(after), nextRun: after.runtime.nextRunTs ?? null } };
     }
@@ -168,6 +173,7 @@ export const schedule: Tool<Args> = {
     if (op === 'delete') {
       deleteJob(ctx.db, id);
       rescheduleJob(id); // disarms (job is gone)
+      ctx.emit({ kind: 'layout', cards: getLayout(ctx.db) }); // drop the removed widget card
       return { ok: true, result: { deleted: id } };
     }
 

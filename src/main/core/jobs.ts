@@ -24,6 +24,8 @@ import {
   type JobRunState,
 } from './jobs-pure.ts';
 import { runGovernedTool, classifyAction, trifectaImpact, maskSecrets } from './governance.ts';
+import { addWidgetCard, removeWidgetCard, widgetBox, WIDGET_PREFIX, DISPLAY_MAIN, type Bounds } from './layout.ts';
+import { getSetting } from './db.ts';
 import { BudgetTracker, isOverDailyBudget } from './budget.ts';
 import { resolveProvider } from './providers.ts';
 import type { Capability, Governance, Job, JobApproval, JobRun, JobRuntime, StreamEvent, Tool, ToolCtx } from './types.ts';
@@ -70,6 +72,27 @@ function rowToJob(r: JobRow): Job {
 
 const J = (v: unknown): string | null => (v === undefined ? null : JSON.stringify(v));
 
+/** Last canvas size the renderer reported (settings), for first-placing a widget by corner. */
+function widgetBounds(db: DB): Bounds {
+  const m = getSetting(db, 'viewport')?.match(/^(\d+)x(\d+)$/);
+  return m ? { w: Number(m[1]), h: Number(m[2]) } : { w: 1280, h: 800 };
+}
+
+/**
+ * Register the layout row for a job's data widget when its render tier draws one
+ * (tier 1|2). The widget then lives in the layout store like any panel: the user's
+ * drag persists, ui_layout move_card/resize move it, get_layout lists it. Placed
+ * from job.placement (corner + optional monitor), staggered past existing widgets.
+ * Tier-3 jobs render into a builtin/project card, not a floating widget → no row.
+ */
+function registerJobWidget(db: DB, job: Job): void {
+  if (job.render?.tier !== 1 && job.render?.tier !== 2) return;
+  const existing = (db.prepare(`SELECT COUNT(*) AS n FROM layout WHERE cardId LIKE '${WIDGET_PREFIX}%'`).get() as { n: number }).n;
+  const box = widgetBox(job.placement?.corner, existing, widgetBounds(db));
+  const displayId = job.placement?.displayId != null ? String(job.placement.displayId) : DISPLAY_MAIN;
+  addWidgetCard(db, job.id, box, displayId);
+}
+
 export function createJob(db: DB, job: Job): Job {
   db.prepare(
     `INSERT INTO scheduled_jobs
@@ -89,6 +112,7 @@ export function createJob(db: DB, job: Job): Job {
     enabled: job.enabled ? 1 : 0,
     runtime: JSON.stringify(job.runtime ?? {}),
   });
+  registerJobWidget(db, job);
   return job;
 }
 
@@ -143,6 +167,7 @@ export function deleteJob(db: DB, id: string): void {
   db.prepare('DELETE FROM scheduled_jobs WHERE id = ?').run(id);
   db.prepare('DELETE FROM job_runs WHERE job_id = ?').run(id);
   db.prepare('DELETE FROM job_approvals WHERE job_id = ?').run(id);
+  removeWidgetCard(db, id); // drop the widget row so no orphan card survives the job
 }
 
 /** Append one run-log entry (id auto-filled when absent). */

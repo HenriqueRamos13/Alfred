@@ -109,11 +109,11 @@ export default function App() {
   const [agentCfg, setAgentCfg] = useState<AgentConfigMap | null>(null);
   const [catalog, setCatalog] = useState<Record<ProviderId, CatalogModel[]> | null>(null);
   const [cards, setCards] = useState<CardLayout[]>([]);
-  // Scheduled jobs — drives the "Scheduled Tasks" card meta + the Tier-1 widget
-  // layer. Widget geometry is session-local (not persisted in the layout store).
+  // Scheduled jobs — drives the "Scheduled Tasks" card meta + the per-job data
+  // widgets. Widget cards are first-class layout rows (`widget:<jobId>`) in the
+  // layout store, so their geometry/visibility persist and ui_layout can move them;
+  // `jobs` here only supplies each widget's live content + title.
   const [jobs, setJobs] = useState<Job[]>([]);
-  const [widgetBoxes, setWidgetBoxes] = useState<Record<string, { x: number; y: number; w: number; h: number }>>({});
-  const [hiddenWidgets, setHiddenWidgets] = useState<Set<string>>(new Set());
   const [dangerous, setDangerous] = useState(false);
   const [grill, setGrill] = useState(true); // GRILL-ME defaults ON
   // Factory-reset modal: null = closed; the info object = open, listing what will be erased.
@@ -738,6 +738,13 @@ export default function App() {
 
   /** Right-of-header meta + scrollable body for each card, keyed by id. */
   const cardParts = (id: string): { meta?: ReactNode; body: ReactNode } => {
+    // Dynamic per-job data widget (`widget:<jobId>`): content comes from the live
+    // job (Tier-2 = the self-contained HTML page, else the builtin data widget).
+    if (id.startsWith('widget:')) {
+      const job = jobs.find((j) => `widget:${j.id}` === id);
+      if (!job) return { body: null };
+      return { body: job.render?.tier === 2 ? <HtmlWidgetCard job={job} /> : <WidgetCard job={job} /> };
+    }
     switch (id) {
       case 'conversation':
         return {
@@ -942,9 +949,6 @@ export default function App() {
   };
 
   const hidden = cards.filter((c) => !c.visible);
-
-  // Tier-1 jobs get a floating data widget; the user can dismiss one (session-only).
-  const widgetJobs = jobs.filter((j) => (j.render?.tier === 1 || j.render?.tier === 2) && !hiddenWidgets.has(j.id));
 
   // WAKE button face: the toggle says whether it's ARMED; the live status says
   // what it's actually doing right now, so a stuck/failed mic is visible at a glance.
@@ -1166,33 +1170,6 @@ export default function App() {
               </DraggableCard>
             );
           })}
-
-        {/* Tier-1 job widgets — floating data cards placed by job.placement.
-            Session-local geometry (not persisted), rendered on the primary window. */}
-        {(isPrimary || !myDisplayId) &&
-          bounds &&
-          widgetJobs.map((job, i) => {
-            const box = widgetBoxes[job.id] ?? widgetCornerBox(job.placement?.corner, i, bounds);
-            const view: CardLayout = {
-              id: `widget:${job.id}`,
-              title: job.title,
-              ...clampBox(box, bounds),
-              z: 40 + i,
-              visible: true,
-              displayId: myDisplayId || 'main',
-            };
-            return (
-              <DraggableCard
-                key={view.id}
-                card={view}
-                onChange={(patch) => setWidgetBoxes((prev) => ({ ...prev, [job.id]: { ...box, ...patch } }))}
-                onFocus={() => {}}
-                onHide={() => setHiddenWidgets((prev) => new Set(prev).add(job.id))}
-              >
-                {job.render?.tier === 2 ? <HtmlWidgetCard job={job} /> : <WidgetCard job={job} />}
-              </DraggableCard>
-            );
-          })}
       </div>
 
       {approval && (
@@ -1325,21 +1302,6 @@ export default function App() {
       )}
     </div>
   );
-}
-
-/** First-placement box for a Tier-1 widget from its corner, staggered by index. */
-function widgetCornerBox(corner: string | undefined, idx: number, b: Bounds): { x: number; y: number; w: number; h: number } {
-  const W = 220;
-  const H = 160;
-  const m = 24;
-  const off = idx * (H + 12);
-  const c = corner ?? 'tr';
-  const left = c[1] === 'l';
-  const top = c[0] === 't';
-  const x = left ? m : Math.max(m, b.w - W - m);
-  // Top corners clear the ~118px command strip; stagger down (top) or up (bottom).
-  const y = top ? 122 + off : Math.max(122, b.h - H - m - off);
-  return { x, y, w: W, h: H };
 }
 
 const AGENT_HINT: Record<AgentId, string> = {

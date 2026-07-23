@@ -55,8 +55,11 @@ export const uiLayout: Tool<Args> = {
   name: 'ui_layout',
   description:
     'Inspect and rearrange your own floating control-centre cards across every monitor. ops: ' +
-    'get_layout (list every card with id, title, x, y, w, h, visible, displayId, plus a displays[] array of ' +
-    'ALL monitors — {id, label, primary, bounds, workArea} in DIPs — so you see each screen and its coordinate space), ' +
+    'get_layout (list every card with id, title, kind, x, y, w, h, visible, displayId, plus a displays[] array of ' +
+    'ALL monitors — {id, label, primary, bounds, workArea} in DIPs — so you see each screen and its coordinate space). ' +
+    'kind is "panel" for a fixed built-in card or "widget" for a scheduled-JOB data card (id "widget:<jobId>", title = the ' +
+    "job's title): a job's own live data widget is a SEPARATE card from the \"SCHEDULED TASKS\" panel (kind:panel, id:jobs), " +
+    'and move_card/resize_card/show_card/hide_card move and arrange these widgets exactly like any panel. ops continue: ' +
     'move_card {id, x, y, displayId?} (omit displayId to move within the current monitor; pass a displays[].id — or ' +
     '"main"/"all" — to move the card to that monitor), resize_card {id, w, h}, show_card {id}, hide_card {id}, ' +
     'arrange/tile (organise every card into a clean grid that fits the window), reset (restore defaults). ' +
@@ -69,7 +72,7 @@ export const uiLayout: Tool<Args> = {
         type: 'string',
         enum: ['get_layout', 'move_card', 'resize_card', 'show_card', 'hide_card', 'arrange', 'tile', 'reset'],
       },
-      id: { type: 'string', description: 'Card id (e.g. conversation, surface, brains, cost, projects, activity).' },
+      id: { type: 'string', description: 'Card id — a panel (e.g. conversation, surface, cost, jobs) or a job widget "widget:<jobId>" (from get_layout).' },
       x: { type: 'number' },
       y: { type: 'number' },
       w: { type: 'number' },

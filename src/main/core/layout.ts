@@ -157,6 +157,31 @@ export function tileLayout(ids: readonly string[], bounds: Bounds): Box[] {
   });
 }
 
+/** Prefix marking a dynamic per-job data card: `widget:<jobId>`. */
+export const WIDGET_PREFIX = 'widget:';
+export function isWidgetId(id: string): boolean {
+  return id.startsWith(WIDGET_PREFIX);
+}
+
+/**
+ * First-placement box for a job's data widget from its placement corner, staggered
+ * by `idx` so several widgets don't stack exactly. Pure + unit-tested; shared by
+ * the widget registration (jobs.ts) — the renderer no longer positions widgets.
+ */
+export function widgetBox(corner: string | undefined, idx: number, b: Bounds): Box {
+  const W = 220;
+  const H = 160;
+  const m = 24;
+  const off = idx * (H + 12);
+  const c = corner ?? 'tr';
+  const left = c[1] === 'l';
+  const top = c[0] === 't';
+  const x = left ? m : Math.max(m, b.w - W - m);
+  // Top corners clear the ~118px command strip; stagger down (top) or up (bottom).
+  const y = top ? 122 + off : Math.max(122, b.h - H - m - off);
+  return { x, y, w: W, h: H };
+}
+
 /** Fixed labels; the set of keys is also the canonical list of cards. */
 const CARD_TITLES: Record<string, string> = {
   conversation: 'CONVERSATION',
@@ -202,9 +227,41 @@ interface Row {
 }
 
 /**
+ * Pure: resolve raw layout rows into titled cards. A PANEL row is titled from the
+ * fixed CARD_TITLES; a WIDGET row (`widget:<jobId>`) is titled from `widgetTitles`
+ * (the live job title). Rows that resolve to no title are dropped — stale panels
+ * (a card no longer shipped) and orphan widgets (the job was deleted) — exactly
+ * like the old stale-row filter. Sorted back-to-front by z. Unit-tested.
+ */
+export function mergeLayout(rows: readonly Row[], widgetTitles: Record<string, string>): CardLayout[] {
+  return rows
+    .map((r): CardLayout | null => {
+      const base = { ...r, visible: r.visible !== 0 };
+      if (isWidgetId(r.id)) {
+        const title = widgetTitles[r.id];
+        return title ? { ...base, title, kind: 'widget' } : null;
+      }
+      const title = CARD_TITLES[r.id];
+      return title ? { ...base, title, kind: 'panel' } : null;
+    })
+    .filter((c): c is CardLayout => c !== null)
+    .sort((a, b) => a.z - b.z);
+}
+
+/** Live job titles keyed by their widget card id, for getLayout's dynamic titling. */
+function widgetTitles(db: AlfredDb): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const j of db.prepare('SELECT id, title FROM scheduled_jobs').all() as { id: string; title: string }[]) {
+    out[`${WIDGET_PREFIX}${j.id}`] = j.title;
+  }
+  return out;
+}
+
+/**
  * Read the full layout. Idempotently seeds any missing default card (covers
  * both first run and cards added in a later build), then returns every known
- * card sorted back-to-front by z.
+ * card — fixed panels AND the dynamic per-job widgets (titled from the job,
+ * orphans dropped) — sorted back-to-front by z.
  */
 export function getLayout(db: AlfredDb): CardLayout[] {
   const insert = db.prepare(
@@ -217,10 +274,25 @@ export function getLayout(db: AlfredDb): CardLayout[] {
   );
 
   const rows = db.prepare('SELECT cardId AS id, x, y, w, h, z, visible, displayId FROM layout').all() as Row[];
-  return rows
-    .filter((r) => CARD_TITLES[r.id]) // drop stale rows for cards no longer shipped
-    .map((r) => ({ ...r, title: CARD_TITLES[r.id], visible: r.visible !== 0 }))
-    .sort((a, b) => a.z - b.z);
+  return mergeLayout(rows, widgetTitles(db));
+}
+
+/**
+ * Register a job's data widget as a first-class layout row `widget:<jobId>`.
+ * INSERT OR IGNORE so a re-register (e.g. edit) never moves a widget the user
+ * already dragged. `box` is the first-placement geometry (see widgetBox); it is
+ * stacked on top (max z + 1). Called from jobs.createJob for tier-1/2 jobs.
+ */
+export function addWidgetCard(db: AlfredDb, jobId: string, box: Box, displayId: string): void {
+  const z = (db.prepare('SELECT COALESCE(MAX(z), 0) + 1 AS z FROM layout').get() as { z: number }).z;
+  db.prepare(
+    'INSERT OR IGNORE INTO layout(cardId, x, y, w, h, z, visible, displayId) VALUES (?, ?, ?, ?, ?, ?, 1, ?)',
+  ).run(`${WIDGET_PREFIX}${jobId}`, box.x, box.y, box.w, box.h, z, displayId);
+}
+
+/** Drop a job's widget row so no orphan survives the job. Called from jobs.deleteJob. */
+export function removeWidgetCard(db: AlfredDb, jobId: string): void {
+  db.prepare('DELETE FROM layout WHERE cardId = ?').run(`${WIDGET_PREFIX}${jobId}`);
 }
 
 /**

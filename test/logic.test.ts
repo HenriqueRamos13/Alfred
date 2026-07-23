@@ -94,6 +94,8 @@ import {
   nextDisplayId,
   displayForCard,
   resolveMoveTarget,
+  mergeLayout,
+  widgetBox,
   DISPLAY_MAIN,
   DISPLAY_ALL,
 } from '../src/main/core/layout.ts';
@@ -405,6 +407,44 @@ test('tileLayout fits every card inside the bounds, in order', () => {
   const narrow = tileLayout(['a', 'b'], { w: 300, h: 800 });
   assert.equal(narrow[0].x, narrow[1].x);
   assert.ok(narrow[1].y > narrow[0].y);
+});
+
+// ── dynamic widget cards in the layout store ─────────────────────────────────
+
+test('mergeLayout titles panels fixed, widgets from the job, drops stale + orphans', () => {
+  const rows = [
+    { id: 'conversation', x: 0, y: 0, w: 400, h: 400, z: 2, visible: 1, displayId: 'main' },
+    { id: 'ghostpanel', x: 0, y: 0, w: 400, h: 400, z: 3, visible: 1, displayId: 'main' }, // no longer shipped
+    { id: 'widget:abc', x: 10, y: 10, w: 220, h: 160, z: 1, visible: 1, displayId: 'main' }, // live job
+    { id: 'widget:gone', x: 0, y: 0, w: 220, h: 160, z: 4, visible: 0, displayId: 'main' }, // job deleted
+  ];
+  const cards = mergeLayout(rows, { 'widget:abc': 'Lisbon °C' });
+  // stale panel + orphan widget dropped; remaining sorted back-to-front by z
+  assert.deepEqual(cards.map((c) => c.id), ['widget:abc', 'conversation']);
+
+  const panel = cards.find((c) => c.id === 'conversation')!;
+  assert.equal(panel.kind, 'panel');
+  assert.equal(panel.title, 'CONVERSATION'); // fixed label
+  assert.equal(panel.visible, true);
+
+  const widget = cards.find((c) => c.id === 'widget:abc')!;
+  assert.equal(widget.kind, 'widget');
+  assert.equal(widget.title, 'Lisbon °C'); // title comes from the job, not CARD_TITLES
+  assert.equal(widget.visible, true);
+
+  // a widget row with no matching job title is dropped as an orphan
+  assert.equal(mergeLayout([rows[3]], {}).length, 0);
+});
+
+test('widgetBox places by placement corner, clears the command strip, staggers', () => {
+  const b = { w: 1280, h: 800 };
+  const tr = widgetBox('tr', 0, b);
+  assert.ok(tr.x > b.w / 2, 'top-right sits on the right half');
+  assert.ok(tr.y >= 122, 'clears the ~118px command strip');
+  assert.equal(widgetBox('tl', 0, b).x, 24, 'top-left hugs the left margin');
+  assert.ok(widgetBox('bl', 0, b).y > b.h / 2, 'bottom corner sits low');
+  assert.deepEqual(widgetBox(undefined, 0, b), tr, 'default corner is top-right');
+  assert.notEqual(widgetBox('tr', 1, b).y, tr.y, 'index staggers so widgets do not stack exactly');
 });
 
 // ── multi-monitor: card ↔ display assignment ─────────────────────────────────

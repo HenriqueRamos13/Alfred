@@ -175,6 +175,12 @@ export interface RenderUiPayload {
 export interface CardLayout {
   id: string;
   title: string;
+  /**
+   * 'panel' = a fixed built-in control-centre card (title from CARD_TITLES).
+   * 'widget' = a dynamic scheduled-job data card `widget:<jobId>` (title = job.title),
+   * so the model can tell a job's own data widget apart from the SCHEDULED TASKS panel.
+   */
+  kind: 'panel' | 'widget';
   x: number;
   y: number;
   w: number;

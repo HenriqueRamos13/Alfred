@@ -8,7 +8,7 @@ latest manual placement. Source: tool `src/main/tools/uiLayout.ts`, logic
 ## Ops
 | op | args | does |
 |----|------|------|
-| `get_layout` | — | list every card `{ id, title, x, y, w, h, visible, displayId }` + the canvas `viewport { w, h }` + a `displays[]` array of **every monitor** `{ id, label, primary, bounds, workArea }` (DIPs) |
+| `get_layout` | — | list every card `{ id, title, kind, x, y, w, h, visible, displayId }` + the canvas `viewport { w, h }` + a `displays[]` array of **every monitor** `{ id, label, primary, bounds, workArea }` (DIPs) |
 | `move_card` | `id`, `x`, `y`, `displayId?` | reposition. Omit `displayId` to move within the card's current monitor; pass a `displays[].id` (or `main`/`all`) to move the card **to that monitor** |
 | `resize_card` | `id`, `w`, `h` | resize |
 | `show_card` | `id` | make visible |
@@ -39,6 +39,12 @@ to the primary automatically. The user can also drag cards and use the "move to
 next monitor" control, so `get_layout` first.
 
 ## Behaviour & limits
+- **`kind` tells panels from job widgets.** `kind:"panel"` is a fixed built-in
+  card; `kind:"widget"` is a scheduled **job's** own data card, id `widget:<jobId>`,
+  titled with the job's title. A job's live-data widget is a **separate** card from
+  the `SCHEDULED TASKS` panel (`kind:"panel"`, id `jobs`) — move/resize/show/hide
+  and `arrange` treat widgets exactly like panels. A widget appears when its job is
+  created (render tier 1/2) and disappears when the job is deleted.
 - **Call `get_layout` first** — the user drags cards too, so positions change.
 - Coordinates are pixels relative to the canvas whose `w`/`h` `get_layout`
   reports. Moves/resizes are **clamped on-screen**: minimum size 220×120, and a
