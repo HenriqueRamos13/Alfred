@@ -1544,6 +1544,9 @@ import {
   buildAgentContext,
   parseGrant,
   resolveTeamModel,
+  studyNoteSlug,
+  composeStudyNote,
+  addTopicToIndex,
 } from '../src/main/core/team-pure.ts';
 
 test('catalog — listModels/findModel/priceOf, Anthropic shared by both Claude providers', () => {
@@ -2454,6 +2457,11 @@ test('agentIdFromName — slug from name, unique against collisions', () => {
   // name with no slug-able chars falls back
   assert.equal(agentIdFromName('!!!'), 'agent');
   assert.equal(agentIdFromName('!!!', ['agent']), 'agent-2');
+  // SECURITY: the id becomes a path segment (agents/<id>/knowledge/) — a hostile
+  // name must never yield a traversable id. saveStudyNote asserts this same shape.
+  for (const evil of ['../../etc/passwd', '..', 'a/b/c', 'foo\\bar', '....//', '  /root  ']) {
+    assert.match(agentIdFromName(evil), /^[a-z0-9-]+$/, `traversable id from ${JSON.stringify(evil)}`);
+  }
 });
 
 test('validateAgentSpec — ok, defaults role, rejects bad provider/model/name', () => {
@@ -2562,4 +2570,50 @@ test('buildAgentContext — role + shared index + own notes, capped, no other-ag
   // empty role + no notes still yields a usable system string
   const bare = buildAgentContext({ ...agent, role: '' }, '', []);
   assert.match(bare, /No specialty set yet|Coder/);
+});
+
+// ── team on-demand learning (Phase 5, stage 3): study-note plan + index topic ──
+
+test('studyNoteSlug — slug from topic, same topic collides to the same note', () => {
+  assert.equal(studyNoteSlug('Rust async runtimes'), 'rust-async-runtimes');
+  assert.equal(studyNoteSlug('  ESM & .ts extensions!  '), 'esm-ts-extensions');
+  // same topic → same slug, so a re-study lands on the same note (append, not a new file)
+  assert.equal(studyNoteSlug('Rust async runtimes'), studyNoteSlug('rust-async-runtimes'));
+  // empty / symbol-only → fallback
+  assert.equal(studyNoteSlug('!!!'), 'study');
+  assert.equal(studyNoteSlug(''), 'study');
+});
+
+test('composeStudyNote — fresh note vs dated append on re-study (never overwrites)', () => {
+  const fresh = composeStudyNote(null, 'Rust async', 'Tokio is the de-facto runtime.', '2026-07-23');
+  assert.match(fresh, /# Rust async/);
+  assert.match(fresh, /Tokio is the de-facto runtime\./);
+  assert.match(fresh, /2026-07-23/);
+  // re-study the same topic → keeps old content, appends a dated section
+  const appended = composeStudyNote(fresh, 'Rust async', 'async-std is now deprecated.', '2026-07-24');
+  assert.ok(appended.includes('Tokio is the de-facto runtime.'));
+  assert.ok(appended.includes('async-std is now deprecated.'));
+  assert.match(appended, /## Update 2026-07-24/);
+  // blank existing is treated as fresh
+  assert.match(composeStudyNote('   ', 'T', 'body', '2026-07-23'), /# T/);
+});
+
+test('addTopicToIndex — appends to the right agent, dedups, leaves others untouched', () => {
+  const index = buildAgentsIndex([
+    { id: 'coder', name: 'Coder', role: 'TS', model: 'claude-opus-4-8' },
+    { id: 'writer', name: 'Writer', role: 'prose', model: 'claude-sonnet-5' },
+  ]);
+  const once = addTopicToIndex(index, 'coder', 'Rust async');
+  assert.match(once, /`coder`.*· studied: Rust async/);
+  // the other agent's line is byte-for-byte unchanged
+  const writerLine = (s: string) => s.split('\n').find((l) => l.includes('`writer`'));
+  assert.equal(writerLine(once), writerLine(index));
+  // a second, different topic accrues on the same line
+  const twice = addTopicToIndex(once, 'coder', 'WASM');
+  assert.match(twice, /`coder`.*· studied: Rust async, WASM/);
+  // idempotent: same topic (case-insensitive) is not duplicated
+  assert.equal(addTopicToIndex(twice, 'coder', 'rust async'), twice);
+  // unknown agent / blank topic → unchanged
+  assert.equal(addTopicToIndex(index, 'ghost', 'X'), index);
+  assert.equal(addTopicToIndex(index, 'coder', '   '), index);
 });

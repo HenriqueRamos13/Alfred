@@ -13,7 +13,8 @@
 
 import { mkdir, writeFile, readFile, readdir } from 'node:fs/promises';
 import { join } from 'node:path';
-import { agentIdFromName, buildAgentsIndex, buildAgentContext, parseGrant, type AgentNote, type AgentSpec, type TeamAgent } from './team-pure.ts';
+import { agentIdFromName, buildAgentsIndex, buildAgentContext, parseGrant, composeStudyNote, studyNoteSlug, addTopicToIndex, type AgentNote, type AgentSpec, type TeamAgent } from './team-pure.ts';
+import { dayKey } from './jobs-pure.ts';
 
 type DB = import('better-sqlite3').Database;
 
@@ -103,4 +104,43 @@ export async function loadAgentContext(workspace: string, agent: TeamAgent): Pro
     if (body.trim()) notes.push({ title: f.replace(/\.md$/, ''), body });
   }
   return buildAgentContext(agent, indexText, notes);
+}
+
+/**
+ * Persist a study run's synthesised findings as a knowledge note — CONFINED to
+ * the agent's OWN folder: `agents/<agentId>/knowledge/<slug>.md`, where the slug
+ * comes from slugify so it can never escape that folder (no `/`, `.`, `..`).
+ * Re-studying a topic APPENDS a dated section instead of overwriting. Done by the
+ * trusted runner, never by the agent (the agent gets no arbitrary file-write tool).
+ */
+export async function saveStudyNote(
+  workspace: string,
+  agentId: string,
+  topic: string,
+  findings: string,
+  now: Date = new Date(),
+): Promise<{ slug: string; file: string; mode: 'create' | 'append'; relativePath: string }> {
+  // Defence-in-depth: agentId goes straight into the write path. Callers pass a
+  // DB-row id (a slug from agentIdFromName), but assert the confined charset here
+  // so a mis-wired caller (e.g. a future scheduled-study path) can never traverse.
+  if (!/^[a-z0-9-]+$/.test(agentId)) throw new Error(`invalid agentId "${agentId}" (must be a slug)`);
+  const slug = studyNoteSlug(topic);
+  const dir = join(workspace, 'agents', agentId, 'knowledge');
+  await mkdir(dir, { recursive: true });
+  const file = join(dir, `${slug}.md`);
+  const existing = await readFile(file, 'utf8').catch(() => null);
+  await writeFile(file, composeStudyNote(existing, topic, findings, dayKey(now.getTime())), 'utf8');
+  return { slug, file, mode: existing ? 'append' : 'create', relativePath: `agents/${agentId}/knowledge/${slug}.md` };
+}
+
+/**
+ * Add a studied topic to the agent's line in the shared index (agents/index.md)
+ * so Alfred can route by learned topic. Missing/empty index or unknown agent →
+ * a no-op (never throws). Local edit only — not egress.
+ */
+export async function addStudyTopicToIndex(workspace: string, agentId: string, topic: string): Promise<void> {
+  const file = join(workspace, 'agents', 'index.md');
+  const cur = await readFile(file, 'utf8').catch(() => '');
+  const next = addTopicToIndex(cur, agentId, topic);
+  if (next !== cur) await writeFile(file, next, 'utf8');
 }

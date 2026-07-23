@@ -96,3 +96,52 @@ per-agent daily budget arrives in a later stage.
 ```json
 { "agentId": "coder", "task": "Refactor src/foo.ts to use async/await", "model": "claude-sonnet-5" }
 ```
+
+## agent_study (teach an agent on demand)
+
+`agent_study {agentId, topic, model?}` makes a roster agent **learn** a topic
+now. Source: `src/main/tools/agent-study.ts` (+ `core/team.ts` `saveStudyNote` /
+`addStudyTopicToIndex`, `core/team-pure.ts` `studyNoteSlug` / `composeStudyNote`
+/ `addTopicToIndex`). **Risk T2** — egress research plus persisted knowledge,
+gated once before it runs.
+
+- **`agentId`** (required) — the id from `team op=list`. Unknown → clear error.
+- **`topic`** (required) — what to study (e.g. `Rust async runtimes`). Its
+  `slugify` slug is the note filename.
+- **`model`** (optional) — overrides the agent's model, same rule as
+  `delegate_to_agent` (`resolveTeamModel`).
+
+**How it runs.** It **reuses the `delegate_to_agent` runner verbatim** — same
+model, same assembled context, same per-tool grant enforcement, same attended
+governance, same per-run trifecta escalation, same **global** daily token
+kill-switch — handing the agent a fixed research brief: *research the topic with
+the browser (read-only), then output the synthesis as the final message; do not
+save files*. To avoid recursion, a studying/delegated agent's toolset excludes
+both `delegate_to_agent` and `agent_study`.
+
+**Grant / governance.**
+- Web research is browser **read** (read-only egress) → the `read` capability.
+  The agent's grant **must** include `read`, else the run is refused up front
+  with a clear error to grant it (`team op=create … grant:["read", …]`).
+- **Attended** (a human triggered it) → sensitive actions take the normal
+  approval path. Reading untrusted web content is fine; if the agent then
+  attempts anything **outbound**, the trifecta escalation (in the reused runner)
+  forces human approval. The note write itself is **local** — a file in the
+  agent's own folder, confined by a `slugify` slug (no `/`, `.`, `..`), never
+  egress — and is done by the **trusted runner**, not by the agent (the agent
+  gets no arbitrary file-write tool).
+
+**Persistence.** The runner captures the agent's final synthesised text and:
+1. writes it to `agents/<agentId>/knowledge/<slug>.md` — a **fresh** note, or a
+   dated `## Update <YYYY-MM-DD>` section **appended** if the topic was studied
+   before (`composeStudyNote` — never overwrites);
+2. adds the topic to that agent's line in the shared `agents/index.md`
+   (`· studied: …`, deduped) so Alfred can route by learned topic
+   (`addTopicToIndex`).
+
+Returns `{ agent, topic, note (relative path), mode: "create"|"append",
+indexUpdated, findings }`.
+
+```json
+{ "agentId": "researcher", "topic": "Rust async runtimes" }
+```

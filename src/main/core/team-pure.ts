@@ -171,6 +171,58 @@ export function buildAgentContext(
   return parts.join('\n\n');
 }
 
+// ── on-demand learning (Phase 5, stage 3): study-note plan + index topic ─────
+
+/** Slug for a study note file from a topic (idempotent; empty/symbol-only → 'study'). */
+export function studyNoteSlug(topic: string): string {
+  return slugify(topic) || 'study';
+}
+
+/**
+ * Compose the knowledge note a completed study run persists. A fresh topic → a
+ * new note (title header + dated findings). Re-studying the SAME topic (same
+ * slug) → the prior note with a new dated section APPENDED (knowledge accrues
+ * per topic; nothing is overwritten). Pure so the write plan is unit-testable —
+ * the trusted runner (not the agent) does the IO in core/team.ts.
+ */
+export function composeStudyNote(existing: string | null, topic: string, findings: string, day: string): string {
+  const body = findings.trim();
+  if (!existing || !existing.trim()) {
+    return `# ${topic.trim()}\n\n_Studied ${day}. Synthesised by the agent from web research._\n\n${body}\n`;
+  }
+  return `${existing.trimEnd()}\n\n## Update ${day}\n\n${body}\n`;
+}
+
+/**
+ * Append a studied `topic` to an agent's line in the shared who-knows-what index
+ * text (a `· studied: a, b` suffix) so Alfred can route by learned topic. Pure
+ * string transform: edits ONLY the single line carrying `` `<agentId>` `` (as
+ * written by buildAgentsIndex), dedups the topic case-insensitively, and leaves
+ * every other line and the document structure byte-for-byte untouched. An
+ * unknown agentId (or blank topic) returns the text unchanged.
+ * ponytail: a later create/delete rebuilds index.md from DB rows (buildAgentsIndex)
+ * and drops these suffixes — upgrade path is to derive topics from the knowledge
+ * folder in buildAgentsIndex. For now the note files on disk are the durable record.
+ */
+export function addTopicToIndex(indexText: string, agentId: string, topic: string): string {
+  const label = topic.trim().replace(/\s+/g, ' ');
+  if (!label) return indexText;
+  const marker = `\`${agentId}\``;
+  let done = false;
+  return indexText
+    .split('\n')
+    .map((line) => {
+      if (done || !line.startsWith('- ') || !line.includes(marker)) return line;
+      done = true;
+      const m = line.match(/ · studied: (.+)$/);
+      if (!m) return `${line} · studied: ${label}`;
+      const topics = m[1].split(',').map((t) => t.trim()).filter(Boolean);
+      if (topics.some((t) => t.toLowerCase() === label.toLowerCase())) return line; // idempotent
+      return `${line.slice(0, m.index)} · studied: ${[...topics, label].join(', ')}`;
+    })
+    .join('\n');
+}
+
 /** Shared "who-knows-what" index (agents/index.md): one line per agent, name → specialty. */
 export function buildAgentsIndex(agents: readonly Pick<TeamAgent, 'id' | 'name' | 'role' | 'model'>[]): string {
   const lines = [

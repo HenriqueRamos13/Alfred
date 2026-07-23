@@ -146,7 +146,8 @@ async function runApiTurn(
   const stepCap = cfg.stepCap;
 
   const { tools: allTools } = (await import('./index.ts')) as { tools: Tool[] };
-  const subTools = allTools.filter((t) => t.name !== 'delegate_to_agent'); // no trivial self-recursion
+  // No trivial self-recursion: a delegated/studying agent can't spawn more delegations or studies.
+  const subTools = allTools.filter((t) => t.name !== 'delegate_to_agent' && t.name !== 'agent_study');
   const brainHasVision = modelSupportsVision(provider, model);
 
   const controller = new AbortController();
