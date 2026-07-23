@@ -109,7 +109,9 @@ func resolveWakeWords() -> [String] {
 /// + supressão de ruído + AGC) no input node, ANTES do tap e do engine.start().
 /// Sem isto, durante a TTS do Alfred (colunas) o micro só capta a voz dele (bleed)
 /// e o "alfred" do utilizador nunca é reconhecido → o barge-in nunca dispara.
-/// Toggle ALFRED_STT_AEC (default LIGADO; "0"/"false"/"off" desliga). O formato é
+/// Toggle ALFRED_STT_AEC (EXPERIMENTAL, default DESLIGADO — liga só com
+/// "1"/"true"/"on"/"yes"). OFF garante que o STT/wake nunca parte; quem quiser
+/// testar barge-in com colunas liga explicitamente. O formato é
 /// SEMPRE lido DEPOIS de ligar o VP porque o VPIO pode forçar float32 44.1/48k;
 /// devolve o formato a usar no tap. Fallback obrigatório: se ligar/formatar falhar,
 /// avisa em stderr e continua sem VP (comportamento actual — o helper nunca parte).
@@ -120,7 +122,7 @@ func resolveWakeWords() -> [String] {
 func startVoiceProcessing(_ input: AVAudioInputNode) -> AVAudioFormat {
     let raw = (ProcessInfo.processInfo.environment["ALFRED_STT_AEC"] ?? "")
         .lowercased().trimmingCharacters(in: .whitespaces)
-    if raw != "0" && raw != "false" && raw != "off" {
+    if raw == "1" || raw == "true" || raw == "on" || raw == "yes" {
         do {
             try input.setVoiceProcessingEnabled(true)
         } catch {
