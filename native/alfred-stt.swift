@@ -105,6 +105,39 @@ func resolveWakeWords() -> [String] {
     return words
 }
 
+/// Barge-in / anti-eco: liga o Voice Processing I/O do macOS (cancelamento de eco
+/// + supressão de ruído + AGC) no input node, ANTES do tap e do engine.start().
+/// Sem isto, durante a TTS do Alfred (colunas) o micro só capta a voz dele (bleed)
+/// e o "alfred" do utilizador nunca é reconhecido → o barge-in nunca dispara.
+/// Toggle ALFRED_STT_AEC (default LIGADO; "0"/"false"/"off" desliga). O formato é
+/// SEMPRE lido DEPOIS de ligar o VP porque o VPIO pode forçar float32 44.1/48k;
+/// devolve o formato a usar no tap. Fallback obrigatório: se ligar/formatar falhar,
+/// avisa em stderr e continua sem VP (comportamento actual — o helper nunca parte).
+///
+/// Barge-in / anti-echo: enable macOS Voice Processing I/O (AEC + noise suppression
+/// + AGC) on the input node before the tap/engine start, so Alfred's own TTS on the
+/// speakers is cancelled from the mic and the user's "alfred" is actually heard.
+func startVoiceProcessing(_ input: AVAudioInputNode) -> AVAudioFormat {
+    let raw = (ProcessInfo.processInfo.environment["ALFRED_STT_AEC"] ?? "")
+        .lowercased().trimmingCharacters(in: .whitespaces)
+    if raw != "0" && raw != "false" && raw != "off" {
+        do {
+            try input.setVoiceProcessingEnabled(true)
+        } catch {
+            note("voice processing (AEC) unavailable; continuing without echo cancellation — barge-in during TTS may not fire: \(error.localizedDescription)")
+        }
+    }
+    // Read the format AFTER VP (VPIO can change it). If VP handed back an invalid
+    // format, back out of VP and use the plain device format.
+    var format = input.outputFormat(forBus: 0)
+    if format.sampleRate <= 0 || format.channelCount == 0 {
+        note("voice processing produced an invalid input format; disabling AEC and using the device format")
+        try? input.setVoiceProcessingEnabled(false)
+        format = input.outputFormat(forBus: 0)
+    }
+    return format
+}
+
 // MARK: - Recognizer
 
 final class Recognizer {
@@ -132,7 +165,7 @@ final class Recognizer {
         guard recognizer.isAvailable else { fail("speech recognizer is unavailable right now") }
 
         let input = engine.inputNode
-        let format = input.outputFormat(forBus: 0)
+        let format = startVoiceProcessing(input)   // AEC/barge-in; format read AFTER VP
         input.installTap(onBus: 0, bufferSize: 1024, format: format) { [weak self] buffer, _ in
             self?.request?.append(buffer)
         }
@@ -265,7 +298,7 @@ final class WakeRecognizer {
             note("on-device recognition unavailable for \(recognizer.locale.identifier); wake word will use server mode (needs network, may be rate-limited)")
         }
         let input = engine.inputNode
-        let format = input.outputFormat(forBus: 0)
+        let format = startVoiceProcessing(input)   // AEC/barge-in; format read AFTER VP
         input.installTap(onBus: 0, bufferSize: 1024, format: format) { [weak self] buffer, _ in
             self?.request?.append(buffer)
         }
