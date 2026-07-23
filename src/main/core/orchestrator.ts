@@ -648,10 +648,28 @@ export function createOrchestrator(opts: CreateOrchestratorOpts): OrchestratorHa
   // Wake commands: a {final} from the wake helper is first checked for an ACTION
   // intent (esconder/mostrar/enviar). Only 'dictate' falls through to fill the
   // input (the existing behaviour); everything else is consumed here.
+  // The wake words the helper listens for — resolved once (env is fixed per boot);
+  // reused for barge-in detection so the list isn't duplicated (mirrors the helper).
+  const wakeWords = wakeword.resolveWakeWords();
   const wakeEmit = (e: StreamEvent): void => {
-    // Half-duplex: while Alfred speaks, the mic hears him — drop the wake-path
-    // audio events so he never self-activates or transcribes his own voice.
-    if (wakeword.suppressWhileSpeaking(e, tts.isSpeaking())) return;
+    const speaking = tts.isSpeaking();
+    // Barge-in: while Alfred speaks, a wake detection is EITHER the user cutting in
+    // OR the echo of Alfred saying his own name ("Olá, sou o Alfred…"). If the line
+    // he is speaking NOW does not contain the wake word it's the user → stop him and
+    // capture the command; if it does, it's his own voice → drop it so he never
+    // self-interrupts his greeting.
+    if (speaking && e.kind === 'wake.detected') {
+      const hasWake = wakeword.speechContainsWake(tts.currentSpeechText(), wakeWords);
+      if (wakeword.shouldBargeIn(e, speaking, hasWake)) {
+        tts.stop(); // stop TTS + unmute now (no tail) so the command isn't suppressed
+        console.info('[alfred] wake barge-in — user interrupted TTS');
+        emit({ ...e, bargeIn: true }); // renderer enters listening + logs the interruption
+        return;
+      }
+      return; // his own-name echo → drop, don't self-interrupt
+    }
+    // Half-duplex anti-echo: partials/finals while speaking are his own voice.
+    if (wakeword.suppressWhileSpeaking(e, speaking)) return;
     if (e.kind === 'stt.final' && handleVoiceIntent(e.text)) return;
     emit(e);
   };

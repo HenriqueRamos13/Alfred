@@ -259,7 +259,9 @@ export type StreamEvent =
   | { kind: 'reference.error'; threadId: string; message: string }
   | { kind: 'stt.partial'; sessionId: string; text: string }
   | { kind: 'stt.final'; sessionId: string; text: string }
-  | { kind: 'wake.detected'; sessionId: string }
+  // bargeIn: this detection interrupted Alfred's own speech (the user cut in),
+  // so main stopped the TTS — the UI logs it as an interruption, not a plain wake.
+  | { kind: 'wake.detected'; sessionId: string; bargeIn?: boolean }
   // Wake listener lifecycle, so the UI can show at a glance WHY it is (not)
   // hearing you: listening (armed) · suppressed (muted while Alfred speaks) ·
   // failed (helper crashed — reason + auto-retry) · stopped (killed) · disabled

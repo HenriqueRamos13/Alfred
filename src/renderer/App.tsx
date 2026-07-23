@@ -408,7 +408,11 @@ export default function App() {
           // stt.partial/stt.final that follow reuse the mic path (fill the input).
           setListening(true);
           setDict((d) => dictationReduce(d, { kind: 'activate' }));
-          pushLog({ tag: 'WAKE', tone: 'cyan', msg: 'ouvi “Alfred” — a captar comando' });
+          pushLog({
+            tag: 'WAKE',
+            tone: 'cyan',
+            msg: e.bargeIn ? 'interrompi o Alfred — a captar comando' : 'ouvi “Alfred” — a captar comando',
+          });
           break;
         case 'wake.status': {
           setWakeStatus({ status: e.status, reason: e.reason });

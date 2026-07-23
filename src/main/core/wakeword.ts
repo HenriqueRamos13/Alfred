@@ -152,6 +152,40 @@ export function suppressWhileSpeaking(ev: StreamEvent, speaking: boolean): boole
 }
 
 /**
+ * The wake words the helper listens for — mirrors native/alfred-stt.swift's
+ * resolveWakeWords so main can decide barge-in without duplicating the list:
+ * ALFRED_WAKEWORD (default "alfred"), plus the common ASR mishearing "alfredo"
+ * when the default is in use. Single source in TS; pass `env` to keep it pure.
+ */
+export function resolveWakeWords(env: Record<string, string | undefined> = process.env): string[] {
+  const base = (env.ALFRED_WAKEWORD ?? 'alfred').toLowerCase().trim() || 'alfred';
+  return base === 'alfred' ? [base, 'alfredo'] : [base];
+}
+
+/**
+ * PURE — does `text` contain any wake word? Normalised the same way as the STT
+ * (lowercase, diacritics stripped) so "Álfred"/"ALFRED" match. Empty text (nothing
+ * playing) or empty wake words → false.
+ */
+export function speechContainsWake(text: string, wakeWords: string[]): boolean {
+  const hay = norm(text);
+  return wakeWords.some((w) => w !== '' && hay.includes(norm(w)));
+}
+
+/**
+ * PURE — barge-in decision. While Alfred speaks, a wake detection is EITHER the
+ * user cutting in OR the echo of Alfred saying his own name. If the line he is
+ * speaking NOW does not itself contain the wake word (`currentSpeechHasWake`
+ * false), the detection is the user → barge-in (stop him). If it does, it is his
+ * own voice → not a barge-in (never self-interrupt his greeting). Only the
+ * `wake.detected` event triggers this; partials/finals stay under the anti-echo
+ * suppression (suppressWhileSpeaking).
+ */
+export function shouldBargeIn(ev: StreamEvent, isSpeaking: boolean, currentSpeechHasWake: boolean): boolean {
+  return isSpeaking && ev.kind === 'wake.detected' && !currentSpeechHasWake;
+}
+
+/**
  * A voice command's intent, parsed from a wake command transcript. `hide`/`show`
  * act on Alfred's windows; `send` submits (with the trailing text, or the current
  * input when empty); `dictate` is the default — fill the input, user confirms.

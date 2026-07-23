@@ -80,6 +80,7 @@ let epoch = 0;
 // the queue drains AND a tail elapses — the tail keeps the mute on long enough
 // that the final echo isn't captured as a self-command.
 let speaking = false;
+let currentText = ''; // the utterance currently audible (for wake barge-in detection)
 let pending = 0; // enqueued utterances not yet finished
 let tailTimer: ReturnType<typeof setTimeout> | null = null;
 let watchdogTimer: ReturnType<typeof setTimeout> | null = null;
@@ -105,6 +106,13 @@ export function isSpeaking(): boolean {
   return speaking;
 }
 
+/** The text of the utterance currently being spoken, or '' when nothing plays.
+ * The orchestrator matches this against the wake words to tell his own-name echo
+ * apart from a real user barge-in. */
+export function currentSpeechText(): string {
+  return speaking ? currentText : '';
+}
+
 /** Register the (single) listener notified whenever the speaking state flips. */
 export function onSpeaking(cb: (speaking: boolean) => void): void {
   onChange = cb;
@@ -113,6 +121,7 @@ export function onSpeaking(cb: (speaking: boolean) => void): void {
 function setSpeaking(v: boolean): void {
   if (v === speaking) return;
   speaking = v;
+  if (!v) currentText = ''; // mute dropped → no utterance is audible anymore
   if (v) armWatchdog();
   else if (watchdogTimer) {
     clearTimeout(watchdogTimer);
@@ -223,7 +232,7 @@ async function synthAndPlay(text: string, live: () => boolean): Promise<void> {
   const wav = join(tmpdir(), `alfred-tts-${randomUUID()}.wav`);
   await audio.save(wav);
   try {
-    await runPlayer('afplay', [wav], live);
+    await runPlayer('afplay', [wav], live, text);
   } finally {
     await unlink(wav).catch(() => {});
   }
@@ -238,10 +247,10 @@ async function sayPlay(text: string, live: () => boolean): Promise<void> {
   const voice = process.env.ALFRED_TTS_VOICE?.trim() || DEFAULT_SAY_VOICE;
   const rate = process.env.ALFRED_TTS_RATE?.trim();
   const rateArgs = rate ? ['-r', rate] : [];
-  const code = await runPlayer('say', ['-v', voice, ...rateArgs, text], live);
+  const code = await runPlayer('say', ['-v', voice, ...rateArgs, text], live, text);
   if (live() && code !== 0 && code !== null) {
     console.warn(`[alfred] tts: voice "${voice}" unavailable (say exit ${code}); retrying with the system default voice`);
-    await runPlayer('say', [...rateArgs, text], live);
+    await runPlayer('say', [...rateArgs, text], live, text);
   }
 }
 
@@ -249,11 +258,12 @@ async function sayPlay(text: string, live: () => boolean): Promise<void> {
  * resolve with the exit code when it closes. Shared by afplay (kokoro) and say.
  * A null code means killed (stop()) or a spawn/ENOENT failure (missing binary on
  * non-macOS / broken PATH) — logged, not thrown. */
-function runPlayer(cmd: string, args: string[], live: () => boolean): Promise<number | null> {
+function runPlayer(cmd: string, args: string[], live: () => boolean, text: string): Promise<number | null> {
   return new Promise((resolve) => {
     if (!live()) return resolve(null);
     const proc = spawn(cmd, args);
     current = proc;
+    currentText = text; // this utterance is now audible (for wake barge-in detection)
     beginPlayback(); // a player is now audible → mute the mic (half-duplex)
     const done = (code: number | null) => {
       if (current === proc) current = null;

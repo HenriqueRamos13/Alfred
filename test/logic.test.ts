@@ -30,6 +30,9 @@ import {
   wakeStreamEvent,
   parseVoiceIntent,
   suppressWhileSpeaking,
+  shouldBargeIn,
+  speechContainsWake,
+  resolveWakeWords,
 } from '../src/main/core/wakeword.ts';
 import { watchdogAction } from '../src/main/core/tts.ts';
 import { initialDictation, dictationReduce } from '../src/main/core/dictation.ts';
@@ -996,6 +999,48 @@ test('suppressWhileSpeaking — drops wake-path audio events only while speaking
   assert.equal(suppressWhileSpeaking(wake, false), false);
   assert.equal(suppressWhileSpeaking(partial, false), false);
   assert.equal(suppressWhileSpeaking(final, false), false);
+});
+
+test('speechContainsWake — accent/case-insensitive match against the wake list', () => {
+  const words = ['alfred', 'alfredo'];
+  // he IS saying his own name (any case / accent) → true
+  assert.equal(speechContainsWake('Olá, sou o Alfred', words), true);
+  assert.equal(speechContainsWake('ALFRED aqui', words), true);
+  assert.equal(speechContainsWake('chamo-me álfred', words), true); // accented echo
+  assert.equal(speechContainsWake('o alfredo chegou', words), true);
+  // the line has no wake word → false (a real user "alfred" over this is barge-in)
+  assert.equal(speechContainsWake('a bateria está a 80 por cento', words), false);
+  // nothing playing (empty text) → false
+  assert.equal(speechContainsWake('', words), false);
+  // empty wake words never match
+  assert.equal(speechContainsWake('alfred', ['']), false);
+  // custom ALFRED_WAKEWORD (via resolveWakeWords) is covered too, same accent/case
+  // normalisation — so barge-in never self-interrupts a custom name, and a real
+  // user saying it still counts. (needle is normalised, not just the haystack)
+  const custom = resolveWakeWords({ ALFRED_WAKEWORD: 'Jarvis' });
+  assert.equal(speechContainsWake('sou o JÁRVIS', custom), true);
+  assert.equal(speechContainsWake('o tempo está bom', custom), false);
+});
+
+test('resolveWakeWords — mirrors the Swift helper: base + "alfredo", env override', () => {
+  assert.deepEqual(resolveWakeWords({}), ['alfred', 'alfredo']);
+  assert.deepEqual(resolveWakeWords({ ALFRED_WAKEWORD: '' }), ['alfred', 'alfredo']);
+  assert.deepEqual(resolveWakeWords({ ALFRED_WAKEWORD: 'Alfred' }), ['alfred', 'alfredo']);
+  // a custom wake word does NOT get the "alfredo" mishearing alias
+  assert.deepEqual(resolveWakeWords({ ALFRED_WAKEWORD: 'jarvis' }), ['jarvis']);
+});
+
+test('shouldBargeIn — user "alfred" over a non-self line interrupts; self-name echo does not', () => {
+  const wake = { kind: 'wake.detected', sessionId: 's' } as const;
+  const partial = { kind: 'stt.partial', sessionId: 's', text: 'x' } as const;
+  // (a) speaking + wake + line WITHOUT the wake word → barge-in (the user)
+  assert.equal(shouldBargeIn(wake, true, false), true);
+  // (b) speaking + wake + line WITH the wake word → suppress (his own greeting echo)
+  assert.equal(shouldBargeIn(wake, true, true), false);
+  // (c) speaking + a non-wake event → never a barge-in (anti-echo handles it)
+  assert.equal(shouldBargeIn(partial, true, false), false);
+  // (d) not speaking + wake → not a barge-in (normal activation path)
+  assert.equal(shouldBargeIn(wake, false, false), false);
 });
 
 // ── wakeword: voice-command intent parser ────────────────────────────────────
