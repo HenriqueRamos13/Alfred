@@ -741,6 +741,137 @@ body {
 .cost-table td { padding: 4px 6px; color: #9fb6c6; border-bottom: 1px solid rgba(64, 224, 255, 0.07); }
 .cost-note { font-size: 9.5px; color: var(--dim); letter-spacing: 0.5px; }
 
+/* ── activity legend (tool tone key) ───────────────────────────────── */
+.log-legend {
+  flex-shrink: 0;
+  display: flex;
+  gap: 14px;
+  margin-top: 6px;
+  padding-top: 5px;
+  border-top: 1px solid color-mix(in oklab, var(--acc) 15%, transparent);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.14em;
+}
+.log-legend > span { display: inline-flex; align-items: center; gap: 4px; }
+
+/* ── cost card (ported layout: big €, gradient bar, per-model list) ──── */
+.cost-headline { display: flex; align-items: baseline; gap: 8px; }
+.cost-big {
+  font-family: var(--font-mono);
+  font-size: 30px;
+  font-weight: 700;
+  line-height: 1;
+  color: var(--acc);
+  text-shadow: 0 0 12px color-mix(in oklab, var(--acc) 45%, transparent);
+}
+.cost-big-sub { font-size: 12px; color: var(--dim); }
+.cost-sub { font-family: var(--font-mono); font-size: 11px; color: var(--muted); margin: 2px 0 8px; }
+.cost-bar {
+  height: 8px;
+  background: rgba(0, 0, 0, 0.45);
+  border: 1px solid color-mix(in oklab, var(--acc) 25%, transparent);
+  margin-bottom: 12px;
+  overflow: hidden;
+}
+.cost-bar > div { height: 100%; background: linear-gradient(90deg, var(--grn), var(--amb)); }
+.cost-bar > div.over { background: linear-gradient(90deg, var(--amb), var(--red)); }
+.cost-models { display: flex; flex-direction: column; gap: 5px; font-family: var(--font-mono); font-size: 11px; color: var(--muted); }
+.cost-model-row { display: flex; justify-content: space-between; gap: 8px; }
+.cost-model-row > span:last-child { color: var(--acc); }
+.cost-limit {
+  margin-top: 12px;
+  width: 100%;
+  box-sizing: border-box;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  text-align: center;
+  padding: 6px 0;
+  background: color-mix(in oklab, var(--red) 10%, transparent);
+  border: 1px solid var(--red);
+  color: var(--red);
+}
+
+/* ── scheduled tasks (ported table + type tags + approvals) ─────────── */
+.sched { display: flex; flex-direction: column; gap: 12px; }
+.sched-table {
+  display: grid;
+  grid-template-columns: 1.4fr 0.9fr 1fr 1.1fr;
+  gap: 4px 10px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  align-items: baseline;
+}
+.sched-th { color: #3a5866; letter-spacing: 0.14em; font-size: 10px; }
+.sched-task { color: var(--text); display: flex; align-items: center; gap: 6px; }
+.sched-tag { font-size: 9px; letter-spacing: 0.12em; }
+.sched-tag.agent { color: var(--mag); }
+.sched-tag.fetch { color: var(--acc); }
+.sched-tag.study { color: var(--amb); }
+.sched-cell { color: var(--muted); }
+.sched-state.ok { color: var(--grn); }
+.sched-state.err { color: var(--red); }
+.sched-state.warn { color: var(--amb); }
+.sched-actions { grid-column: 1 / -1; display: flex; gap: 6px; padding: 2px 0 6px; }
+.sched-btn {
+  background: transparent;
+  border: 1px solid color-mix(in oklab, var(--acc) 25%, transparent);
+  border-radius: 2px;
+  color: var(--dim);
+  cursor: pointer;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  padding: 2px 8px;
+}
+.sched-btn:hover { color: var(--acc); border-color: var(--acc); }
+.sched-btn.danger { border-color: color-mix(in oklab, var(--red) 45%, transparent); color: var(--red); }
+.sched-btn.danger:hover { background: color-mix(in oklab, var(--red) 15%, transparent); }
+.sched-ap-head { font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.18em; color: var(--amb); }
+.sched-ap {
+  border: 1px solid color-mix(in oklab, var(--amb) 40%, transparent);
+  background: color-mix(in oklab, var(--amb) 7%, transparent);
+  padding: 7px 10px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 6px;
+}
+.sched-ap-body { flex: 1; min-width: 0; }
+.sched-ap-meta { font-family: var(--font-mono); font-size: 10px; color: var(--amb); letter-spacing: 0.12em; }
+.sched-ap-text { font-size: 13px; color: var(--text); }
+.sched-ap-btn {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  padding: 4px 10px;
+  cursor: pointer;
+  border-radius: 2px;
+}
+.sched-ap-btn.ok { background: color-mix(in oklab, var(--grn) 12%, transparent); border: 1px solid var(--grn); color: var(--grn); }
+.sched-ap-btn.ok:hover { background: color-mix(in oklab, var(--grn) 25%, transparent); }
+.sched-ap-btn.no { background: transparent; border: 1px solid color-mix(in oklab, var(--red) 60%, transparent); color: var(--red); }
+.sched-ap-btn.no:hover { background: color-mix(in oklab, var(--red) 18%, transparent); }
+
+/* ── graph card footer (live memory read/write) ────────────────────── */
+.graph-footer {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 6px 10px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  background: linear-gradient(180deg, transparent, rgba(4, 7, 13, 0.85) 40%);
+  border-top: 1px solid color-mix(in oklab, var(--acc) 15%, transparent);
+  pointer-events: none;
+}
+
 /* ── approval overlay ──────────────────────────────────────────────── */
 .overlay {
   position: absolute;

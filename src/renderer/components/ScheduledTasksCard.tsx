@@ -13,10 +13,10 @@
  * approving) with Approve / Deny. All display strings come from the tested pure
  * formatters (jobs-format-pure.ts).
  */
-import { useEffect, useState } from 'react';
+import { Fragment, useEffect, useState } from 'react';
 import { alfred } from '../lib/ipc.ts';
 import { humanizeSchedule, relativeTime, formatBudget, describeApproval } from '../../main/core/jobs-format-pure.ts';
-import type { Job, JobApproval, StreamEvent } from '../../main/core/types.ts';
+import type { Job, JobApproval, JobKind, StreamEvent } from '../../main/core/types.ts';
 
 function summarizeResult(v: unknown): string {
   if (v == null) return '';
@@ -24,14 +24,19 @@ function summarizeResult(v: unknown): string {
   return s.length > 120 ? `${s.slice(0, 120)}…` : s;
 }
 
-/** State chip: enabled / paused (+ reason). */
-function stateLabel(job: Job): { text: string; tone: string } {
-  if (!job.enabled) return { text: 'PAUSADO', tone: 'var(--dim)' };
+/** Kind → coloured type tag (ported palette: agent=magenta, fetch=cyan, study=amber). */
+const KIND_TAG: Record<JobKind, { label: string; cls: string }> = {
+  agent: { label: 'AGENTE', cls: 'agent' },
+  fetch: { label: 'FETCH', cls: 'fetch' },
+  study: { label: 'ESTUDO', cls: 'study' },
+};
+
+/** Run/pause state → the last→next cell tone + a ✓/✗ glyph. */
+function runState(job: Job): { cls: string; glyph: string } {
   const r = job.runtime.pausedReason;
-  if (r === 'budget') return { text: 'PAUSADO · orçamento', tone: 'var(--amber)' };
-  if (r === 'approval') return { text: 'PAUSADO · aprovação', tone: 'var(--amber)' };
-  if (r === 'error') return { text: 'PAUSADO · erro', tone: 'var(--red)' };
-  return { text: 'ATIVO', tone: 'var(--lime, #b8ff3a)' };
+  if (r === 'error') return { cls: 'err', glyph: '✗' };
+  if (!job.enabled || r === 'budget' || r === 'approval') return { cls: 'warn', glyph: '❚❚' };
+  return { cls: 'ok', glyph: job.runtime.lastRunTs ? '✓' : '·' };
 }
 
 export function ScheduledTasksCard() {
@@ -77,108 +82,76 @@ export function ScheduledTasksCard() {
   };
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 12, padding: '4px 2px', overflowY: 'auto', flex: 1, minHeight: 0 }}>
+    <div className="sched" style={{ overflowY: 'auto', flex: 1, minHeight: 0 }}>
+      <div>
+        {jobs.length === 0 ? (
+          <div className="empty">NO SCHEDULED TASKS</div>
+        ) : (
+          <div className="sched-table">
+            <span className="sched-th">TAREFA</span>
+            <span className="sched-th">AGENDA</span>
+            <span className="sched-th">TOKENS HOJE</span>
+            <span className="sched-th">ÚLTIMO → PRÓXIMO</span>
+            {jobs.map((job) => {
+              const tag = KIND_TAG[job.kind];
+              const rs = runState(job);
+              const paused = !job.enabled || !!job.runtime.pausedReason;
+              const usesAi = job.kind === 'agent' || job.kind === 'study';
+              return (
+                <Fragment key={job.id}>
+                  <span className="sched-task" title={job.title}>
+                    <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{job.title}</span>
+                    <span className={`sched-tag ${tag.cls}`}>{tag.label}</span>
+                  </span>
+                  <span className="sched-cell">{humanizeSchedule(job.schedule)}</span>
+                  <span className="sched-cell">
+                    {usesAi ? formatBudget(job.runtime.tokensToday, job.tokenBudgetDaily) : '0 (sem IA)'}
+                  </span>
+                  <span className={`sched-cell sched-state ${rs.cls}`}>
+                    {relativeTime(job.runtime.lastRunTs, now)} {rs.glyph} → {paused ? '—' : relativeTime(job.runtime.nextRunTs, now)}
+                  </span>
+                  {job.runtime.lastResult != null && (
+                    <span className="sched-cell" style={{ gridColumn: '1 / -1', opacity: 0.7, wordBreak: 'break-word', whiteSpace: 'normal' }}>
+                      {summarizeResult(job.runtime.lastResult)}
+                    </span>
+                  )}
+                  <span className="sched-actions">
+                    {paused ? (
+                      <button type="button" className="sched-btn no-drag" onClick={() => resume(job.id)}>▶ Retomar</button>
+                    ) : (
+                      <button type="button" className="sched-btn no-drag" onClick={() => pause(job.id)}>❚❚ Pausar</button>
+                    )}
+                    {confirmDelete === job.id ? (
+                      <>
+                        <button type="button" className="sched-btn danger no-drag" onClick={() => del(job.id)}>Confirmar apagar</button>
+                        <button type="button" className="sched-btn no-drag" onClick={() => setConfirmDelete(null)}>Cancelar</button>
+                      </>
+                    ) : (
+                      <button type="button" className="sched-btn danger no-drag" onClick={() => setConfirmDelete(job.id)}>🗑 Apagar</button>
+                    )}
+                  </span>
+                </Fragment>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
       {approvals.length > 0 && (
         <div>
-          <div style={sectionHead}>APROVAÇÕES PENDENTES · {approvals.length}</div>
+          <div className="sched-ap-head">⚠ APROVAÇÕES PENDENTES — {approvals.length}</div>
           {approvals.map((a) => (
-            <div key={a.id} style={{ ...box, borderColor: 'var(--amber)' }}>
-              <div style={{ fontSize: 12, marginBottom: 6, lineHeight: 1.4 }}>{describeApproval(a.toolName, a.args)}</div>
-              <div style={{ fontSize: 10, color: 'var(--dim)', marginBottom: 8 }}>{relativeTime(a.ts, now)}</div>
-              <div style={{ display: 'flex', gap: 6 }}>
-                <button type="button" className="no-drag" style={{ ...btn, borderColor: 'var(--lime, #b8ff3a)', color: 'var(--lime, #b8ff3a)' }} onClick={() => resolve(a.id, true)}>
-                  ✓ Aprovar
-                </button>
-                <button type="button" className="no-drag" style={{ ...btn, borderColor: 'var(--red)', color: 'var(--red)' }} onClick={() => resolve(a.id, false)}>
-                  ✕ Recusar
-                </button>
+            <div key={a.id} className="sched-ap">
+              <div className="sched-ap-body">
+                <div className="sched-ap-meta">{relativeTime(a.ts, now)}</div>
+                <div className="sched-ap-text">{describeApproval(a.toolName, a.args)}</div>
               </div>
+              <button type="button" className="sched-ap-btn ok no-drag" onClick={() => resolve(a.id, true)}>APROVAR</button>
+              <button type="button" className="sched-ap-btn no no-drag" onClick={() => resolve(a.id, false)}>RECUSAR</button>
             </div>
           ))}
         </div>
       )}
-
-      <div>
-        <div style={sectionHead}>TAREFAS · {jobs.length}</div>
-        {jobs.length === 0 ? (
-          <div className="empty">NO SCHEDULED TASKS</div>
-        ) : (
-          jobs.map((job) => {
-            const st = stateLabel(job);
-            const paused = !job.enabled || !!job.runtime.pausedReason;
-            return (
-              <div key={job.id} style={box}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
-                  <span style={{ flex: 1, fontSize: 13, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                    {job.title}
-                  </span>
-                  <span style={{ fontSize: 9, textTransform: 'uppercase', color: 'var(--cyan, #35e5ff)', border: '1px solid currentColor', borderRadius: 4, padding: '0 5px' }}>
-                    {job.kind}
-                  </span>
-                  <span style={{ fontSize: 9, textTransform: 'uppercase', color: st.tone }}>{st.text}</span>
-                </div>
-                <div style={{ fontSize: 11, color: 'var(--dim)', display: 'flex', flexWrap: 'wrap', gap: '2px 12px', marginBottom: 6 }}>
-                  <span>⏱ {humanizeSchedule(job.schedule)}</span>
-                  {job.kind === 'agent' && <span>tok {formatBudget(job.runtime.tokensToday, job.tokenBudgetDaily)}</span>}
-                  <span>último {relativeTime(job.runtime.lastRunTs, now)}</span>
-                  <span>próximo {paused ? '—' : relativeTime(job.runtime.nextRunTs, now)}</span>
-                </div>
-                {job.runtime.lastResult != null && (
-                  <div style={{ fontSize: 11, color: 'var(--text)', opacity: 0.85, marginBottom: 8, wordBreak: 'break-word' }}>
-                    {summarizeResult(job.runtime.lastResult)}
-                  </div>
-                )}
-                <div style={{ display: 'flex', gap: 6 }}>
-                  {paused ? (
-                    <button type="button" className="no-drag" style={btn} onClick={() => resume(job.id)}>▶ Retomar</button>
-                  ) : (
-                    <button type="button" className="no-drag" style={btn} onClick={() => pause(job.id)}>❚❚ Pausar</button>
-                  )}
-                  {confirmDelete === job.id ? (
-                    <>
-                      <button type="button" className="no-drag" style={{ ...btn, borderColor: 'var(--red)', color: 'var(--red)' }} onClick={() => del(job.id)}>
-                        Confirmar apagar
-                      </button>
-                      <button type="button" className="no-drag" style={btn} onClick={() => setConfirmDelete(null)}>Cancelar</button>
-                    </>
-                  ) : (
-                    <button type="button" className="no-drag" style={{ ...btn, borderColor: 'var(--red)', color: 'var(--red)' }} onClick={() => setConfirmDelete(job.id)}>
-                      🗑 Apagar
-                    </button>
-                  )}
-                </div>
-              </div>
-            );
-          })
-        )}
-      </div>
     </div>
   );
 }
-
-const sectionHead: React.CSSProperties = {
-  fontSize: 10,
-  letterSpacing: '0.08em',
-  color: 'var(--dim)',
-  textTransform: 'uppercase',
-  marginBottom: 6,
-};
-
-const box: React.CSSProperties = {
-  border: '1px solid rgba(255,255,255,0.12)',
-  borderRadius: 8,
-  padding: '8px 10px',
-  marginBottom: 8,
-  background: 'var(--panel-2, rgba(255,255,255,0.02))',
-};
-
-const btn: React.CSSProperties = {
-  background: 'transparent',
-  border: '1px solid rgba(255,255,255,0.2)',
-  borderRadius: 6,
-  color: 'var(--dim)',
-  cursor: 'pointer',
-  fontFamily: 'inherit',
-  fontSize: 11,
-  padding: '3px 9px',
-};

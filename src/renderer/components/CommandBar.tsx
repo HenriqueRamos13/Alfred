@@ -133,7 +133,7 @@ export function CommandBar({
         onBlur={onBlur}
         rows={1}
         disabled={killed}
-        placeholder={killed ? 'Kill switch engaged' : 'Ask Alfred…'}
+        placeholder={killed ? 'Kill switch engaged' : 'Escreve ao Alfred…'}
         aria-label="Command input"
         style={{
           flex: 1,

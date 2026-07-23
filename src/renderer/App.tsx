@@ -860,7 +860,7 @@ export default function App() {
         };
       case 'surface':
         return {
-          meta: <span className="panel-meta">{status.toUpperCase()}</span>,
+          meta: <span className="panel-meta">render_ui · sandbox · {status.toUpperCase()}</span>,
           body: (
             <div className="surface-body">
               <Surface tree={tree} />
@@ -916,52 +916,54 @@ export default function App() {
             </div>
           ) : cost ? (
             <div className="cost">
-              <div className="cost-active">
-                <span className="cost-active-label">ACTIVE MODEL</span>
-                <span className="cost-active-model">{cost.activeModel}</span>
+              <div className="cost-headline">
+                <span className="cost-big">{usd(cost.today.usd)}</span>
+                <span className="cost-big-sub">
+                  /{' '}
+                  {cost.dailyUsdBudget
+                    ? `${usd(cost.dailyUsdBudget)} hoje`
+                    : `${cost.dailyTokenCap.toLocaleString()} tok/dia`}
+                </span>
               </div>
-              <div className="cost-tiles">
-                <div className={`cost-tile${cost.overUsdBudget ? ' warn' : ''}`}>
-                  <span className="cost-tile-label">TODAY ~US$</span>
-                  <span className="cost-tile-value">{usd(cost.today.usd)}</span>
-                  <span className="cost-tile-sub">
-                    {cost.today.tokens.toLocaleString()} / {cost.dailyTokenCap.toLocaleString()} tok
-                  </span>
-                </div>
-                <div className="cost-tile">
-                  <span className="cost-tile-label">SESSION ~US$</span>
-                  <span className="cost-tile-value">{usd(cost.session.usd)}</span>
-                  <span className="cost-tile-sub">{cost.session.tokens.toLocaleString()} tok</span>
-                </div>
+              <div className="cost-sub">
+                {cost.today.tokens.toLocaleString()} tokens · sessão {cost.session.tokens.toLocaleString()} tok
               </div>
-              {cost.overUsdBudget && (
-                <div className="cost-warn">
-                  ⚠ over daily US$ budget ({usd(cost.dailyUsdBudget ?? 0)}) — soft warning, not blocking
-                </div>
-              )}
-              <table className="cost-table">
-                <thead>
-                  <tr>
-                    <th>MODEL</th>
-                    <th>TOK</th>
-                    <th>~US$</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {cost.byModel.map((m) => (
-                    <tr key={m.model}>
-                      <td>
-                        {m.model}
-                        {m.unknownPrice && ' *'}
-                      </td>
-                      <td>{m.tokens.toLocaleString()}</td>
-                      <td>{usd(m.usd)}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+              <div className="cost-bar">
+                <div
+                  className={cost.overUsdBudget ? 'over' : undefined}
+                  style={{
+                    width: `${Math.min(
+                      100,
+                      Math.round(
+                        (cost.dailyUsdBudget
+                          ? cost.today.usd / cost.dailyUsdBudget
+                          : cost.dailyTokenCap
+                            ? cost.today.tokens / cost.dailyTokenCap
+                            : 0) * 100,
+                      ),
+                    )}%`,
+                  }}
+                />
+              </div>
+              <div className="cost-models">
+                {cost.byModel.map((m) => (
+                  <div className="cost-model-row" key={m.model}>
+                    <span>
+                      {m.model}
+                      {m.unknownPrice && ' *'}
+                    </span>
+                    <span>{usd(m.usd)}</span>
+                  </div>
+                ))}
+              </div>
               {cost.byModel.some((m) => m.unknownPrice) && (
-                <div className="cost-note">* no price on file — US$ estimated as 0</div>
+                <div className="cost-note">* sem preço em ficha — US$ estimado como 0</div>
+              )}
+              <div className="cost-limit">◉ KILL-SWITCH @ {cost.dailyTokenCap.toLocaleString()} tok/dia</div>
+              {cost.overUsdBudget && (
+                <div className="cost-note" style={{ color: 'var(--amb)' }}>
+                  ⚠ acima do orçamento diário US$ ({usd(cost.dailyUsdBudget ?? 0)}) — aviso, não bloqueia
+                </div>
               )}
             </div>
           ) : (
@@ -1035,15 +1037,23 @@ export default function App() {
         return {
           meta: <span className="panel-meta">live tail —f · memory on</span>,
           body: (
-            <div className="log" ref={logRef}>
-              {logs.map((l) => (
-                <div className="log-row" key={l.id}>
-                  <span className="log-time">{l.time}</span>
-                  <span className={`log-tag tone-${l.tone}`}>{l.tag}</span>
-                  <span className="log-msg">{l.msg}</span>
-                </div>
-              ))}
-            </div>
+            <>
+              <div className="log" ref={logRef}>
+                {logs.map((l) => (
+                  <div className="log-row" key={l.id}>
+                    <span className="log-time">{l.time}</span>
+                    <span className={`log-tag tone-${l.tone}`}>{l.tag}</span>
+                    <span className="log-msg">{l.msg}</span>
+                  </div>
+                ))}
+              </div>
+              <div className="log-legend">
+                <span className="tone-cyan">■ LER</span>
+                <span className="tone-amber">■ ESCREVER</span>
+                <span className="tone-lime">■ OK</span>
+                <span className="tone-red">■ NEGADO</span>
+              </div>
+            </>
           ),
         };
       default:

@@ -5,9 +5,11 @@
  */
 import type { ApprovalDecision, ApprovalRequest } from '../../main/core/types.ts';
 
-const TIER_COLOR: Record<string, string> = {
-  T2: 'var(--neon-amber, #fbbf24)',
-  T3: 'var(--neon-red, #f87171)',
+// Tier → accent colour + human risk label (ported from the design canvas header
+// "⚠ APROVAÇÃO · … · RISCO …"). T2 = write/medium (amber), T3 = high (red).
+const TIER_META: Record<string, { color: string; risk: string }> = {
+  T2: { color: 'var(--amb, #ffb45e)', risk: 'MÉDIO' },
+  T3: { color: 'var(--red, #ff5f6e)', risk: 'ALTO' },
 };
 
 export interface ApprovalPromptProps {
@@ -16,7 +18,8 @@ export interface ApprovalPromptProps {
 }
 
 export function ApprovalPrompt({ request, onResolve }: ApprovalPromptProps) {
-  const color = TIER_COLOR[request.tier] ?? 'var(--neon-amber, #fbbf24)';
+  const meta = TIER_META[request.tier] ?? TIER_META.T2;
+  const color = meta.color;
   return (
     <div
       className="alfred-approval"
@@ -28,41 +31,37 @@ export function ApprovalPrompt({ request, onResolve }: ApprovalPromptProps) {
         backdropFilter: 'blur(16px)',
         WebkitBackdropFilter: 'blur(16px)',
         border: `1px solid ${color}`,
-        borderRadius: 14,
+        borderRadius: 3,
         boxShadow: `inset 0 1px 0 rgba(255,255,255,0.06), 0 0 44px -6px ${color}`,
-        padding: 18,
+        padding: 16,
         fontFamily: 'var(--font-mono, ui-monospace, monospace)',
       }}
     >
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
-        <span
-          style={{
-            color,
-            border: `1px solid ${color}`,
-            borderRadius: 4,
-            padding: '1px 6px',
-            fontSize: 11,
-            fontWeight: 700,
-          }}
-        >
-          {request.tier}
-        </span>
-        <span style={{ color: 'var(--text, #e5eef7)', fontWeight: 600 }}>{request.toolName}</span>
-        <span style={{ color: 'var(--text-dim, #7c8ba1)', marginLeft: 'auto', fontSize: 11 }}>
-          approval required
-        </span>
+      <div
+        style={{
+          fontSize: 10,
+          letterSpacing: '0.16em',
+          color,
+          marginBottom: 10,
+          display: 'flex',
+          gap: 8,
+          alignItems: 'center',
+        }}
+      >
+        <span>⚠ APROVAÇÃO · {request.tier} · RISCO {meta.risk}</span>
+        <span style={{ marginLeft: 'auto', color: 'var(--dim, #5b7a8a)' }}>{request.toolName}</span>
       </div>
 
-      <p style={{ color: 'var(--text, #e5eef7)', fontSize: 13, margin: '0 0 10px' }}>{request.reason}</p>
+      <p style={{ color: 'var(--text, #cfe8f2)', fontSize: 13, margin: '0 0 10px' }}>{request.reason}</p>
 
       <pre
         style={{
-          background: 'var(--panel-2, #131b2b)',
-          border: '1px solid var(--border, #1e2a3a)',
-          borderRadius: 6,
+          background: 'var(--panel-2, rgba(0,0,0,0.35))',
+          border: '1px solid var(--border)',
+          borderRadius: 2,
           padding: 10,
           fontSize: 12,
-          color: 'var(--text-dim, #7c8ba1)',
+          color: 'var(--dim, #5b7a8a)',
           overflowX: 'auto',
           margin: '0 0 12px',
         }}
@@ -70,53 +69,59 @@ export function ApprovalPrompt({ request, onResolve }: ApprovalPromptProps) {
         {JSON.stringify(request.args, null, 2)}
       </pre>
 
-      <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
+      <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
         <button
           type="button"
           onClick={() => onResolve(request.id, 'deny')}
           style={{
             background: 'transparent',
-            border: '1px solid var(--neon-red, #f87171)',
-            color: 'var(--neon-red, #f87171)',
-            borderRadius: 6,
+            border: '1px solid color-mix(in oklab, var(--red) 60%, transparent)',
+            color: 'var(--red, #ff5f6e)',
+            borderRadius: 2,
             padding: '6px 16px',
             cursor: 'pointer',
             fontFamily: 'inherit',
+            fontSize: 11,
+            letterSpacing: '0.12em',
           }}
         >
-          Deny
+          RECUSAR
         </button>
         <button
           type="button"
-          title="Approve now and auto-approve this action from now on (no more prompts for it)"
+          title="Aprovar agora e auto-aprovar esta ação a partir de agora (sem mais pedidos para ela)"
           onClick={() => onResolve(request.id, 'approve', true)}
           style={{
             background: 'transparent',
-            border: '1px solid var(--neon-green, #34d399)',
-            color: 'var(--neon-green, #34d399)',
-            borderRadius: 6,
+            border: '1px solid var(--grn, #4dffa6)',
+            color: 'var(--grn, #4dffa6)',
+            borderRadius: 2,
             padding: '6px 16px',
             cursor: 'pointer',
             fontFamily: 'inherit',
+            fontSize: 11,
+            letterSpacing: '0.12em',
           }}
         >
-          Approve &amp; don&apos;t ask again
+          APROVAR SEMPRE
         </button>
         <button
           type="button"
           onClick={() => onResolve(request.id, 'approve')}
           style={{
-            background: 'var(--neon-green, #34d399)',
-            border: '1px solid var(--neon-green, #34d399)',
-            color: 'var(--bg, #080c14)',
-            borderRadius: 6,
+            background: 'color-mix(in oklab, var(--grn) 15%, transparent)',
+            border: '1px solid var(--grn, #4dffa6)',
+            color: 'var(--grn, #4dffa6)',
+            borderRadius: 2,
             padding: '6px 16px',
             cursor: 'pointer',
             fontWeight: 700,
             fontFamily: 'inherit',
+            fontSize: 11,
+            letterSpacing: '0.12em',
           }}
         >
-          Approve
+          APROVAR
         </button>
       </div>
     </div>

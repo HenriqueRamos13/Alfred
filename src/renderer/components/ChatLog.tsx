@@ -7,11 +7,40 @@ import { useEffect, useRef } from 'react';
 import type { ChatMessage, ChatRole } from '../../main/core/types.ts';
 import { Markdown } from './Markdown.tsx';
 
-const ROLE: Record<ChatRole, { label: string; color: string; align: 'flex-start' | 'flex-end' }> = {
-  user: { label: 'You', color: 'var(--neon-cyan, #22d3ee)', align: 'flex-end' },
-  assistant: { label: 'Alfred', color: 'var(--neon-magenta, #e879f9)', align: 'flex-start' },
-  system: { label: 'System', color: 'var(--text-dim, #7c8ba1)', align: 'flex-start' },
-  tool: { label: 'Tool', color: 'var(--neon-green, #34d399)', align: 'flex-start' },
+// Bubble language ported from the design canvas: the user's turns sit right and
+// amber-tinted, Alfred's sit left and cyan-tinted; system/tool are muted/green.
+const ROLE: Record<
+  ChatRole,
+  { label: string; color: string; align: 'flex-start' | 'flex-end'; border: string; bg: string }
+> = {
+  user: {
+    label: 'Tu',
+    color: 'var(--amb, #ffb45e)',
+    align: 'flex-end',
+    border: 'color-mix(in oklab, var(--amb) 40%, transparent)',
+    bg: 'color-mix(in oklab, var(--amb) 7%, transparent)',
+  },
+  assistant: {
+    label: 'Alfred',
+    color: 'var(--acc, #59e8ff)',
+    align: 'flex-start',
+    border: 'color-mix(in oklab, var(--acc) 35%, transparent)',
+    bg: 'color-mix(in oklab, var(--acc) 6%, transparent)',
+  },
+  system: {
+    label: 'Sistema',
+    color: 'var(--dim, #5b7a8a)',
+    align: 'flex-start',
+    border: 'color-mix(in oklab, var(--dim) 40%, transparent)',
+    bg: 'rgba(0,0,0,0.25)',
+  },
+  tool: {
+    label: 'Tool',
+    color: 'var(--grn, #4dffa6)',
+    align: 'flex-start',
+    border: 'color-mix(in oklab, var(--grn) 35%, transparent)',
+    bg: 'color-mix(in oklab, var(--grn) 6%, transparent)',
+  },
 };
 
 export interface ChatLogProps {
@@ -43,8 +72,8 @@ export function ChatLog({ messages, streaming }: ChatLogProps) {
             <span
               style={{
                 fontFamily: 'var(--font-mono, ui-monospace, monospace)',
-                fontSize: 11,
-                letterSpacing: '0.08em',
+                fontSize: 10,
+                letterSpacing: '0.14em',
                 textTransform: 'uppercase',
                 color: r.color,
                 marginBottom: 4,
@@ -54,14 +83,13 @@ export function ChatLog({ messages, streaming }: ChatLogProps) {
             </span>
             <div
               style={{
-                maxWidth: '85%',
-                background: 'var(--panel-2, #131b2b)',
-                border: `1px solid var(--border, #1e2a3a)`,
-                borderLeft: `2px solid ${r.color}`,
-                borderRadius: 8,
-                padding: '8px 12px',
-                color: 'var(--text, #e5eef7)',
-                fontSize: 14,
+                maxWidth: '88%',
+                background: r.bg,
+                border: `1px solid ${r.border}`,
+                borderRadius: 2,
+                padding: '8px 10px',
+                color: 'var(--text, #cfe8f2)',
+                fontSize: 13,
               }}
             >
               {m.role === 'assistant' ? (

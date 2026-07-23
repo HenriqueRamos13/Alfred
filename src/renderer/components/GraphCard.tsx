@@ -53,18 +53,19 @@ interface Activity {
   ts: number;
 }
 
+// Ported palette (matches theme.css tokens: --acc/--mag/--amb/--grn/--red).
 const COLOR: Record<NodeType, string> = {
-  note: '#35e5ff',
-  project: '#ff3ec9',
-  file: '#ffb020',
-  url: '#ffb020',
+  note: '#59e8ff',
+  project: '#c77bff',
+  file: '#ffb45e',
+  url: '#ffb45e',
 };
 const STATUS_COLOR: Record<Status, string> = {
-  read: '#35e5ff',
-  write: '#ffb020',
-  ok: '#b8ff3a',
-  error: '#ff3b52',
-  denied: '#ff3b52',
+  read: '#59e8ff',
+  write: '#ffb45e',
+  ok: '#4dffa6',
+  error: '#ff5f6e',
+  denied: '#ff5f6e',
 };
 const radiusFor = (t: NodeType): number => (t === 'project' ? 11 : t === 'note' ? 7 : 6);
 
@@ -73,6 +74,8 @@ export function GraphCard({ onReference }: { onReference: (target: ReferenceTarg
   const [selected, setSelected] = useState<string | null>(null);
   const [preview, setPreview] = useState<{ title: string; markdown: string } | null>(null);
   const [, forceRender] = useState(0); // bump to reflect transient/pin changes in the panel
+  // Last memory read/write, surfaced in the footer (same tool stream, no new data).
+  const [lastAct, setLastAct] = useState<{ label: string; write: boolean } | null>(null);
 
   const wrapRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -152,6 +155,7 @@ export function GraphCard({ onReference }: { onReference: (target: ReferenceTarg
     }
     activityRef.current.set(r.id, { status: r.write ? 'write' : 'read', ts: Date.now() });
     lastActiveRef.current = r.id;
+    setLastAct({ label: r.label, write: r.write });
     kick();
   };
 
@@ -317,7 +321,7 @@ export function GraphCard({ onReference }: { onReference: (target: ReferenceTarg
         const b = pos.get(e.target);
         if (!a || !b) continue;
         const on = !sel || (neigh.has(e.source) && neigh.has(e.target));
-        c.strokeStyle = e.type === 'belongs' ? `rgba(255,62,201,${on ? 0.5 : 0.08})` : `rgba(53,229,255,${on ? 0.32 : 0.06})`;
+        c.strokeStyle = e.type === 'belongs' ? `rgba(199,123,255,${on ? 0.5 : 0.08})` : `rgba(89,232,255,${on ? 0.34 : 0.07})`;
         c.lineWidth = (on && sel ? 1.6 : 0.8) / scale;
         c.beginPath();
         c.moveTo(a.x, a.y);
@@ -357,7 +361,7 @@ export function GraphCard({ onReference }: { onReference: (target: ReferenceTarg
         c.fill();
         c.shadowBlur = 0;
         if (n.transient) {
-          c.strokeStyle = withAlpha('#ffb020', alpha);
+          c.strokeStyle = withAlpha('#ffb45e', alpha);
           c.setLineDash([3 / scale, 3 / scale]);
           c.lineWidth = 1.2 / scale;
           c.stroke();
@@ -496,20 +500,23 @@ export function GraphCard({ onReference }: { onReference: (target: ReferenceTarg
         </div>
       )}
 
-      {/* legend */}
-      <div
-        style={{
-          position: 'absolute',
-          left: 8,
-          bottom: 8,
-          display: 'flex',
-          gap: 10,
-          fontSize: 10,
-          color: 'var(--dim)',
-          pointerEvents: 'none',
-        }}
-      >
-        <Dot c="#35e5ff" /> note <Dot c="#ff3ec9" /> project <Dot c="#ffb020" /> live file
+      {/* footer: live memory read/write (mockup) + node-type legend */}
+      <div className="graph-footer">
+        {lastAct ? (
+          <span
+            style={{ color: lastAct.write ? 'var(--amb)' : 'var(--acc)' }}
+          >
+            <span style={{ animation: lastAct.write ? 'blinkdot 1.8s infinite' : undefined }}>
+              {lastAct.write ? '●' : '○'}
+            </span>{' '}
+            memory.{lastAct.write ? 'write' : 'read'} → {lastAct.label}
+          </span>
+        ) : (
+          <span style={{ color: 'var(--dim)' }}>memory · idle</span>
+        )}
+        <span style={{ marginLeft: 'auto', display: 'flex', gap: 10, color: 'var(--dim)' }}>
+          <Dot c="#59e8ff" /> note <Dot c="#c77bff" /> project <Dot c="#ffb45e" /> live
+        </span>
       </div>
 
       {/* selected-node panel: preview (B) + Reference (D) + pin (transient) */}
