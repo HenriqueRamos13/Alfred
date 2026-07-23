@@ -71,7 +71,18 @@ export async function startMcpBridge(tools: Tool[], ctx: ToolCtx): Promise<McpBr
         // The heart of the bridge: the same governed execution the agent loop uses.
         const result = await runGovernedTool(t, req.params.arguments ?? {}, ctx);
         const isError = !!(result && typeof result === 'object' && 'error' in result);
-        return { content: [{ type: 'text', text: JSON.stringify(result) }], isError };
+        // Drop any inline `image` base64 (e.g. system op:screenshot): the claude-cli
+        // brain reads the file itself via `path`, so shipping multi-MB base64 as
+        // tool-result text would only blow its context. Vision brains get the image
+        // via the AI-SDK toModelOutput path, not this bridge.
+        const forText =
+          result && typeof result === 'object' && 'image' in (result as Record<string, unknown>)
+            ? (() => {
+                const { image: _drop, ...rest } = result as Record<string, unknown>;
+                return rest;
+              })()
+            : result;
+        return { content: [{ type: 'text', text: JSON.stringify(forText) }], isError };
       });
       return server;
     };

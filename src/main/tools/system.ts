@@ -1,4 +1,5 @@
 import { execFile, spawn, type ChildProcess } from 'node:child_process';
+import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import type { Tool } from './types.ts';
 import { grillMeEnabled } from '../core/settings-pure.ts';
@@ -210,7 +211,11 @@ export const system: Tool<Args> = {
   name: 'system',
   description:
     'See and control the Mac: battery, volume, brightness, displays, Wi-Fi, running apps, ' +
-    'notifications, clipboard, keep-awake, screen lock/sleep and screenshots. Also hide/show/toggle ' +
+    'notifications, clipboard, keep-awake, screen lock/sleep and screenshots. The `screenshot` op ' +
+    'actually SHOWS you the screen — it captures a JPEG and feeds the pixels to you when your ' +
+    'active brain has vision (Claude / GPT); use it to see the real screen content. For card/window ' +
+    'positions and coordinates use the ui_layout tool op get_layout instead — no screenshot needed. ' +
+    'Also hide/show/toggle ' +
     "Alfred's own overlay windows (window_hide/window_show/window_toggle), and toggle the " +
     'GRILL-ME plan-clarity interview when the user asks ("ativa/desativa o grill me": ' +
     'grill_me_on/grill_me_off/grill_me_toggle). One `op` per call. ' +
@@ -261,7 +266,7 @@ export const system: Tool<Args> = {
       text: { type: 'string', description: 'clipboard_write: text to copy.' },
       stop: { type: 'boolean', description: 'caffeinate: stop the current keep-awake.' },
       seconds: { type: 'number', description: 'caffeinate: auto-expire after N seconds.' },
-      path: { type: 'string', description: 'screenshot: output PNG path (default: timestamped file in the workspace).' },
+      path: { type: 'string', description: 'screenshot: output JPEG path (default: timestamped file in the workspace).' },
     },
     required: ['op'],
   },
@@ -459,8 +464,10 @@ export const system: Tool<Args> = {
             ? path.isAbsolute(a.path)
               ? a.path
               : path.resolve(ctx.workspace, a.path)
-            : path.resolve(ctx.workspace, `screenshot-${Date.now()}.png`);
-          const r = await run('screencapture', ['-x', out]);
+            : path.resolve(ctx.workspace, `screenshot-${Date.now()}.jpg`);
+          // JPEG (-t jpg): a Retina PNG is multi-MB and can blow the API's ~5MB
+          // per-image limit; JPEG keeps a full-screen grab comfortably under it.
+          const r = await run('screencapture', ['-x', '-t', 'jpg', out]);
           if (r.code !== 0)
             return {
               ok: false,
@@ -468,6 +475,23 @@ export const system: Tool<Args> = {
                 r.stderr.trim() ||
                 'screencapture failed — grant Screen Recording (System Settings → Privacy & Security → Screen Recording) to the app running Alfred.',
             };
+          // Read the pixels back so the orchestrator wrapper can feed them to a
+          // vision-capable brain. The textual result stays tiny ({path}); the
+          // image rides in a separate `image` field. Degrade to path-only if the
+          // read fails or the file is implausibly large (guard against the limit).
+          try {
+            const bytes = await readFile(out);
+            // ponytail: 3.7MB raw cap → base64 (~+33%) stays under the API's ~5MB
+            // per-image limit; a full-screen JPEG is normally well under this.
+            if (bytes.byteLength <= 3.7 * 1024 * 1024) {
+              return {
+                ok: true,
+                result: { path: out, image: { mediaType: 'image/jpeg', base64: bytes.toString('base64') } },
+              };
+            }
+          } catch {
+            // fall through to path-only
+          }
           return { ok: true, result: { path: out } };
         }
 

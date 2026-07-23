@@ -56,6 +56,8 @@ import {
   hasPersistedAgent,
   brainToProvider,
   providerToBrain,
+  modelSupportsVision,
+  buildToolModelOutput,
   DEFAULT_MODEL,
   DEFAULT_MAIN_NAME,
   MODEL_CATALOG,
@@ -285,6 +287,9 @@ export class Orchestrator {
 
   /** Wrap every registry Tool as an AI-SDK tool; governance runs inside execute. */
   private buildTools(): ToolSet {
+    // Does the active brain accept images? screenshot pixels are only fed to a
+    // vision-capable brain; a blind brain gets a "switch brains" nudge instead.
+    const brainHasVision = modelSupportsVision(brainToProvider(this.deps.brainId), this.deps.modelId);
     const set: ToolSet = {};
     for (const t of this.deps.tools) {
       set[t.name] = tool({
@@ -292,6 +297,9 @@ export class Orchestrator {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         inputSchema: jsonSchema(t.inputSchema as any),
         execute: (args: unknown) => this.runTool(t, args),
+        // Feed screenshot pixels to the model as multimodal content when the
+        // active brain can see; otherwise keep the JSON result but hint to switch.
+        toModelOutput: ({ output }) => buildToolModelOutput(output, brainHasVision),
       });
     }
     return set;
@@ -303,6 +311,16 @@ export class Orchestrator {
     // everything Alfred can do + routing + pointers). The detailed docs it names
     // (docs/**, skills/**) are L2 — referenced, never loaded by default.
     let sys = `${ALFRED_IDENTITY}\n\n${CAPABILITY_MANIFEST}`;
+    // Seeing the screen: route layout questions to get_layout (coordinates), real
+    // screen content to screenshot, and tell the brain whether it can see at all.
+    const canSee = modelSupportsVision(brainToProvider(this.deps.brainId), this.deps.modelId);
+    sys +=
+      '\n\n# Seeing the screen\n' +
+      '- For card/window POSITIONS and coordinates (layout questions), use the ui_layout tool op get_layout — it returns exact coordinates + every display. You do NOT need a screenshot for that.\n' +
+      '- To SEE the real content on screen, use the system tool op screenshot.\n' +
+      (canSee
+        ? '- Your active brain HAS vision: a screenshot is fed to you as an image, so you can actually see it. Never say "I cannot see the screen" — take the screenshot.'
+        : '- Your active brain has NO vision, so a screenshot cannot be shown to you. Use get_layout for positions; to see screen content, tell the user to switch to Claude or GPT in SETTINGS.');
     // Read per-turn so toggling the button takes effect on the next turn.
     if (getSetting(ctx.db, 'dangerous_mode') === '1') {
       sys +=

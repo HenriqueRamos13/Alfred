@@ -23,7 +23,7 @@ ops over synthetic mouse/keyboard events. Source: `src/main/tools/system.ts`.
 | `caffeinate` | `stop` bool, `seconds` | `{ caffeinating, seconds? }` | T1 |
 | `lock` | — | `{ locked: true }` | **T2** |
 | `sleep` | — | `{ sleeping: true }` | **T2** |
-| `screenshot` | `path` | `{ path }` | T1 |
+| `screenshot` | `path` | `{ path, image? }` | T1 |
 | `window_hide` | — | `{ visible: false }` | T1 |
 | `window_show` | — | `{ visible: true }` | T1 |
 | `window_toggle` | — | `{ visible }` (new state) | T1 |
@@ -40,8 +40,22 @@ desativa o grill me"). Behaviour is documented in
 [../governance/grill-me.md](../governance/grill-me.md).
 
 `value` is clamped: volume 0-100, brightness 0-1. `caffeinate` holds **one**
-keep-awake at a time (module-global); `stop:true` releases it. `screenshot`
-default path is a timestamped PNG in the workspace.
+keep-awake at a time (module-global); `stop:true` releases it.
+
+`screenshot` actually **lets the model SEE the screen**: it captures a JPEG
+(`screencapture -x -t jpg`, default a timestamped file in the workspace) and
+returns `{ path, image: { mediaType: "image/jpeg", base64 } }`. The orchestrator
+wrapper feeds that image to the model as multimodal content **when the active
+brain has vision** (Claude / GPT — see `modelCatalog.ts` `vision` flag); a
+text-only brain (DeepSeek) instead gets the path plus a note to switch brains,
+and never receives the pixels. The image is dropped (path-only) if it can't be
+read or exceeds ~3.7 MB raw (so the base64 stays under the API's ~5 MB
+per-image limit). The textual result stays tiny (`{ path }`) either way.
+The `claude-cli` brain reads the file itself via `path`, so the MCP bridge
+strips the inline image; the audit log also stores `{ path }` only, never the
+pixels.
+For card/window **positions** and coordinates, use the `ui_layout` op
+`get_layout` (exact coordinates + displays) — no screenshot needed.
 
 ## macOS permissions (TCC) & optional CLI
 Ops return a **clear error, never a crash**, when a permission or tool is missing:

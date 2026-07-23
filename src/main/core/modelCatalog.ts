@@ -15,6 +15,9 @@
  * providers change these and caching/batch discounts apply.
  */
 
+/** Local JSON value type — keeps this module free of an AI-SDK value/type import. */
+export type JSONValue = null | string | number | boolean | JSONValue[] | { [k: string]: JSONValue };
+
 export type ProviderId = 'claude-api' | 'claude-cli' | 'openai' | 'deepseek';
 export const PROVIDER_IDS: readonly ProviderId[] = ['claude-api', 'claude-cli', 'openai', 'deepseek'];
 
@@ -32,41 +35,48 @@ export interface CatalogModel {
   inputPerM: number;
   /** USD per 1M output tokens. */
   outputPerM: number;
+  /** True when the model can see images (screenshots reach it as pixels). */
+  vision: boolean;
   notes?: string;
 }
 
 // Anthropic list — SHARED by claude-api (SDK) and claude-cli (spawn): same ids.
+// All current Claude models are multimodal (vision:true) — the claude-cli brain
+// reads image files itself, so it's vision-capable too.
 const ANTHROPIC_MODELS: CatalogModel[] = [
-  { id: 'claude-fable-5', name: 'Fable 5', inputPerM: 10, outputPerM: 50 },
-  { id: 'claude-opus-4-8', name: 'Opus 4.8', inputPerM: 5, outputPerM: 25 },
+  { id: 'claude-fable-5', name: 'Fable 5', inputPerM: 10, outputPerM: 50, vision: true },
+  { id: 'claude-opus-4-8', name: 'Opus 4.8', inputPerM: 5, outputPerM: 25, vision: true },
   {
     id: 'claude-sonnet-5',
     name: 'Sonnet 5',
     inputPerM: 2,
     outputPerM: 10,
+    vision: true,
     notes: 'Intro pricing ($2/$10) until 2026-08-31; rises to $3/$15 on 2026-09-01.',
   },
-  { id: 'claude-haiku-4-5', name: 'Haiku 4.5', inputPerM: 1, outputPerM: 5 },
-  { id: 'claude-opus-4-7', name: 'Opus 4.7 (legacy)', inputPerM: 5, outputPerM: 25 },
-  { id: 'claude-opus-4-6', name: 'Opus 4.6 (legacy)', inputPerM: 5, outputPerM: 25 },
-  { id: 'claude-sonnet-4-6', name: 'Sonnet 4.6 (legacy)', inputPerM: 3, outputPerM: 15 },
-  { id: 'claude-opus-4-5', name: 'Opus 4.5 (legacy)', inputPerM: 5, outputPerM: 25 },
-  { id: 'claude-sonnet-4-5', name: 'Sonnet 4.5 (legacy)', inputPerM: 3, outputPerM: 15 },
+  { id: 'claude-haiku-4-5', name: 'Haiku 4.5', inputPerM: 1, outputPerM: 5, vision: true },
+  { id: 'claude-opus-4-7', name: 'Opus 4.7 (legacy)', inputPerM: 5, outputPerM: 25, vision: true },
+  { id: 'claude-opus-4-6', name: 'Opus 4.6 (legacy)', inputPerM: 5, outputPerM: 25, vision: true },
+  { id: 'claude-sonnet-4-6', name: 'Sonnet 4.6 (legacy)', inputPerM: 3, outputPerM: 15, vision: true },
+  { id: 'claude-opus-4-5', name: 'Opus 4.5 (legacy)', inputPerM: 5, outputPerM: 25, vision: true },
+  { id: 'claude-sonnet-4-5', name: 'Sonnet 4.5 (legacy)', inputPerM: 3, outputPerM: 15, vision: true },
 ];
 
+// All current GPT models are multimodal (vision:true).
 const OPENAI_MODELS: CatalogModel[] = [
-  { id: 'gpt-5.6-sol', name: 'GPT-5.6 Sol', inputPerM: 5, outputPerM: 30 },
-  { id: 'gpt-5.6-terra', name: 'GPT-5.6 Terra', inputPerM: 2.5, outputPerM: 15 },
-  { id: 'gpt-5.6-luna', name: 'GPT-5.6 Luna', inputPerM: 1, outputPerM: 6 },
-  { id: 'gpt-5.5', name: 'GPT-5.5', inputPerM: 5, outputPerM: 30 },
-  { id: 'gpt-5.4', name: 'GPT-5.4', inputPerM: 2.5, outputPerM: 15 },
-  { id: 'gpt-5.4-mini', name: 'GPT-5.4 Mini', inputPerM: 0.75, outputPerM: 4.5 },
-  { id: 'gpt-5.4-nano', name: 'GPT-5.4 Nano', inputPerM: 0.2, outputPerM: 1.25 },
+  { id: 'gpt-5.6-sol', name: 'GPT-5.6 Sol', inputPerM: 5, outputPerM: 30, vision: true },
+  { id: 'gpt-5.6-terra', name: 'GPT-5.6 Terra', inputPerM: 2.5, outputPerM: 15, vision: true },
+  { id: 'gpt-5.6-luna', name: 'GPT-5.6 Luna', inputPerM: 1, outputPerM: 6, vision: true },
+  { id: 'gpt-5.5', name: 'GPT-5.5', inputPerM: 5, outputPerM: 30, vision: true },
+  { id: 'gpt-5.4', name: 'GPT-5.4', inputPerM: 2.5, outputPerM: 15, vision: true },
+  { id: 'gpt-5.4-mini', name: 'GPT-5.4 Mini', inputPerM: 0.75, outputPerM: 4.5, vision: true },
+  { id: 'gpt-5.4-nano', name: 'GPT-5.4 Nano', inputPerM: 0.2, outputPerM: 1.25, vision: true },
 ];
 
+// DeepSeek V4 is text-only (vision:false).
 const DEEPSEEK_MODELS: CatalogModel[] = [
-  { id: 'deepseek-v4-flash', name: 'DeepSeek V4 Flash', inputPerM: 0.14, outputPerM: 0.28 },
-  { id: 'deepseek-v4-pro', name: 'DeepSeek V4 Pro', inputPerM: 0.435, outputPerM: 0.87 },
+  { id: 'deepseek-v4-flash', name: 'DeepSeek V4 Flash', inputPerM: 0.14, outputPerM: 0.28, vision: false },
+  { id: 'deepseek-v4-pro', name: 'DeepSeek V4 Pro', inputPerM: 0.435, outputPerM: 0.87, vision: false },
 ];
 
 /** The catalog by provider. claude-api and claude-cli intentionally share the Anthropic list. */
@@ -111,6 +121,91 @@ export function catalogPrices(): Record<string, { inputPerM: number; outputPerM:
   const out: Record<string, { inputPerM: number; outputPerM: number }> = {};
   for (const p of PROVIDER_IDS) for (const m of MODEL_CATALOG[p]) out[m.id] = { inputPerM: m.inputPerM, outputPerM: m.outputPerM };
   return out;
+}
+
+/**
+ * Whether the given provider+model can see images. Pure catalog lookup; an
+ * unknown provider/model is conservatively treated as text-only (false), so a
+ * screenshot is never blindly shipped to a model that would choke on it.
+ */
+export function modelSupportsVision(provider: ProviderId, modelId: string): boolean {
+  return findModel(provider, modelId)?.vision ?? false;
+}
+
+/**
+ * How a tool result should reach the model, given whether it carries an image
+ * and whether the active brain can see. Extracted from the orchestrator's tool
+ * wrapper so the decision is pure + testable:
+ *   - 'media'          → send the image as multimodal content parts
+ *   - 'text-only-hint' → image exists but the brain is blind; send a nudge to switch brains
+ *   - 'plain'          → no image; default JSON passthrough
+ */
+export function visionToolOutput(hasImage: boolean, brainHasVision: boolean): 'media' | 'text-only-hint' | 'plain' {
+  if (!hasImage) return 'plain';
+  return brainHasVision ? 'media' : 'text-only-hint';
+}
+
+/** An inline image lifted off a tool result. */
+export interface ToolImage {
+  mediaType: string;
+  base64: string;
+}
+
+/**
+ * ai@7 (`LanguageModelV4ToolResultOutput`) shape a tool result becomes. The
+ * `content`+`file` variant is the ONE that reaches a vision model as pixels —
+ * `{ type: 'file', mediaType, data: { type: 'data', data: <base64> } }` — the
+ * Anthropic/OpenAI(Responses) providers map it to an image block. Getting this
+ * wrong makes the screenshot arrive as text and the feature fail silently, so
+ * it is pinned by a test.
+ */
+export type ToolModelOutput =
+  | { type: 'json'; value: JSONValue }
+  | { type: 'text'; value: string }
+  | {
+      type: 'content';
+      value: Array<
+        { type: 'text'; text: string } | { type: 'file'; mediaType: string; data: { type: 'data'; data: string } }
+      >;
+    };
+
+/** Pull a `{ mediaType, base64 }` image off a tool result, or null. */
+export function imageOfResult(output: unknown): ToolImage | null {
+  if (!output || typeof output !== 'object') return null;
+  const img = (output as { image?: unknown }).image;
+  if (!img || typeof img !== 'object') return null;
+  const { mediaType, base64 } = img as { mediaType?: unknown; base64?: unknown };
+  return typeof mediaType === 'string' && typeof base64 === 'string' ? { mediaType, base64 } : null;
+}
+
+/**
+ * Build the ai@7 tool-result output for the model: image as multimodal content
+ * for a vision brain, a switch-brains hint for a blind one, JSON otherwise.
+ * Pure so the fragile content shape is unit-testable.
+ */
+export function buildToolModelOutput(output: unknown, brainHasVision: boolean): ToolModelOutput {
+  const img = imageOfResult(output);
+  const decision = visionToolOutput(!!img, brainHasVision);
+  if (decision === 'plain' || !img) return { type: 'json', value: output as JSONValue };
+  const rest = { ...(output as Record<string, unknown>) };
+  delete rest.image;
+  if (decision === 'media') {
+    return {
+      type: 'content',
+      value: [
+        { type: 'text', text: JSON.stringify(rest) },
+        { type: 'file', mediaType: img.mediaType, data: { type: 'data', data: img.base64 } },
+      ],
+    };
+  }
+  // text-only-hint: the brain is blind, so don't ship pixels it can't read.
+  return {
+    type: 'text',
+    value: JSON.stringify({
+      ...rest,
+      note: 'This model cannot see images; switch to Claude or GPT in SETTINGS for me to see the screen.',
+    }),
+  };
 }
 
 // ── per-agent config ──────────────────────────────────────────────────────────

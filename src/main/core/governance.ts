@@ -205,12 +205,24 @@ export async function runGovernedTool(t: Tool, args: unknown, ctx: ToolCtx): Pro
   try {
     const out = await t.execute(args, ctx);
     const status = out.ok ? 'ok' : 'error';
+    // Never persist an inline `image` base64 (e.g. system op:screenshot) into the
+    // audit table — it would bloat the DB with multi-MB blobs and log screen
+    // pixels. The path is kept; the image only rides the live return value.
+    const auditResult =
+      out.ok && out.result && typeof out.result === 'object' && 'image' in out.result
+        ? (() => {
+            const { image: _drop, ...rest } = out.result as Record<string, unknown>;
+            return rest;
+          })()
+        : out.ok
+          ? out.result
+          : undefined;
     audit({
       toolName: t.name,
       args,
       tier,
       status,
-      result: out.ok ? out.result : undefined,
+      result: auditResult,
       error: out.error,
       durationMs: Date.now() - started,
       note: approvalNote,

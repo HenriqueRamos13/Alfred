@@ -130,6 +130,12 @@ import {
   bridgeEnabled,
   mcpCliArgs,
 } from '../src/main/core/mcpConfig.ts';
+import {
+  modelSupportsVision,
+  visionToolOutput,
+  buildToolModelOutput,
+  imageOfResult,
+} from '../src/main/core/modelCatalog.ts';
 
 test('classifyAction — read/list/search are T0 autopilot', () => {
   assert.equal(classifyAction('fs_read', { path: '/a' }), 'T0');
@@ -1569,4 +1575,73 @@ test('activityIntensity — full while held, then fades to zero', () => {
   assert.equal(activityIntensity(ACTIVITY_HOLD_MS + ACTIVITY_FADE_MS + 500), 0);
   const mid = activityIntensity(ACTIVITY_HOLD_MS + ACTIVITY_FADE_MS / 2);
   assert.ok(mid > 0.4 && mid < 0.6);
+});
+
+// ── model vision capability + screenshot→model gating ────────────────────────
+
+test('modelSupportsVision — Claude & GPT true, DeepSeek false, unknown false', () => {
+  // Claude (shared list under both providers) — has vision
+  assert.equal(modelSupportsVision('claude-api', 'claude-sonnet-5'), true);
+  assert.equal(modelSupportsVision('claude-api', 'claude-opus-4-8'), true);
+  assert.equal(modelSupportsVision('claude-cli', 'claude-haiku-4-5'), true);
+  // OpenAI GPT — has vision
+  assert.equal(modelSupportsVision('openai', 'gpt-5.6-terra'), true);
+  assert.equal(modelSupportsVision('openai', 'gpt-5.4-mini'), true);
+  // DeepSeek — text only
+  assert.equal(modelSupportsVision('deepseek', 'deepseek-v4-flash'), false);
+  assert.equal(modelSupportsVision('deepseek', 'deepseek-v4-pro'), false);
+  // unknown model / provider → conservative false
+  assert.equal(modelSupportsVision('openai', 'gpt-does-not-exist'), false);
+  assert.equal(modelSupportsVision('claude-api', 'nope'), false);
+  assert.equal(modelSupportsVision('mystery' as never, 'x'), false);
+});
+
+test('visionToolOutput — media when image+vision, hint when image+blind, plain otherwise', () => {
+  assert.equal(visionToolOutput(true, true), 'media');
+  assert.equal(visionToolOutput(true, false), 'text-only-hint');
+  assert.equal(visionToolOutput(false, true), 'plain');
+  assert.equal(visionToolOutput(false, false), 'plain');
+});
+
+test('imageOfResult — lifts a well-formed image, rejects junk', () => {
+  assert.deepEqual(imageOfResult({ path: '/x.jpg', image: { mediaType: 'image/jpeg', base64: 'AAAA' } }), {
+    mediaType: 'image/jpeg',
+    base64: 'AAAA',
+  });
+  assert.equal(imageOfResult({ path: '/x.jpg' }), null);
+  assert.equal(imageOfResult({ image: { mediaType: 'image/jpeg' } }), null); // no base64
+  assert.equal(imageOfResult({ image: { base64: 'AAAA' } }), null); // no mediaType
+  assert.equal(imageOfResult('nope'), null);
+  assert.equal(imageOfResult(null), null);
+});
+
+test('buildToolModelOutput — vision brain gets the ai@7 file content shape (pixels reach the model)', () => {
+  const out = buildToolModelOutput({ path: '/x.jpg', image: { mediaType: 'image/jpeg', base64: 'ZZZZ' } }, true);
+  // Must be the `content` variant with a text part + a `file` part carrying the
+  // tagged { type:'data', data } — this is what ai@7 maps to an image block.
+  assert.equal(out.type, 'content');
+  assert.equal((out as { value: unknown[] }).value.length, 2);
+  const [textPart, filePart] = (out as { value: Array<Record<string, unknown>> }).value;
+  assert.equal(textPart.type, 'text');
+  assert.equal(textPart.text, JSON.stringify({ path: '/x.jpg' })); // image stripped from the text
+  assert.deepEqual(filePart, {
+    type: 'file',
+    mediaType: 'image/jpeg',
+    data: { type: 'data', data: 'ZZZZ' },
+  });
+});
+
+test('buildToolModelOutput — blind brain never receives base64, gets a switch-brains hint', () => {
+  const out = buildToolModelOutput({ path: '/x.jpg', image: { mediaType: 'image/jpeg', base64: 'ZZZZ' } }, false);
+  assert.equal(out.type, 'text');
+  const value = (out as { value: string }).value;
+  assert.ok(!value.includes('ZZZZ')); // pixels must NOT be shipped to a text-only model
+  const parsed = JSON.parse(value);
+  assert.equal(parsed.path, '/x.jpg');
+  assert.ok(/switch to Claude or GPT/i.test(parsed.note));
+});
+
+test('buildToolModelOutput — imageless result passes through as JSON regardless of vision', () => {
+  assert.deepEqual(buildToolModelOutput({ battery: 80 }, true), { type: 'json', value: { battery: 80 } });
+  assert.deepEqual(buildToolModelOutput({ battery: 80 }, false), { type: 'json', value: { battery: 80 } });
 });
