@@ -10,11 +10,12 @@ import {
   recall,
   listMemory,
   writeNote,
+  deleteNote,
   writeHandoff,
 } from '../core/memory.ts';
 import type { Observation, Relation } from '../core/memory.ts';
 
-type Op = 'read' | 'append' | 'remember' | 'recall' | 'list' | 'note' | 'handoff';
+type Op = 'read' | 'append' | 'remember' | 'recall' | 'list' | 'note' | 'delete' | 'handoff';
 interface Args {
   op: Op;
   text?: string;
@@ -41,18 +42,21 @@ export const memory: Tool<Args> = {
     'remember: durably save something — kind:"episodic" (default) logs a dated event to the journal; ' +
     'kind:"semantic" records an enduring fact. Save important facts/events proactively. ' +
     'recall: look back over recent memory — query greps the journal+facts, sinceDays limits how far back (default 7). ' +
-    'list: show which memory days/files exist. ' +
+    'list: show which memory days/files exist AND enumerate the real vault notes ({title, slug, relativePath}) — ' +
+    'use this to learn a note’s exact slug/filename instead of guessing it. ' +
     'note: create/update an ATOMIC durable note (one idea) in the vault — title (required), type ' +
     '(note|project|person|tool|decision), tags[], observations[{category,text}] ' +
     '(category: decision|requirement|risk|gotcha|fact|tip), relations[{type,target}] where target is another note’s ' +
     'title as a [[wikilink]] (type e.g. part_of|uses|relates_to). Re-using a title merges into that note. ' +
+    'delete: remove a vault note (destructive) — pass its title OR slug; slug is resolved the same way note does, ' +
+    'so never guess filenames (use list first). Recomputes the graph/backlinks. ' +
     'handoff: after finishing a relevant task, drop a short summary (what you did + the note/file path) into the ' +
     'inbox for the curator to organise. ' +
     'Never edit the stable layer directly — that is curated by the human. Never invent memories.',
   inputSchema: {
     type: 'object',
     properties: {
-      op: { type: 'string', enum: ['read', 'append', 'remember', 'recall', 'list', 'note', 'handoff'] },
+      op: { type: 'string', enum: ['read', 'append', 'remember', 'recall', 'list', 'note', 'delete', 'handoff'] },
       text: { type: 'string', description: 'op=append/remember: the note or fact to record.' },
       kind: {
         type: 'string',
@@ -61,7 +65,12 @@ export const memory: Tool<Args> = {
       },
       query: { type: 'string', description: 'op=recall: optional text to grep for in the journal + facts.' },
       sinceDays: { type: 'integer', description: 'op=recall: how many days back to read (default 7).' },
-      title: { type: 'string', description: 'op=note: note title (required); re-using a title merges into it.' },
+      title: {
+        type: 'string',
+        description:
+          'op=note: note title (required); re-using a title merges into it. ' +
+          'op=delete: the note’s title OR slug to remove (required).',
+      },
       type: {
         type: 'string',
         description: 'op=note: note|project|person|tool|decision (default note).',
@@ -97,8 +106,9 @@ export const memory: Tool<Args> = {
     required: ['op'],
   },
 
-  // Reads are autopilot; writes are reversible workspace appends.
-  risk: (a) => (a.op === 'read' || a.op === 'recall' || a.op === 'list' ? 'T0' : 'T1'),
+  // Reads are autopilot (T0); delete is destructive (T2, governed); other writes are reversible appends (T1).
+  risk: (a) =>
+    a.op === 'read' || a.op === 'recall' || a.op === 'list' ? 'T0' : a.op === 'delete' ? 'T2' : 'T1',
 
   async execute(a, ctx) {
     try {
@@ -128,6 +138,17 @@ export const memory: Tool<Args> = {
               relations: a.relations,
             }),
           };
+        case 'delete': {
+          if (!a.title) return { ok: false, error: 'title (or slug) is required for delete' };
+          const res = await deleteNote(ctx.workspace, a.title);
+          return {
+            ok: true,
+            result: {
+              ...res,
+              message: res.deleted ? `apagada ${res.slug}` : `não existe: ${res.slug}`,
+            },
+          };
+        }
         case 'handoff':
           if (!a.summary && !a.text) return { ok: false, error: 'summary is required for handoff' };
           return {

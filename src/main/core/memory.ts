@@ -238,9 +238,20 @@ export async function recall(
   return { sinceDays, query: opts.query ?? null, days: out, facts };
 }
 
-/** Available memory files: journal days + whether facts.md exists. */
-export async function listMemory(workspace: string): Promise<{ journalDays: string[]; facts: boolean }> {
-  return { journalDays: await listJournalDays(workspace), facts: await exists(paths(workspace).facts) };
+/**
+ * Available memory files: journal days, whether facts.md exists, and the REAL
+ * vault notes (title/slug/relativePath) so the model never has to guess a note's
+ * slugified filename before reading or deleting it.
+ */
+export async function listMemory(
+  workspace: string,
+): Promise<{ journalDays: string[]; facts: boolean; notes: { title: string; slug: string; relativePath: string }[] }> {
+  const notes = await listNotes(workspace);
+  return {
+    journalDays: await listJournalDays(workspace),
+    facts: await exists(paths(workspace).facts),
+    notes: notes.map(({ slug, note }) => ({ title: note.title, slug, relativePath: `memory/notes/${slug}.md` })),
+  };
 }
 
 /**
@@ -490,6 +501,37 @@ export async function listNotes(workspace: string): Promise<{ slug: string; note
     if (md.trim()) out.push({ slug: f.slice(0, -3), note: parseNote(md) });
   }
   return out;
+}
+
+/**
+ * Resolve a note's on-disk slug from either its title OR an already-computed
+ * slug. `slugify` is idempotent (a slug slugifies to itself), so this is the one
+ * decision point both writeNote and deleteNote route through — no filename guessing.
+ */
+export function resolveNoteSlug(titleOrSlug: string): string {
+  return slugify(titleOrSlug);
+}
+
+/**
+ * Delete a vault note by title OR slug, then recompute the derived indexes so
+ * the graph drops the vanished node and any edge into it. Missing note →
+ * { deleted: false } (never throws). This is the only op that removes a note.
+ */
+export async function deleteNote(
+  workspace: string,
+  titleOrSlug: string,
+): Promise<{ deleted: boolean; slug: string; path: string }> {
+  const slug = resolveNoteSlug(titleOrSlug);
+  const path = paths(workspace).note(slug);
+  let deleted = true;
+  try {
+    await unlink(path);
+  } catch {
+    deleted = false;
+  }
+  // Recompute index.md / maps / backlinks.json from the survivors so no dangling edge remains.
+  if (deleted) await rebuildIndexes(workspace);
+  return { deleted, slug, path };
 }
 
 /**

@@ -11,8 +11,9 @@ File-based long-term memory. Source: tool `src/main/tools/memory.ts`, logic
 | `append` | `text` | add a line to this session's ephemeral working notes (Layer 4) | T1 |
 | `remember` | `text`, `kind` | durably save: `episodic` (default, dated journal entry) or `semantic` (fact) | T1 |
 | `recall` | `query`, `sinceDays` | grep the journal + facts; `sinceDays` default 7 | T0 |
-| `list` | — | which journal days exist + whether facts.md exists | T0 |
+| `list` | — | which journal days exist + whether facts.md exists + the real vault notes (`{title, slug, relativePath}`) | T0 |
 | `note` | `title`(req), `type`, `tags[]`, `observations[]`, `relations[]` | create/update an ATOMIC vault note | T1 |
+| `delete` | `title`(req — title OR slug) | remove a vault note, then recompute index/maps/backlinks so the graph drops the node + its edges | **T2** |
 | `handoff` | `summary`(req), `notePath`, `tags[]` | drop a short handoff into the inbox for the curator | T1 |
 
 ## Note structure (`op: note`)
@@ -28,8 +29,9 @@ note (union of observations/relations/tags — idempotent).
 - `read` → the combined stable text (string).
 - `remember` → `{ kind, file }` (path written).
 - `recall` → `{ sinceDays, query, days: [{ day, entries[] }], facts[] }`.
-- `list` → `{ journalDays[], facts }`.
+- `list` → `{ journalDays[], facts, notes: [{ title, slug, relativePath }] }`.
 - `note` → `{ slug, file }`.
+- `delete` → `{ deleted, slug, path, message }` (`deleted:false` when the note doesn't exist — never throws).
 - `handoff` → `{ file }`.
 
 ## Rules
@@ -40,6 +42,10 @@ note (union of observations/relations/tags — idempotent).
   `episodic`. When a relevant task ends: `note` then `handoff`.
 - Writes are append-only; the curator (a cheap separate brain) later turns
   handoffs into notes and rebuilds `index.md`/maps/backlinks.
+- **Deleting**: never guess a note's slugified filename — run `list` to get the
+  exact `slug`, then `delete` with the title or that slug. `delete` resolves the
+  slug the same way `note` does (idempotent `slugify`) and recomputes the indexes,
+  so the knowledge graph drops the node and any edge into it.
 
 ## Examples
 ```json
@@ -49,4 +55,6 @@ note (union of observations/relations/tags — idempotent).
   "observations": [{ "category": "decision", "text": "Ship via electron-builder on Linux." }],
   "relations": [{ "type": "part_of", "target": "Alfred" }] }
 { "op": "handoff", "summary": "Documented deploy steps.", "notePath": "memory/notes/alfred-deploy.md" }
+{ "op": "list" }
+{ "op": "delete", "title": "Alfred deploy" }
 ```

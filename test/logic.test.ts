@@ -92,6 +92,7 @@ import {
   buildIndex,
   buildMap,
   mapNameForType,
+  resolveNoteSlug,
 } from '../src/main/core/memory.ts';
 import type { Note } from '../src/main/core/memory.ts';
 import { pickCuratorSpec } from '../src/main/core/curator.ts';
@@ -656,6 +657,35 @@ test('buildIndex / buildMap — group by type, wikilink every note', () => {
   assert.match(map, /Tools — MOC/);
   assert.match(map, /\[\[X\]\]/);
   assert.ok(!map.includes('[[Y]]')); // only the tool type
+});
+
+test('resolveNoteSlug — slugifies a title, leaves an existing slug untouched (idempotent)', () => {
+  // a human title (accents, em-dash) resolves to the SAME slug writeNote used
+  assert.equal(resolveNoteSlug('Projects — Alfred'), 'projects-alfred');
+  assert.equal(resolveNoteSlug('Café Crème'), 'cafe-creme');
+  assert.equal(resolveNoteSlug('  Todo App in Next.js '), 'todo-app-in-next-js');
+  // an already-slugified string is returned unchanged (no double-slugging)
+  assert.equal(resolveNoteSlug('projects-alfred'), 'projects-alfred');
+  assert.equal(resolveNoteSlug('cafe-creme'), 'cafe-creme');
+  // TRUST BOUNDARY: a malicious title cannot escape memory/notes/ — the slug is
+  // always [a-z0-9-] (no /, no .., no dots), so join(notesDir, slug+'.md') is confined.
+  for (const evil of ['../../x', '../../../etc/passwd', '..\\..\\windows', 'a/../../b', 'foo/bar']) {
+    const s = resolveNoteSlug(evil);
+    assert.ok(/^[a-z0-9-]*$/.test(s), `slug must be confined charset, got ${JSON.stringify(s)}`);
+    assert.ok(!s.includes('..') && !s.includes('/') && !s.includes('\\') && !s.includes('.'));
+  }
+});
+
+test('deleteNote recompute — removing a note drops its dangling backlink edges', () => {
+  // B relates_to [[A]] and observation links [[A]] → A is backlinked from b
+  const notes = [
+    { slug: 'a', note: { title: 'A', type: 'note', tags: [], observations: [], relations: [] } as Note },
+    { slug: 'b', note: { title: 'B', type: 'note', tags: [], observations: [{ category: 'fact', text: 'see [[A]]', tags: [] }], relations: [{ type: 'uses', target: 'A' }] } as Note },
+  ];
+  assert.deepEqual(buildBacklinks(notes)['A'], ['b']);
+  // deleting b and recomputing over the survivors leaves no edge into A
+  const survivors = notes.filter((n) => n.slug !== 'b');
+  assert.equal(buildBacklinks(survivors)['A'], undefined);
 });
 
 test('pickCuratorSpec — explicit env wins, else cheapest enabled API brain', () => {
