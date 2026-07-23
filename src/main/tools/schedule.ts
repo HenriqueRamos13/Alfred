@@ -11,11 +11,39 @@
  */
 import { randomUUID } from 'node:crypto';
 import type { Tool } from './types.ts';
-import type { Job } from '../core/types.ts';
+import type { Job, ToolCtx } from '../core/types.ts';
 import { validateJobSpec, mergeJobSpec, nextRun, type JobSpecInput } from '../core/jobs-pure.ts';
 import { createJob, getJob, listJobs, updateJob, deleteJob, rescheduleJob } from '../core/jobs.ts';
+import { widgetCreateGuard, declarativeModeWarning } from '../core/widget-html-pure.ts';
+import { getSetting } from '../core/db.ts';
 import { getAgent } from '../core/team.ts';
 import { getLayout } from '../core/layout.ts';
+
+/**
+ * Security gate for a tier-2 widget's HTML (§2 + §3): scan for dangerous patterns
+ * (refuse), warn on suspicious ones, and — in the default declarative (Widget JS
+ * OFF) mode — FAIL LOUD when the HTML has a `<script>` or no `data-alfred*` binding
+ * (it would never update). Emits a visible warning; a `dangerous` verdict blocks.
+ */
+function guardTier2Html(html: string, ctx: ToolCtx): { error?: string; warning?: string } {
+  const g = widgetCreateGuard(html);
+  if (g.block) {
+    ctx.emit({ kind: 'error', sessionId: ctx.sessionId, message: `⚠ widget bloqueado — ${g.error}` });
+    return { error: g.error };
+  }
+  const warnings: string[] = [];
+  if (g.warning) warnings.push(g.warning);
+  if (getSetting(ctx.db, 'widget_scripts_enabled') !== '1') {
+    const dw = declarativeModeWarning(html);
+    if (dw) warnings.push(dw);
+  }
+  if (warnings.length) {
+    const msg = warnings.join(' · ');
+    ctx.emit({ kind: 'error', sessionId: ctx.sessionId, message: `⚠ widget: ${msg}` });
+    return { warning: msg };
+  }
+  return {};
+}
 
 type Op = 'create' | 'list' | 'pause' | 'resume' | 'delete' | 'edit';
 
@@ -161,6 +189,14 @@ export const schedule: Tool<Args> = {
           return { ok: false, error: `${agent.id} is a claude-cli agent — scheduled study needs an API-brain agent (claude-api / openai / deepseek)` };
         }
       }
+      // Tier-2 (custom HTML): scan for dangerous patterns (refuse), warn on
+      // suspicious ones, and fail loud if it won't update in declarative mode.
+      let widgetWarning: string | undefined;
+      if (v.spec.render.tier === 2) {
+        const guard = guardTier2Html(v.spec.render.html ?? '', ctx);
+        if (guard.error) return { ok: false, error: guard.error };
+        widgetWarning = guard.warning;
+      }
       const job: Job = { id: randomUUID(), ...v.spec, enabled: true, runtime: {} };
       createJob(ctx.db, job);
       rescheduleJob(job.id);
@@ -169,7 +205,14 @@ export const schedule: Tool<Args> = {
       ctx.emit({ kind: 'layout', cards: getLayout(ctx.db) });
       // Re-read so the returned nextRunTs reflects what the scheduler armed.
       const armed = getJob(ctx.db, job.id) ?? job;
-      return { ok: true, result: { job: summarize(armed), nextRun: armed.runtime.nextRunTs ?? nextRun(job.schedule, Date.now()) } };
+      return {
+        ok: true,
+        result: {
+          job: summarize(armed),
+          nextRun: armed.runtime.nextRunTs ?? nextRun(job.schedule, Date.now()),
+          ...(widgetWarning ? { warning: widgetWarning } : {}),
+        },
+      };
     }
 
     if (op === 'edit') {
@@ -193,6 +236,13 @@ export const schedule: Tool<Args> = {
       };
       const v = validateJobSpec(mergeJobSpec(current, a));
       if (!v.ok) return { ok: false, error: v.error };
+      // Re-scan the (possibly new) tier-2 HTML on edit too — refuse dangerous, warn suspicious/declarative.
+      let widgetWarning: string | undefined;
+      if (v.spec.render.tier === 2) {
+        const guard = guardTier2Html(v.spec.render.html ?? '', ctx);
+        if (guard.error) return { ok: false, error: guard.error };
+        widgetWarning = guard.warning;
+      }
       // Keep runtime but drop the stale nextRunTs so the scheduler recomputes
       // from the (possibly new) schedule.
       const { nextRunTs: _drop, ...runtime } = cur.runtime;
@@ -212,7 +262,10 @@ export const schedule: Tool<Args> = {
       rescheduleJob(id);
       ctx.emit({ kind: 'layout', cards: getLayout(ctx.db) }); // reflect a retitled widget
       const after = getJob(ctx.db, id)!;
-      return { ok: true, result: { job: summarize(after), nextRun: after.runtime.nextRunTs ?? null } };
+      return {
+        ok: true,
+        result: { job: summarize(after), nextRun: after.runtime.nextRunTs ?? null, ...(widgetWarning ? { warning: widgetWarning } : {}) },
+      };
     }
 
     // pause / resume / delete — all need an id

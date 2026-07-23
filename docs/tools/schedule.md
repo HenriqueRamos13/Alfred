@@ -162,6 +162,43 @@ prompt-injected page can only draw junk in its own card:
   ever writes `textContent` / attributes / its own SVG (never `innerHTML` with your
   data), so a hostile payload can't XSS even inside its own frame.
 
+### The **Widget JS** toggle (run tier-2 JavaScript)
+
+The top-strip **`</> WIDGET JS`** button (persisted setting `widget_scripts_enabled`,
+default **OFF**) lets a tier-2 widget run its OWN JavaScript when you need real
+interactivity/animation the declarative bindings can't express:
+
+- **OFF (default):** the declarative path above — `srcdoc` + the hash-pinned runtime;
+  model `<script>` never runs.
+- **ON:** the same widget is served from a **custom Electron protocol**,
+  `alfred-widget://widget/<jobId>`, instead of `srcdoc`. A custom-scheme document is a
+  **separate origin** whose CSP comes from the **response header** and is therefore the
+  widget's OWN policy — it is **NOT intersected** with the parent's the way a srcdoc's
+  is. The header is `default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:`,
+  so the model's inline JS **runs**. The parent adds `frame-src 'self' alfred-widget:`
+  so the iframe can load the scheme — nothing else is loosened.
+- **Still safe with JS on:** the iframe keeps `sandbox="allow-scripts"` **without**
+  `allow-same-origin` (no parent DOM / cookies / IPC), and `default-src 'none'` means
+  `connect-src` falls back to none — **fetch / XHR / WebSocket / sendBeacon are dead**
+  and images are `data:`-only. A script can compute and animate but has **no way to
+  exfiltrate**; data still arrives only via the parent's `postMessage`.
+
+### The widget security **scanner**
+
+Every tier-2 `html` is heuristically scanned at **create/edit** (`scanWidgetHtml`):
+
+- **dangerous** (`eval`/`new Function`, `fetch`/XHR/WebSocket/`sendBeacon`, `<script src>`,
+  `document.cookie`, `new Image`/remote `<img src=http>`, `parent`/`top`/`opener`
+  frame-escape, `javascript:` URIs) → **creation is REFUSED** with the findings; fix the
+  HTML or the request is rejected.
+- **suspicious** (`localStorage`/`indexedDB`, inline `on*=` handlers, inline `<script>`,
+  invisible/bidi Unicode, Cyrillic/Greek homoglyphs) → the widget **is created** but a
+  **warning** with the findings is returned and emitted.
+- **fail-loud:** when Widget JS is **OFF** and the HTML has a `<script>` or **no**
+  `data-alfred*` binding, `create`/`edit` returns a clear warning ("modo declarativo:
+  usa data-alfred / data-alfred-sparkline, ou liga o toggle Widget JS…") so a frozen
+  widget is explained instead of silent.
+
 ## `list` / result summary (per job)
 `{ id, title, kind, schedule, enabled, pausedReason, tokensToday,
 tokenBudgetDaily, lastRunTs, nextRunTs, lastResult }` plus `source` (fetch),

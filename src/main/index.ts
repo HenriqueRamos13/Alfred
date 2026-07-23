@@ -14,11 +14,13 @@
  *                        toggles ALL windows.
  *   windowed           — classic bordered window (fallback if the overlay annoys).
  */
-import { app, BrowserWindow, globalShortcut, ipcMain, Notification, screen } from 'electron';
+import { app, BrowserWindow, globalShortcut, ipcMain, Notification, protocol, screen } from 'electron';
 import { join } from 'node:path';
 import { mkdirSync, readFileSync, existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { openDb } from './core/db.ts';
+import { getJob } from './core/jobs.ts';
+import { wrapWidgetHtmlJs, WIDGET_CSP_JS } from './core/widget-html-pure.ts';
 import { createOrchestrator } from './core/orchestrator.ts';
 import { loadPricingOverrides } from './core/pricing.ts';
 import { reassignDisplayCards } from './core/layout.ts';
@@ -30,6 +32,56 @@ import type { AlfredConfig, StreamEvent } from './core/types.ts';
 
 const TOGGLE_SHORTCUT = 'CommandOrControl+Shift+A';
 const TOGGLE_SHORTCUT_H = 'CommandOrControl+Shift+H';
+
+// The custom scheme that serves tier-2 widgets with their OWN JavaScript enabled
+// (widget_scripts_enabled ON). Registered as a standard+secure privileged scheme
+// BEFORE app 'ready' so `protocol.handle` below gets a real origin the parent's
+// `frame-src alfred-widget:` can frame. Its response CSP (WIDGET_CSP_JS) is the
+// widget's own — NOT intersected with the parent like a srcdoc's — so inline JS
+// runs while `default-src 'none'` keeps the network dead (no exfil).
+protocol.registerSchemesAsPrivileged([
+  {
+    scheme: 'alfred-widget',
+    privileges: { standard: true, secure: true, supportFetchAPI: false, corsEnabled: false, allowServiceWorkers: false, bypassCSP: false },
+  },
+]);
+
+// The live DB handle the widget protocol reads jobs from; set in boot() so the
+// handler (registered once) always serves from the current database.
+let widgetDb: import('better-sqlite3').Database | undefined;
+let widgetProtocolRegistered = false;
+
+/**
+ * Serve `alfred-widget://widget/<jobId>` → the tier-2 widget's HTML wrapped with
+ * the trusted runtime, with WIDGET_CSP_JS in the response header. Registered once
+ * (guarded) after app ready. Reads the job's render.html from the live DB; a
+ * missing/non-tier-2 job is a 404. Never throws out of the handler.
+ */
+function registerWidgetProtocol(): void {
+  if (widgetProtocolRegistered) return;
+  widgetProtocolRegistered = true;
+  protocol.handle('alfred-widget', (request) => {
+    try {
+      const { host, pathname } = new URL(request.url);
+      if (host !== 'widget') return new Response('not found', { status: 404 });
+      const jobId = decodeURIComponent(pathname.replace(/^\//, ''));
+      const job = jobId && widgetDb ? getJob(widgetDb, jobId) : undefined;
+      if (!job || job.render?.tier !== 2 || !job.render.html) {
+        return new Response('widget not found', { status: 404, headers: { 'Content-Type': 'text/plain' } });
+      }
+      return new Response(wrapWidgetHtmlJs(job.render.html), {
+        headers: {
+          'Content-Type': 'text/html; charset=utf-8',
+          'Content-Security-Policy': WIDGET_CSP_JS,
+          'X-Content-Type-Options': 'nosniff',
+        },
+      });
+    } catch (err) {
+      console.error('[alfred] alfred-widget protocol error:', err instanceof Error ? err.message : err);
+      return new Response('error', { status: 500 });
+    }
+  });
+}
 
 /**
  * Load the `.env` into process.env BEFORE config is read — without this no API
@@ -250,6 +302,10 @@ function boot(): void {
   const data = dataDir();
   loadPricingOverrides(process.env, data);
   const db = openDb(join(data, 'alfred.db'));
+  // Point the alfred-widget:// protocol at this DB and register its handler once
+  // (app-ready guaranteed here). Serves tier-2 widgets' HTML when Widget JS is ON.
+  widgetDb = db;
+  registerWidgetProtocol();
 
   // The set of windows the stream fans out to. In overlay mode this is one
   // window PER display (DisplayManager); in windowed / fallback mode a single

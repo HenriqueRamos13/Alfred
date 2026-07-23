@@ -564,6 +564,13 @@ export interface OrchestratorHandle {
   /** Auto-send (submit dictation on stt.final, no "Alfred enviar"): read/toggle, persisted, default OFF. */
   getAutosend(): boolean;
   setAutosend(on: boolean): boolean;
+  /**
+   * Widget JS (run tier-2 widgets' own JavaScript via the alfred-widget:// custom
+   * protocol, sandboxed + no network): read/toggle, persisted, default OFF. OFF =
+   * the declarative srcdoc + hash-pinned runtime; ON = the model's inline JS runs.
+   */
+  getWidgetScripts(): boolean;
+  setWidgetScripts(on: boolean): boolean;
   /** Voice input (push-to-talk): spawn/stop the native STT helper; streams stt.partial/stt.final. */
   startListening(): void;
   stopListening(): void;
@@ -1313,6 +1320,13 @@ export function createOrchestrator(opts: CreateOrchestratorOpts): OrchestratorHa
     },
     setAutosend(on) {
       setSetting(db, 'autosend_enabled', on ? '1' : '0');
+      return on;
+    },
+    getWidgetScripts() {
+      return getSetting(db, 'widget_scripts_enabled') === '1';
+    },
+    setWidgetScripts(on) {
+      setSetting(db, 'widget_scripts_enabled', on ? '1' : '0');
       return on;
     },
     startListening() {

@@ -4,18 +4,30 @@
  * Renders the model-authored self-contained page inside a locked-down
  * `<iframe sandbox="allow-scripts">` (NO allow-same-origin → opaque origin: no
  * DOM-parent / cookie / storage access; NO allow-popups/forms/top-navigation).
- * The page has zero network (a strict CSP in the wrapper blocks it). Data flows
- * ONE way: we subscribe to the SAME `job.data` stream (filtered by jobId) and
- * `postMessage` each value into the frame, where the trusted (hash-pinned) runtime
- * fills the model's `data-alfred*` bindings. No IPC/preload channel ever crosses
- * into the iframe, and the model authors no JS (its scripts are CSP-blocked).
+ * The page has zero network. Data flows ONE way: we subscribe to the SAME
+ * `job.data` stream (filtered by jobId) and `postMessage` each value into the
+ * frame, where the trusted runtime fills the model's `data-alfred*` bindings. No
+ * IPC/preload channel ever crosses into the iframe.
+ *
+ * TWO CSP modes (the `widget_scripts_enabled` toggle):
+ *  - OFF (default): `srcDoc` = the hash-pinned wrapper. The srcdoc iframe INHERITS
+ *    the parent CSP (`script-src 'self'`), which intersects with the widget meta
+ *    CSP, so the ONLY script that runs is the hash-pinned runtime — the model's own
+ *    `<script>` is blocked. Purely declarative.
+ *  - ON: `src="alfred-widget://widget/<jobId>"`. A custom-scheme document has its
+ *    OWN response-header CSP (`script-src 'unsafe-inline'`) that is NOT intersected
+ *    with the parent's (it is a separate origin, not a srcdoc), so the model's JS
+ *    RUNS. `default-src 'none'` still kills all network (connect/img-remote), so a
+ *    widget can compute but never exfiltrate; data still arrives only via postMessage.
+ * Either way the sandbox stays `allow-scripts` WITHOUT `allow-same-origin`, so the
+ * frame can reach neither the parent DOM, cookies, nor IPC.
  */
 import { useEffect, useRef, useState } from 'react';
 import { alfred } from '../lib/ipc.ts';
 import { wrapWidgetHtml } from '../../main/core/widget-html-pure.ts';
 import type { Job, StreamEvent } from '../../main/core/types.ts';
 
-export function HtmlWidgetCard({ job }: { job: Job }) {
+export function HtmlWidgetCard({ job, scriptsEnabled }: { job: Job; scriptsEnabled?: boolean }) {
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const [srcDoc] = useState(() => wrapWidgetHtml(job.render.html ?? ''));
   // The freshest value we should show — persisted lastResult, then each job.data.
@@ -55,12 +67,17 @@ export function HtmlWidgetCard({ job }: { job: Job }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // ON → the custom-protocol URL (own header CSP, model JS runs, no network);
+  // OFF → the inherited-CSP srcDoc (declarative). Keying on the mode forces a
+  // clean remount when the toggle flips, so the frame never mixes src+srcDoc.
+  const jsMode = scriptsEnabled === true;
   return (
     <iframe
       ref={iframeRef}
+      key={jsMode ? 'js' : 'declarative'}
       // eslint-disable-next-line react/no-danger-with-children
       sandbox="allow-scripts"
-      srcDoc={srcDoc}
+      {...(jsMode ? { src: `alfred-widget://widget/${job.id}` } : { srcDoc })}
       onLoad={() => {
         // Extra net: re-seed the freshest value after (re)load. The ready
         // handshake is the primary path; this covers the case where load fires

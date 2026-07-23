@@ -123,6 +123,7 @@ export default function App() {
   const [tts, setTts] = useState(false);
   const [elevenlabs, setElevenlabs] = useState(false); // ElevenLabs cloud voice (orthogonal to VOICE on/off)
   const [wake, setWake] = useState(false);
+  const [widgetScripts, setWidgetScripts] = useState(false); // run tier-2 widget JS (sandboxed, no network); default OFF
   // Header CARDS dropdown (show/hide panels). Closes on click-outside / Esc.
   const [cardsMenuOpen, setCardsMenuOpen] = useState(false);
   // Auto-send: on stt.final, submit the dictated text automatically (no "Alfred
@@ -432,6 +433,8 @@ export default function App() {
     alfred.getAutosend().then(setAutosend).catch(() => {});
     // Reflect the persisted wake-word toggle (default on when the STT binary exists).
     alfred.getWakeword().then(setWake).catch(() => {});
+    // Reflect the persisted widget-JS toggle (default off).
+    alfred.getWidgetScripts().then(setWidgetScripts).catch(() => {});
     // Read the live wake state so the button isn't blind at boot (events only
     // arrive on the NEXT transition, which the renderer would otherwise miss).
     alfred.getWakeStatus().then((s) => s && setWakeStatus(s)).catch(() => {});
@@ -745,6 +748,17 @@ export default function App() {
     });
   };
 
+  const toggleWidgetScripts = () => {
+    const next = !widgetScripts;
+    setWidgetScripts(next); // optimistic
+    alfred.setWidgetScripts(next).then(setWidgetScripts).catch(() => setWidgetScripts(!next));
+    pushLog({
+      tag: 'WIDGET',
+      tone: next ? 'lime' : 'dim',
+      msg: next ? 'widget JS on — tier-2 widgets run sandboxed (no network)' : 'widget JS off — declarative widgets only',
+    });
+  };
+
   const toggleMic = () => {
     if (killed) return;
     if (listening) {
@@ -812,7 +826,7 @@ export default function App() {
     if (id.startsWith('widget:')) {
       const job = jobs.find((j) => `widget:${j.id}` === id);
       if (!job) return { body: null };
-      return { body: job.render?.tier === 2 ? <HtmlWidgetCard job={job} /> : <WidgetCard job={job} /> };
+      return { body: job.render?.tier === 2 ? <HtmlWidgetCard job={job} scriptsEnabled={widgetScripts} /> : <WidgetCard job={job} /> };
     }
     switch (id) {
       case 'conversation':
@@ -1131,6 +1145,18 @@ export default function App() {
             title={wakeFace.title}
           >
             {wakeFace.label}
+          </button>
+          <button
+            type="button"
+            className={`topbar-btn no-drag${widgetScripts ? ' on' : ''}`}
+            onClick={toggleWidgetScripts}
+            title={
+              widgetScripts
+                ? 'Widget JS ON — tier-2 widgets run their own JavaScript, sandboxed with NO network (data still arrives via postMessage). Click to return to declarative-only.'
+                : 'Widget JS OFF — tier-2 widgets are declarative (data-alfred bindings only; model <script> never runs). Click to let widget JS run (sandboxed, no network).'
+            }
+          >
+            {widgetScripts ? '</> WIDGET JS ON' : '</> WIDGET JS'}
           </button>
           <button
             type="button"

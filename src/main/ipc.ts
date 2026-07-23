@@ -100,6 +100,9 @@ export interface Orchestrator {
   /** Auto-send toggle (submit dictation on stt.final): read/set, persisted. */
   getAutosend(): boolean | Promise<boolean>;
   setAutosend(on: boolean): boolean | Promise<boolean>;
+  /** Widget JS toggle (run tier-2 widget scripts via the alfred-widget:// protocol): read/set, persisted, default OFF. */
+  getWidgetScripts(): boolean | Promise<boolean>;
+  setWidgetScripts(on: boolean): boolean | Promise<boolean>;
   /** Voice input (push-to-talk): start/stop the native STT helper. */
   startListening(): void;
   stopListening(): void;
@@ -247,6 +250,16 @@ export function registerIpc(core: Orchestrator, emit: (e: StreamEvent) => void):
       return await core.setAutosend(on === true);
     } catch (err) {
       fail('set autosend', err);
+      return false;
+    }
+  });
+
+  ipcMain.handle('alfred:getWidgetScripts', guard('get widget scripts', () => core.getWidgetScripts(), false));
+  ipcMain.handle('alfred:setWidgetScripts', async (_e, on: unknown) => {
+    try {
+      return await core.setWidgetScripts(on === true);
+    } catch (err) {
+      fail('set widget scripts', err);
       return false;
     }
   });

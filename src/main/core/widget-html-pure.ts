@@ -130,6 +130,141 @@ export const WIDGET_RUNTIME_SHA256 = 'sha256-nHokzg6tLqDaJAsGcEuAKs7Y+LGAnMEaMQb
 export const WIDGET_CSP =
   `default-src 'none'; script-src '${WIDGET_RUNTIME_SHA256}'; style-src 'unsafe-inline'; img-src data:`;
 
+/**
+ * The CSP for the JS-ENABLED path (widget_scripts_enabled ON). Served in the
+ * RESPONSE HEADER by the custom `alfred-widget://` protocol (see src/main/index.ts),
+ * NOT as a srcdoc meta — a header CSP on a real (custom-scheme) origin is the
+ * widget's OWN policy and is NOT intersected with the parent's like a srcdoc's is,
+ * so `script-src 'unsafe-inline'` here actually lets the model's inline JS RUN.
+ * Crucially `default-src 'none'` means connect-src/frame-src/etc. all fall back to
+ * none: fetch / XHR / WebSocket / sendBeacon are DEAD and img is data:-only, so a
+ * script can compute and animate but has NO way to exfiltrate — data still arrives
+ * only via the parent's postMessage. That is why JS-on stays safe.
+ */
+export const WIDGET_CSP_JS = `default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:`;
+
+/**
+ * Wrap model HTML for the JS-enabled path. Same trusted runtime (data-alfred
+ * bindings + postMessage seed + ready handshake) plus the model body. The
+ * protocol handler ALSO sets WIDGET_CSP_JS on the Response header (the primary
+ * policy); we embed the SAME policy as a `<meta>` too — defence in depth, so a
+ * dropped/misconfigured header can never leave the widget with NO policy (which
+ * would re-open the network). On the custom (alfred-widget:) origin this meta is
+ * the widget's OWN policy — NOT intersected with the parent like a srcdoc's —
+ * so `script-src 'unsafe-inline'` still lets the runtime AND the model's inline
+ * scripts run, while `default-src 'none'` keeps the network dead either way.
+ */
+export function wrapWidgetHtmlJs(modelHtml: string): string {
+  const body = typeof modelHtml === 'string' ? modelHtml : '';
+  return (
+    '<!doctype html><html><head>' +
+    '<meta charset="utf-8">' +
+    `<meta http-equiv="Content-Security-Policy" content="${WIDGET_CSP_JS}">` +
+    `<script>${WIDGET_RUNTIME}</script>` +
+    '</head><body>' +
+    body +
+    '</body></html>'
+  );
+}
+
+// ── widget security scanner (heuristic, PURE) ─────────────────────────────────
+
+export type WidgetRisk = 'ok' | 'suspicious' | 'dangerous';
+export interface WidgetScan {
+  risk: WidgetRisk;
+  findings: string[];
+}
+
+/** Dangerous patterns: code-injection, network egress, pixel exfil, frame-escape. */
+const DANGEROUS_PATTERNS: { re: RegExp; label: string }[] = [
+  { re: /\beval\s*\(/i, label: 'eval() — arbitrary code execution' },
+  { re: /\bnew\s+Function\s*\(/i, label: 'new Function() — code from a string' },
+  { re: /\bfetch\s*\(/i, label: 'fetch() — network request (egress)' },
+  { re: /XMLHttpRequest/i, label: 'XMLHttpRequest — network request (egress)' },
+  { re: /\bnew\s+WebSocket\b/i, label: 'WebSocket — network connection (egress)' },
+  { re: /\bnew\s+EventSource\b/i, label: 'EventSource — network stream (egress)' },
+  { re: /sendBeacon/i, label: 'navigator.sendBeacon — background exfil' },
+  { re: /<script[^>]*\ssrc\s*=/i, label: '<script src> — external script load' },
+  { re: /document\s*\.\s*cookie/i, label: 'document.cookie access' },
+  { re: /\bnew\s+Image\s*\(/i, label: 'new Image() — pixel-beacon exfil' },
+  { re: /<img[^>]*\ssrc\s*=\s*["']?\s*https?:/i, label: '<img src=http…> — remote pixel exfil' },
+  { re: /\bwindow\s*\.\s*(parent|top|opener)\b/i, label: 'window.parent/top/opener — frame-escape attempt' },
+  { re: /\b(parent|top)\s*\.\s*(location|document|postMessage|frames|opener)\b/i, label: 'parent/top.* — frame-escape attempt' },
+  { re: /\.\s*opener\b/i, label: 'window.opener — frame-escape attempt' },
+  { re: /javascript\s*:/i, label: 'javascript: URI' },
+];
+
+/** Suspicious patterns: sandboxed-but-noteworthy (storage, handlers, hidden chars). */
+const SUSPICIOUS_PATTERNS: { re: RegExp; label: string }[] = [
+  { re: /\b(local|session)Storage\b/i, label: 'localStorage/sessionStorage access' },
+  { re: /indexedDB/i, label: 'indexedDB access' },
+  { re: /\son\w+\s*=\s*["']/i, label: 'inline on*= event handler with code' },
+  { re: /<script(\s|>)/i, label: 'inline <script> block (declarative mode ignores it)' },
+  // Zero-width / bidi / BOM controls used to hide code or spoof text.
+  { re: /[\u200B-\u200F\u202A-\u202E\u2060-\u2064\uFEFF]/, label: 'invisible/bidi Unicode control characters' },
+  // Cyrillic / Greek letters in otherwise-Latin markup = possible homoglyph spoof.
+  { re: /[\u0400-\u04FF\u0370-\u03FF]/, label: 'Cyrillic/Greek homoglyph characters' },
+];
+
+/**
+ * Heuristic security scan of a tier-2 widget's model HTML. Flags code-exec,
+ * network-egress, pixel-exfil, frame-escape (dangerous) and storage/inline-
+ * handler/hidden-Unicode (suspicious). Pure + string-only so it is unit-tested
+ * and can run at create/edit time. Defence in depth: even JS-ON widgets are
+ * sandboxed with no network, but a `dangerous` verdict blocks creation outright.
+ */
+export function scanWidgetHtml(html: string): WidgetScan {
+  const s = typeof html === 'string' ? html : '';
+  const findings: string[] = [];
+  for (const { re, label } of DANGEROUS_PATTERNS) if (re.test(s)) findings.push(label);
+  const dangerous = findings.length > 0;
+  for (const { re, label } of SUSPICIOUS_PATTERNS) if (re.test(s)) findings.push(label);
+  const risk: WidgetRisk = dangerous ? 'dangerous' : findings.length ? 'suspicious' : 'ok';
+  return { risk, findings };
+}
+
+export interface WidgetCreateGuard {
+  /** True → refuse to create/edit the widget. */
+  block: boolean;
+  /** Set when block: why the creation was refused (with findings). */
+  error?: string;
+  /** Set when created-but-suspicious: a non-blocking warning (findings). */
+  warning?: string;
+  scan: WidgetScan;
+}
+
+/**
+ * The create/edit decision for a tier-2 widget's HTML (§2): `dangerous` → refuse
+ * with the findings; `suspicious` → allow but warn; `ok` → allow silently. Pure.
+ */
+export function widgetCreateGuard(html: string): WidgetCreateGuard {
+  const scan = scanWidgetHtml(html);
+  if (scan.risk === 'dangerous') {
+    return { block: true, scan, error: `widget HTML rejected — dangerous patterns: ${scan.findings.join('; ')}` };
+  }
+  if (scan.risk === 'suspicious') {
+    return { block: false, scan, warning: `widget created with a security warning: ${scan.findings.join('; ')}` };
+  }
+  return { block: false, scan };
+}
+
+/**
+ * FAIL-LOUD (§3): in the DEFAULT (scripts OFF) declarative mode, a tier-2 widget
+ * only updates via `data-alfred*` bindings — a `<script>` never runs and HTML
+ * with no binding never refreshes. Returns a clear warning in those cases so the
+ * user understands why the widget looks frozen; null when the HTML is fine for
+ * declarative mode. Pure.
+ */
+export function declarativeModeWarning(html: string): string | null {
+  const s = typeof html === 'string' ? html : '';
+  const hasScript = /<script(\s|>)/i.test(s);
+  const hasBinding = /data-alfred(?:-sparkline|-attr)?\s*=/i.test(s);
+  if (hasScript || !hasBinding) {
+    return 'modo declarativo: usa data-alfred / data-alfred-sparkline, ou liga o toggle Widget JS para HTML com script';
+  }
+  return null;
+}
+
 /** Max bytes of model-authored HTML we accept for a tier-2 widget. */
 export const WIDGET_HTML_MAX_BYTES = 256 * 1024;
 

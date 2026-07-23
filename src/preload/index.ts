@@ -119,6 +119,9 @@ const api = {
   /** Auto-send (submit dictation on stt.final) toggle — persisted; read on mount. */
   getAutosend: (): Promise<boolean> => ipcRenderer.invoke('alfred:getAutosend'),
   setAutosend: (on: boolean): Promise<boolean> => ipcRenderer.invoke('alfred:setAutosend', on),
+  /** Widget JS toggle (run tier-2 widget scripts via the sandboxed alfred-widget:// protocol) — persisted; read on mount. Default OFF. */
+  getWidgetScripts: (): Promise<boolean> => ipcRenderer.invoke('alfred:getWidgetScripts'),
+  setWidgetScripts: (on: boolean): Promise<boolean> => ipcRenderer.invoke('alfred:setWidgetScripts', on),
   /** Voice input (push-to-talk): start/stop the STT helper; transcript arrives via stt.partial/stt.final stream events. */
   startListening: (): void => ipcRenderer.send('alfred:startListening'),
   stopListening: (): void => ipcRenderer.send('alfred:stopListening'),
