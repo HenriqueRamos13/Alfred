@@ -451,6 +451,29 @@ export interface JobSpecInput {
 }
 
 /**
+ * Field-by-field overlay for `edit`: return `current` with every field the
+ * `patch` actually provides overwritten. An `undefined` patch field keeps the
+ * current value — so editing just the interval preserves render.html/source/
+ * prompt/grant/placement (the bug: a full replace wiped a custom tier-2 render).
+ * The caller feeds the result to validateJobSpec. Pure.
+ */
+export function mergeJobSpec(current: JobSpecInput, patch: JobSpecInput): JobSpecInput {
+  const pick = <K extends keyof JobSpecInput>(k: K): JobSpecInput[K] =>
+    patch[k] !== undefined ? patch[k] : current[k];
+  return {
+    title: pick('title'),
+    kind: pick('kind'),
+    schedule: pick('schedule'),
+    source: pick('source'),
+    prompt: pick('prompt'),
+    grant: pick('grant'),
+    tokenBudgetDaily: pick('tokenBudgetDaily'),
+    render: pick('render'),
+    placement: pick('placement'),
+  };
+}
+
+/**
  * Validate + normalise a create/edit spec. Pure so the tool can reject bad
  * input before touching the DB and the tests can exercise every rejection.
  */

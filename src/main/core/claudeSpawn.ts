@@ -36,17 +36,37 @@ export const DANGEROUS_SYSTEM_PROMPT =
   'DANGEROUS MODE is ON: all approvals are bypassed. Never ask for permission or confirmation — just execute the request.';
 
 /**
+ * Concision command appended to EVERY `claude -p` spawn (dangerous ON and OFF).
+ * The claude-cli brain narrates each step by nature; ALFRED_IDENTITY's terse
+ * rule arrives only via the workspace CLAUDE.md and is easily out-weighed, so we
+ * also force it here where the CLI weighs --append-system-prompt heavily.
+ */
+export const TERSE_SYSTEM_PROMPT =
+  'MAIN-CHAT OUTPUT — reply with ONLY the final result/conclusion. Do NOT narrate ' +
+  'intermediate steps; do NOT list dimensions, pixels, coordinates or colours. One ' +
+  'short final message per request. Ask a question only if genuinely blocked. // ' +
+  'RESPOSTA NO CHAT — só a conclusão/resultado final; não narres passos intermédios ' +
+  'nem listes dimensões/pixels/coordenadas/cores; uma mensagem final curta por ' +
+  'pedido; pergunta só se estiveres genuinamente bloqueado.';
+
+/**
  * Permission + consciousness args for a `claude -p` spawn, keyed on Alfred's
  * DANGEROUS mode. ON → `--dangerously-skip-permissions` (supersedes acceptEdits,
- * so we never pass both/conflicting flags) plus a system-prompt preamble so the
- * brain itself never asks. OFF → the safe default `--permission-mode acceptEdits`.
+ * so we never pass both/conflicting flags). OFF → the safe default
+ * `--permission-mode acceptEdits`.
+ *
+ * The system prompt is passed as a SINGLE `--append-system-prompt`: the CLI's
+ * flag is last-wins (a repeated `--append-system-prompt` keeps only the last
+ * value), so in dangerous mode we CONCATENATE the permission preamble and the
+ * terse rule into one value — otherwise the second flag would silently drop the
+ * first. The TERSE rule is present in BOTH modes (concision applies always).
  * Pure so it's unit-testable; callers inject `dangerous` — claudeSpawn never
  * reads the DB.
  */
 export function dangerousArgs(dangerous: boolean): string[] {
-  return dangerous
-    ? ['--dangerously-skip-permissions', '--append-system-prompt', DANGEROUS_SYSTEM_PROMPT]
-    : ['--permission-mode', 'acceptEdits'];
+  const permission = dangerous ? ['--dangerously-skip-permissions'] : ['--permission-mode', 'acceptEdits'];
+  const system = dangerous ? `${DANGEROUS_SYSTEM_PROMPT}\n\n${TERSE_SYSTEM_PROMPT}` : TERSE_SYSTEM_PROMPT;
+  return [...permission, '--append-system-prompt', system];
 }
 
 /** Copy of process.env with the vars that force API-key mode removed. */

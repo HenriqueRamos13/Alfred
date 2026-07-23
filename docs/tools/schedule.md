@@ -22,7 +22,7 @@ Source: `src/main/tools/schedule.ts` (+ `core/jobs.ts`, `core/jobs-pure.ts`).
 | `pause` | `id` | `{ job }` | **T2** |
 | `resume` | `id` | `{ job }` | **T2** |
 | `delete` | `id` | `{ deleted }` | **T2** |
-| `edit` | `id`, + any create field | `{ job, nextRun }` | **T2** |
+| `edit` | `id`, + any create field to change (**merged**, not replaced) | `{ job, nextRun }` | **T2** |
 
 `create`/`edit`/`pause`/`resume`/`delete` are **T2** — they establish or change
 recurring egress/compute. In **dangerous mode** the host auto-approves the T2,
@@ -114,8 +114,12 @@ tokenBudgetDaily, lastRunTs, nextRunTs, lastResult }` plus `source` (fetch) or
 `grant`+`prompt` (agent).
 
 `pause` disables the job (`enabled:false`); `resume` re-enables it **and** clears
-any auto-pause reason (`budget`/`error`), then re-arms. `edit` re-validates the
-whole spec exactly like `create`.
+any auto-pause reason (`budget`/`error`), then re-arms. `edit` **merges** the
+fields you pass onto the job's current spec and re-validates the result — it does
+NOT replace the whole spec. So editing only the `schedule` keeps a custom tier-2
+`render.html`, the `source`, `prompt`, `grant` and `placement` untouched; send a
+field only when you want to change it. (Previously `edit` was a full replace, so
+omitting `render.html` silently wiped a custom widget.)
 
 ## Examples
 

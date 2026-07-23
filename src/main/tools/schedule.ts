@@ -12,7 +12,7 @@
 import { randomUUID } from 'node:crypto';
 import type { Tool } from './types.ts';
 import type { Job } from '../core/types.ts';
-import { validateJobSpec, nextRun, type JobSpecInput } from '../core/jobs-pure.ts';
+import { validateJobSpec, mergeJobSpec, nextRun, type JobSpecInput } from '../core/jobs-pure.ts';
 import { createJob, getJob, listJobs, updateJob, deleteJob, rescheduleJob } from '../core/jobs.ts';
 import { getLayout } from '../core/layout.ts';
 
@@ -49,7 +49,7 @@ export const schedule: Tool<Args> = {
     'A job is either a `fetch` (a cheap HTTP GET on a timer that pulls a value to show — ZERO AI tokens) or an ' +
     '`agent` (an autonomous Alfred turn from a prompt — costs tokens, runs unattended; the agent runner ships in a ' +
     'later stage). This tool only PERSISTS and (re)schedules jobs; it never runs one. ops: ' +
-    'create (title, kind, schedule, and per-kind fields), list, pause {id}, resume {id}, delete {id}, edit {id, ...create fields}. ' +
+    'create (title, kind, schedule, and per-kind fields), list, pause {id}, resume {id}, delete {id}, edit {id, ...fields to change} (MERGES onto the current spec — send only what changes; omitted fields keep their value, so editing just the schedule preserves a custom render.html). ' +
     'schedule is {type:"interval", everyMs} (everyMs >= 30000) or {type:"daily", at:"HH:MM"} (24h local). ' +
     'For kind:"fetch" pass source:{url (http/https), method?:"GET", headers?, extract?} where extract is a dot/bracket ' +
     'path into the JSON response (e.g. "current.temperature_2m"). ' +
@@ -125,27 +125,42 @@ export const schedule: Tool<Args> = {
       return { ok: true, result: { jobs } };
     }
 
-    if (op === 'create' || op === 'edit') {
+    if (op === 'create') {
       const v = validateJobSpec(a);
       if (!v.ok) return { ok: false, error: v.error };
+      const job: Job = { id: randomUUID(), ...v.spec, enabled: true, runtime: {} };
+      createJob(ctx.db, job);
+      rescheduleJob(job.id);
+      // A tier-1/2 job registered a widget layout row — push the new layout so
+      // the widget card appears (and get_layout/move_card can reach it).
+      ctx.emit({ kind: 'layout', cards: getLayout(ctx.db) });
+      // Re-read so the returned nextRunTs reflects what the scheduler armed.
+      const armed = getJob(ctx.db, job.id) ?? job;
+      return { ok: true, result: { job: summarize(armed), nextRun: armed.runtime.nextRunTs ?? nextRun(job.schedule, Date.now()) } };
+    }
 
-      if (op === 'create') {
-        const job: Job = { id: randomUUID(), ...v.spec, enabled: true, runtime: {} };
-        createJob(ctx.db, job);
-        rescheduleJob(job.id);
-        // A tier-1/2 job registered a widget layout row — push the new layout so
-        // the widget card appears (and get_layout/move_card can reach it).
-        ctx.emit({ kind: 'layout', cards: getLayout(ctx.db) });
-        // Re-read so the returned nextRunTs reflects what the scheduler armed.
-        const armed = getJob(ctx.db, job.id) ?? job;
-        return { ok: true, result: { job: summarize(armed), nextRun: armed.runtime.nextRunTs ?? nextRun(job.schedule, Date.now()) } };
-      }
-
-      // edit: replace the spec, keep runtime but drop the stale nextRunTs so the
-      // scheduler recomputes from the (possibly new) schedule.
+    if (op === 'edit') {
+      // edit = MERGE, not replace: overlay only the fields the caller sent onto
+      // the current spec, so editing just the interval keeps a custom tier-2
+      // render.html / source / prompt / grant / placement (it used to wipe them).
       if (!id) return { ok: false, error: 'edit needs an id' };
       const cur = getJob(ctx.db, id);
       if (!cur) return { ok: false, error: `no job with id ${id}` };
+      const current: JobSpecInput = {
+        title: cur.title,
+        kind: cur.kind,
+        schedule: cur.schedule,
+        source: cur.source,
+        prompt: cur.prompt,
+        grant: cur.grant,
+        tokenBudgetDaily: cur.tokenBudgetDaily,
+        render: cur.render,
+        placement: cur.placement,
+      };
+      const v = validateJobSpec(mergeJobSpec(current, a));
+      if (!v.ok) return { ok: false, error: v.error };
+      // Keep runtime but drop the stale nextRunTs so the scheduler recomputes
+      // from the (possibly new) schedule.
       const { nextRunTs: _drop, ...runtime } = cur.runtime;
       updateJob(ctx.db, id, {
         title: v.spec.title,

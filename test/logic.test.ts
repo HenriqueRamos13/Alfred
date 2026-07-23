@@ -40,7 +40,7 @@ import { shell } from '../src/main/tools/shell.ts';
 import { filesystem } from '../src/main/tools/filesystem.ts';
 import { browser } from '../src/main/tools/browser.ts';
 import { delegate } from '../src/main/tools/delegate.ts';
-import { dangerousArgs, DANGEROUS_SYSTEM_PROMPT } from '../src/main/core/claudeSpawn.ts';
+import { dangerousArgs, DANGEROUS_SYSTEM_PROMPT, TERSE_SYSTEM_PROMPT } from '../src/main/core/claudeSpawn.ts';
 import { gmailConfigured } from '../src/main/tools/gmail-config.ts';
 import {
   dayKey,
@@ -63,6 +63,7 @@ import {
   DEFAULT_TOKEN_BUDGET_DAILY,
   extractValue,
   validateJobSpec,
+  mergeJobSpec,
   MIN_INTERVAL_MS,
   escalateForTrifecta,
   isOutboundAction,
@@ -967,14 +968,35 @@ test('delegate.risk — always T2 (delegates autonomous execution)', () => {
 
 test('dangerousArgs — OFF keeps acceptEdits; ON skips permissions + injects preamble (never both)', () => {
   // OFF → safe default, Claude Code still gates its own tools
-  assert.deepEqual(dangerousArgs(false), ['--permission-mode', 'acceptEdits']);
+  const off = dangerousArgs(false);
+  assert.ok(off.includes('--permission-mode') && off.includes('acceptEdits'));
+  assert.ok(!off.includes('--dangerously-skip-permissions'));
   // ON → skip-permissions supersedes acceptEdits (they must not both appear) +
   // the system-prompt preamble so the brain never asks verbally
   const on = dangerousArgs(true);
-  assert.deepEqual(on, ['--dangerously-skip-permissions', '--append-system-prompt', DANGEROUS_SYSTEM_PROMPT]);
+  assert.ok(on.includes('--dangerously-skip-permissions'));
+  assert.ok(on.some((s) => s.includes(DANGEROUS_SYSTEM_PROMPT)), 'dangerous preamble present');
   assert.ok(!on.includes('--permission-mode'), 'no conflicting acceptEdits when skipping permissions');
   assert.ok(!on.includes('acceptEdits'));
   assert.match(DANGEROUS_SYSTEM_PROMPT, /never ask for permission/i);
+});
+
+test('dangerousArgs — the terse system prompt reaches claude -p in BOTH modes (single append, last-wins-safe)', () => {
+  const off = dangerousArgs(false);
+  const on = dangerousArgs(true);
+  for (const args of [off, on]) {
+    // Exactly ONE --append-system-prompt: the CLI keeps only the last, so a
+    // second flag would drop the first. Both prompts must ride one value.
+    const flags = args.filter((s) => s === '--append-system-prompt');
+    assert.equal(flags.length, 1, 'exactly one --append-system-prompt');
+    const i = args.indexOf('--append-system-prompt');
+    assert.ok(args[i + 1].includes(TERSE_SYSTEM_PROMPT), 'terse rule present in the appended value');
+  }
+  // Dangerous ON: the SAME appended value also carries the permission preamble.
+  const j = on.indexOf('--append-system-prompt');
+  assert.ok(on[j + 1].includes(DANGEROUS_SYSTEM_PROMPT), 'dangerous preamble coexists with terse');
+  // OFF still keeps the safe default permission mode
+  assert.ok(off.includes('--permission-mode') && off.includes('acceptEdits'));
 });
 
 // ── governance edge cases ────────────────────────────────────────────────────
@@ -2107,6 +2129,61 @@ test('validateJobSpec — a well-formed fetch job normalizes', () => {
     assert.equal(r.spec.source?.method, 'GET');
     assert.deepEqual(r.spec.render, { tier: 1, card: 'value' });
   }
+});
+
+// ── mergeJobSpec: edit = field-by-field overlay (not replace) ────────────────
+
+test('mergeJobSpec — editing only the schedule keeps render.html and source', () => {
+  const current = {
+    title: 'Lisbon temp',
+    kind: 'fetch',
+    schedule: { type: 'interval', everyMs: 5 * 60_000 },
+    source: { url: 'https://api.open-meteo.com/v1/forecast', method: 'GET', extract: 'current.temperature_2m' },
+    render: { tier: 2, card: 'html', html: '<b>custom</b>' },
+  } as const;
+  const merged = mergeJobSpec(current, { schedule: { type: 'interval', everyMs: 10 * 60_000 } });
+  assert.deepEqual(merged.schedule, { type: 'interval', everyMs: 10 * 60_000 });
+  assert.deepEqual(merged.render, { tier: 2, card: 'html', html: '<b>custom</b>' });
+  assert.deepEqual(merged.source, current.source);
+  // and the merged result validates to a spec that STILL has the custom render
+  const v = validateJobSpec(merged);
+  assert.equal(v.ok, true);
+  if (v.ok) assert.equal(v.spec.render.html, '<b>custom</b>');
+});
+
+test('mergeJobSpec — editing only the render keeps schedule and source', () => {
+  const current = {
+    title: 't', kind: 'fetch',
+    schedule: { type: 'daily', at: '09:00' },
+    source: { url: 'https://x.com', method: 'GET' },
+    render: { tier: 1, card: 'value' },
+  } as const;
+  const merged = mergeJobSpec(current, { render: { tier: 2, card: 'html', html: '<i>new</i>' } });
+  assert.deepEqual(merged.schedule, { type: 'daily', at: '09:00' });
+  assert.deepEqual(merged.source, current.source);
+  assert.deepEqual(merged.render, { tier: 2, card: 'html', html: '<i>new</i>' });
+});
+
+test('mergeJobSpec — undefined patch fields never erase the current value', () => {
+  const current = {
+    title: 't', kind: 'agent',
+    schedule: { type: 'daily', at: '09:00' },
+    prompt: 'do the thing', grant: ['read', 'notify'], tokenBudgetDaily: 50_000,
+    render: { tier: 1, card: 'value' },
+    placement: { corner: 'tr' },
+  } as const;
+  const merged = mergeJobSpec(current, { title: undefined, prompt: undefined, render: undefined });
+  assert.equal(merged.title, 't');
+  assert.equal(merged.prompt, 'do the thing');
+  assert.deepEqual(merged.render, { tier: 1, card: 'value' });
+  assert.deepEqual(merged.placement, { corner: 'tr' });
+  assert.equal(merged.tokenBudgetDaily, 50_000);
+});
+
+test('mergeJobSpec — a provided field is applied (swap)', () => {
+  const current = { title: 'old', kind: 'fetch', schedule: { type: 'daily', at: '09:00' }, render: { tier: 1, card: 'value' } } as const;
+  const merged = mergeJobSpec(current, { title: 'new' });
+  assert.equal(merged.title, 'new');
 });
 
 test('validateJobSpec — agent job defaults grant to read+notify', () => {
