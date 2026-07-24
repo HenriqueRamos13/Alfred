@@ -137,6 +137,12 @@ import { parseTopicsFromIndex } from './team-format-pure.ts';
 import { grillMeEnabled, parseVoiceConfig } from './settings-pure.ts';
 import { parseSendDelay } from './send-delay-pure.ts';
 import { isAccent, DEFAULT_ACCENT, type AccentName } from './accent-pure.ts';
+import {
+  resolveLanguage,
+  localeForLanguage,
+  languageDirective,
+  type Language,
+} from './language-pure.ts';
 import { enqueueTurn, coalesceTurns } from './turn-queue-pure.ts';
 import { dayKey } from './budget.ts';
 import { spawnClaudeCli, dangerousArgs } from './claudeSpawn.ts';
@@ -491,6 +497,8 @@ export class Orchestrator {
     // everything Alfred can do + routing + pointers). The detailed docs it names
     // (docs/**, skills/**) are L2 — referenced, never loaded by default.
     let sys = `${ALFRED_IDENTITY}\n\n${CAPABILITY_MANIFEST}`;
+    // Default reply language (settings selector; env override; pt-BR fallback).
+    sys += `\n\n# Language\n${languageDirective(resolveLanguage(getSetting(ctx.db, 'language'), process.env.ALFRED_LANGUAGE))}`;
     // Seeing the screen: route layout questions to get_layout (coordinates), real
     // screen content to screenshot, and tell the brain whether it can see at all.
     const canSee = modelSupportsVision(brainToProvider(this.deps.brainId), this.deps.modelId);
@@ -612,8 +620,9 @@ async function spawnClaudeConversation(
   resumeId?: string,
   model?: string,
   signal?: AbortSignal,
+  extraSystem?: string,
 ): Promise<ClaudeTurn> {
-  const args = ['-p', prompt, '--output-format', 'json', ...dangerousArgs(dangerous)];
+  const args = ['-p', prompt, '--output-format', 'json', ...dangerousArgs(dangerous, extraSystem)];
   if (model) args.push('--model', model);
   if (resumeId) args.push('--resume', resumeId);
   const out = await spawnClaudeCli(args, { cwd, signal });
@@ -768,6 +777,9 @@ export interface OrchestratorHandle {
   /** UI accent (recolours only --acc): read/set, persisted, validated, default "cyan". */
   getAccent(): AccentName;
   setAccent(name: string): AccentName;
+  /** Default reply language + STT locale (pt-BR | en-US): read/set, persisted, broadcast for multi-monitor sync. */
+  getLanguage(): Language;
+  setLanguage(lang: string): Language;
   /** ElevenLabs cloud voice on/off — orthogonal to tts_enabled (speaks or not);
    * this picks WHICH voice. Persisted, default OFF. */
   getElevenlabs(): boolean;
@@ -983,9 +995,13 @@ export function createOrchestrator(opts: CreateOrchestratorOpts): OrchestratorHa
     if (raw === undefined) return wakeword.isWakeAvailable();
     return raw === '1';
   };
+  // STT/wake locale derived from the language setting (env override applies inside
+  // stt/wakeword themselves; this is the setting-based preference they fall to).
+  const sttLocale = (): string =>
+    localeForLanguage(resolveLanguage(getSetting(db, 'language'), process.env.ALFRED_LANGUAGE));
   const startWake = (): void => {
     if (wakeSuppressed || !wakeEnabled()) return;
-    wakeword.startWakeword(wakeEmit, sessionId);
+    wakeword.startWakeword(wakeEmit, sessionId, sttLocale());
   };
 
   // Wake commands: a {final} from the wake helper is first checked for an ACTION
@@ -1188,7 +1204,11 @@ export function createOrchestrator(opts: CreateOrchestratorOpts): OrchestratorHa
     // DANGEROUS mode wires through to `claude -p`: skip its own permission
     // prompts + append a preamble so the brain never asks for confirmation.
     // The chosen Anthropic model (agent_config.main) is passed as --model.
-    const turn = await spawnClaudeConversation(prompt, config.workspace, isDangerous(), resumeId, model, signal);
+    // The workspace CLAUDE.md carries identity+manifest but NOT the language line
+    // (and is easily out-weighed), so inject the reply-language directive here where
+    // --append-system-prompt weighs heavily — parity with the AI-SDK buildSystem path.
+    const langDirective = languageDirective(resolveLanguage(getSetting(db, 'language'), process.env.ALFRED_LANGUAGE));
+    const turn = await spawnClaudeConversation(prompt, config.workspace, isDangerous(), resumeId, model, signal, langDirective);
 
     // User kill/reset: the child was SIGKILLed → clean halt, not a red error
     // (parity with the AI-SDK path's abort handling).
@@ -1653,6 +1673,21 @@ export function createOrchestrator(opts: CreateOrchestratorOpts): OrchestratorHa
       emit({ kind: 'settings.changed', key: 'accent', value: accent });
       return accent;
     },
+    getLanguage() {
+      // Setting > ALFRED_LANGUAGE env > pt-BR. Env is a boot override only.
+      return resolveLanguage(getSetting(db, 'language'), process.env.ALFRED_LANGUAGE);
+    },
+    setLanguage(lang) {
+      // Trust boundary: only a known language tag is ever persisted (else default).
+      const resolved = resolveLanguage(lang);
+      setSetting(db, 'language', resolved);
+      emit({ kind: 'settings.changed', key: 'language', value: resolved });
+      // Re-arm the wake listener so the new STT locale takes effect live (parity
+      // with a manual toggle): stop, then startWake() respawns with the new locale.
+      wakeword.stopWakeword();
+      startWake();
+      return resolved;
+    },
     getElevenlabs() {
       return getSetting(db, 'elevenlabs_enabled') === '1';
     },
@@ -1717,7 +1752,7 @@ export function createOrchestrator(opts: CreateOrchestratorOpts): OrchestratorHa
       stt.startListening((e) => {
         emit(e);
         if (e.kind === 'stt.final') startWake();
-      }, sessionId);
+      }, sessionId, sttLocale());
     },
     stopListening() {
       stt.stopListening();

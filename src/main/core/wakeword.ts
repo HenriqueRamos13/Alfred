@@ -228,7 +228,11 @@ export function parseVoiceIntent(command: string): VoiceIntent {
  * it only exits when stopWakeword() (SIGINT) is called or the process crashes —
  * and a crash now auto-re-arms after a backoff instead of latching off.
  */
-export function startWakeword(emit: (e: StreamEvent) => void, sessionId: string): void {
+export function startWakeword(
+  emit: (e: StreamEvent) => void,
+  sessionId: string,
+  preferredLocale?: string,
+): void {
   // Remember the sink so the auto re-arm timer (and status emits) can reach the UI.
   emitFn = emit;
   sessionRef = sessionId;
@@ -246,7 +250,9 @@ export function startWakeword(emit: (e: StreamEvent) => void, sessionId: string)
     return;
   }
 
-  const locale = process.env.ALFRED_STT_LOCALE?.trim() || 'pt-BR';
+  // ALFRED_STT_LOCALE is the explicit override; else the language-derived locale;
+  // else pt-BR (the historic default).
+  const locale = process.env.ALFRED_STT_LOCALE?.trim() || preferredLocale?.trim() || 'pt-BR';
   // ALFRED_WAKEWORD is read from the environment by the helper itself.
   const child = spawn(bin, ['--wake', '--locale', locale], { stdio: ['pipe', 'pipe', 'pipe'] });
   proc = child;

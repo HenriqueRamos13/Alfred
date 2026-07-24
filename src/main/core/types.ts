@@ -466,7 +466,8 @@ export type SettingKey =
   | 'dangerous_mode'
   | 'spawn_paused'
   | 'send_delay_ms'
-  | 'voice_config';
+  | 'voice_config'
+  | 'language';
 
 /**
  * TTS voice knobs the settings card can override at runtime (hot-applied, no

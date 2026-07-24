@@ -159,6 +159,9 @@ const api = {
   /** UI accent (recolours only --acc) — persisted; read on mount. Returns the effective name. */
   getAccent: (): Promise<string> => ipcRenderer.invoke('alfred:getAccent'),
   setAccent: (name: string): Promise<string> => ipcRenderer.invoke('alfred:setAccent', name),
+  /** Default reply language + STT locale (pt-BR | en-US) — persisted; read on mount; broadcast for multi-monitor sync. */
+  getLanguage: (): Promise<string> => ipcRenderer.invoke('alfred:getLanguage'),
+  setLanguage: (lang: string): Promise<string> => ipcRenderer.invoke('alfred:setLanguage', lang),
   /** ElevenLabs cloud voice toggle (which voice, orthogonal to VOICE on/off) — persisted; read on mount. */
   getElevenlabs: (): Promise<boolean> => ipcRenderer.invoke('alfred:getElevenlabs'),
   setElevenlabs: (on: boolean): Promise<boolean> => ipcRenderer.invoke('alfred:setElevenlabs', on),

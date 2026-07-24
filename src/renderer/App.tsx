@@ -36,6 +36,7 @@ import { shouldHoldSend, SEND_DELAY_DEFAULT_MS } from '../main/core/send-delay-p
 import { PendingSendBubble, type PendingSend } from './components/PendingSend.tsx';
 import { confirmMatches } from '../main/core/reset-pure.ts';
 import { ACCENT_NAMES, resolveAccent, type AccentName } from '../main/core/accent-pure.ts';
+import { LANGUAGES, isLanguage, type Language } from '../main/core/language-pure.ts';
 import { parseVoiceConfig } from '../main/core/settings-pure.ts';
 import type { FactoryResetInfo } from '../main/core/orchestrator.ts';
 import type {
@@ -84,7 +85,7 @@ interface LogRow {
 }
 
 /** Shipped version — shown in the corner HUD and the top-bar title. Bump on release. */
-const VERSION = '1.18.0';
+const VERSION = '1.19.0';
 
 const MAX_LOG = 80;
 const MAX_ALERTS = 12;
@@ -161,6 +162,7 @@ export default function App() {
   const [factoryBusy, setFactoryBusy] = useState(false);
   const [tts, setTts] = useState(false);
   const [accent, setAccentState] = useState<AccentName>('cyan');
+  const [language, setLanguageState] = useState<Language>('pt-BR');
   const [elevenlabs, setElevenlabs] = useState(false); // ElevenLabs cloud voice (orthogonal to VOICE on/off)
   const [wake, setWake] = useState(false);
   const [widgetScripts, setWidgetScripts] = useState(false); // run tier-2 widget JS (sandboxed, no network); default OFF
@@ -550,6 +552,8 @@ export default function App() {
       setAccentState(name);
       applyAccent(name);
     }).catch(() => {});
+    // Reflect the persisted default language (default pt-BR).
+    alfred.getLanguage().then((l) => setLanguageState(isLanguage(l) ? l : 'pt-BR')).catch(() => {});
     // Reflect the persisted ElevenLabs voice toggle (default off).
     alfred.getElevenlabs().then(setElevenlabs).catch(() => {});
     // Reflect the persisted TTS voice knobs (engine/voice/rate/eleven voice id).
@@ -737,6 +741,7 @@ export default function App() {
               applyAccent(name);
               break;
             }
+            case 'language': setLanguageState(isLanguage(e.value) ? e.value : 'pt-BR'); break;
             case 'tts_enabled': setTts(!!e.value); break;
             case 'wakeword_enabled': setWake(!!e.value); break;
             case 'autosend_enabled': setAutosend(!!e.value); break;
@@ -1009,6 +1014,15 @@ export default function App() {
       }
     }).catch(() => {});
     pushLog({ tag: 'APPEARANCE', tone: 'cyan', msg: `accent → ${name}` });
+  };
+
+  const pickLanguage = (lang: Language) => {
+    if (lang === language) return;
+    setLanguageState(lang); // optimistic
+    alfred.setLanguage(lang).then((eff) => {
+      if (isLanguage(eff) && eff !== lang) setLanguageState(eff);
+    }).catch(() => setLanguageState(language));
+    pushLog({ tag: 'SETTINGS', tone: 'cyan', msg: `language → ${lang}` });
   };
 
   const toggleTts = () => {
@@ -1337,6 +1351,8 @@ export default function App() {
               tts={tts}
               accent={accent}
               onPickAccent={pickAccent}
+              language={language}
+              onPickLanguage={pickLanguage}
               autosend={autosend}
               elevenlabs={elevenlabs}
               voiceCfg={voiceCfg}
@@ -1894,6 +1910,8 @@ function SettingsCard({
   tts,
   accent,
   onPickAccent,
+  language,
+  onPickLanguage,
   autosend,
   elevenlabs,
   voiceCfg,
@@ -1919,6 +1937,8 @@ function SettingsCard({
   tts: boolean;
   accent: AccentName;
   onPickAccent: (name: AccentName) => void;
+  language: Language;
+  onPickLanguage: (lang: Language) => void;
   autosend: boolean;
   elevenlabs: boolean;
   voiceCfg: VoiceConfig;
@@ -1959,6 +1979,27 @@ function SettingsCard({
             />
           ))}
         </div>
+      </div>
+
+      <div className="settings-group">
+        <div className="settings-group-head">IDIOMA</div>
+        <label className="settings-num" title="Idioma padrão de resposta do Alfred + locale do reconhecimento de voz (STT/wake). ALFRED_STT_LOCALE no .env continua a ter prioridade como override.">
+          <span className="settings-num-k">Língua padrão</span>
+          <span className="settings-num-field">
+            <select
+              className="settings-num-input no-drag"
+              value={language}
+              onChange={(e) => onPickLanguage(isLanguage(e.target.value) ? e.target.value : 'pt-BR')}
+            >
+              {LANGUAGES.map((l) => (
+                <option key={l} value={l}>
+                  {l === 'pt-BR' ? 'Português (pt-BR)' : 'English (en-US)'}
+                </option>
+              ))}
+            </select>
+          </span>
+        </label>
+        <div className="settings-note">Aplica-se ao vivo: resposta do agente e locale de voz. Override por .env (ALFRED_STT_LOCALE) mantém prioridade.</div>
       </div>
 
       <div className="settings-group">

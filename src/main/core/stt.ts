@@ -60,7 +60,11 @@ export function findSttBinary(): string | null {
  * while speaking and exactly one stt.final when the session ends (so the UI can
  * always reset its mic state, even on a crash).
  */
-export function startListening(emit: (e: StreamEvent) => void, sessionId: string): void {
+export function startListening(
+  emit: (e: StreamEvent) => void,
+  sessionId: string,
+  preferredLocale?: string,
+): void {
   if (proc) return;
 
   const bin = findSttBinary();
@@ -74,7 +78,9 @@ export function startListening(emit: (e: StreamEvent) => void, sessionId: string
     return;
   }
 
-  const locale = process.env.ALFRED_STT_LOCALE?.trim() || 'pt-BR';
+  // ALFRED_STT_LOCALE is the explicit override; else the language-derived locale;
+  // else pt-BR (the historic default).
+  const locale = process.env.ALFRED_STT_LOCALE?.trim() || preferredLocale?.trim() || 'pt-BR';
   const args = ['--locale', locale];
   const child = spawn(bin, args, { stdio: ['pipe', 'pipe', 'pipe'] });
   proc = child;

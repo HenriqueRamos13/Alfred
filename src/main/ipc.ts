@@ -112,6 +112,8 @@ export interface Orchestrator {
   /** UI accent (recolours only --acc): read/set, persisted, validated, default "cyan". */
   getAccent(): string | Promise<string>;
   setAccent(name: string): string | Promise<string>;
+  getLanguage(): string | Promise<string>;
+  setLanguage(lang: string): string | Promise<string>;
   /** ElevenLabs cloud voice toggle (which voice, not whether to speak): read/set, persisted. */
   getElevenlabs(): boolean | Promise<boolean>;
   setElevenlabs(on: boolean): boolean | Promise<boolean>;
@@ -300,6 +302,16 @@ export function registerIpc(core: Orchestrator, emit: (e: StreamEvent) => void):
     } catch (err) {
       fail('set accent', err);
       return 'cyan';
+    }
+  });
+
+  ipcMain.handle('alfred:getLanguage', guard('get language', () => core.getLanguage(), 'pt-BR'));
+  ipcMain.handle('alfred:setLanguage', async (_e, lang: unknown) => {
+    try {
+      return await core.setLanguage(typeof lang === 'string' ? lang : '');
+    } catch (err) {
+      fail('set language', err);
+      return 'pt-BR';
     }
   });
 

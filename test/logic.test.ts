@@ -93,6 +93,13 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { confirmMatches, factoryResetPaths, factoryResetTables } from '../src/main/core/reset.ts';
 import { grillMeEnabled, resolveConfigValue, parseVoiceConfig } from '../src/main/core/settings-pure.ts';
+import {
+  isLanguage,
+  resolveLanguage,
+  localeForLanguage,
+  languageDirective,
+  DEFAULT_LANGUAGE,
+} from '../src/main/core/language-pure.ts';
 import { enqueueTurn, TURN_QUEUE_MAX, coalesceTurns } from '../src/main/core/turn-queue-pure.ts';
 import { primaryAction } from '../src/main/core/command-bar-pure.ts';
 import {
@@ -4313,4 +4320,40 @@ test('notifyPermission — leaf up-only; orchestrator up or down; never self/sid
   assert.equal(notifyPermission('lead', 'cto', org2), true);
   // unknown sender → false (the tool allows top-level Alfred explicitly, not here)
   assert.equal(notifyPermission('alfred', 'dev', org), false);
+});
+
+test('isLanguage — only the two known tags', () => {
+  assert.equal(isLanguage('pt-BR'), true);
+  assert.equal(isLanguage('en-US'), true);
+  assert.equal(isLanguage('pt'), false);
+  assert.equal(isLanguage('en'), false);
+  assert.equal(isLanguage('EN-US'), false); // case-sensitive
+  assert.equal(isLanguage(''), false);
+  assert.equal(isLanguage(undefined), false);
+  assert.equal(isLanguage(null), false);
+  assert.equal(isLanguage(42), false);
+});
+
+test('resolveLanguage — setting wins, else env, else pt-BR (fail-safe)', () => {
+  assert.equal(resolveLanguage('en-US'), 'en-US'); // valid setting wins
+  assert.equal(resolveLanguage('pt-BR', 'en-US'), 'pt-BR'); // setting beats env
+  assert.equal(resolveLanguage(undefined, 'en-US'), 'en-US'); // no setting → env
+  assert.equal(resolveLanguage('garbage', 'en-US'), 'en-US'); // junk setting → env
+  assert.equal(resolveLanguage(undefined, undefined), 'pt-BR'); // neither → default
+  assert.equal(resolveLanguage('nope', 'also-bad'), 'pt-BR'); // both junk → default
+  assert.equal(resolveLanguage('', ''), 'pt-BR'); // blank → default
+  assert.equal(DEFAULT_LANGUAGE, 'pt-BR');
+});
+
+test('localeForLanguage — 1:1 tag→STT locale', () => {
+  assert.equal(localeForLanguage('pt-BR'), 'pt-BR');
+  assert.equal(localeForLanguage('en-US'), 'en-US');
+});
+
+test('languageDirective — EN vs PT reply-language line', () => {
+  assert.match(languageDirective('en-US'), /English \(en-US\)/);
+  assert.match(languageDirective('pt-BR'), /Portugu.s do Brasil \(pt-BR\)/);
+  // Each directive names its own tag, not the other's.
+  assert.doesNotMatch(languageDirective('en-US'), /pt-BR/);
+  assert.doesNotMatch(languageDirective('pt-BR'), /en-US/);
 });

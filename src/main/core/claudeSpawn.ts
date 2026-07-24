@@ -64,9 +64,12 @@ export const TERSE_SYSTEM_PROMPT =
  * Pure so it's unit-testable; callers inject `dangerous` — claudeSpawn never
  * reads the DB.
  */
-export function dangerousArgs(dangerous: boolean): string[] {
+export function dangerousArgs(dangerous: boolean, extraSystem?: string): string[] {
   const permission = dangerous ? ['--dangerously-skip-permissions'] : ['--permission-mode', 'acceptEdits'];
-  const system = dangerous ? `${DANGEROUS_SYSTEM_PROMPT}\n\n${TERSE_SYSTEM_PROMPT}` : TERSE_SYSTEM_PROMPT;
+  const base = dangerous ? `${DANGEROUS_SYSTEM_PROMPT}\n\n${TERSE_SYSTEM_PROMPT}` : TERSE_SYSTEM_PROMPT;
+  // Everything is folded into ONE --append-system-prompt (last-wins flag), so an
+  // extra directive (e.g. the reply-language line) is concatenated, never a 2nd flag.
+  const system = extraSystem?.trim() ? `${base}\n\n${extraSystem.trim()}` : base;
   return [...permission, '--append-system-prompt', system];
 }
 
