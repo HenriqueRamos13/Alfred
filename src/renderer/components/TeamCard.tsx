@@ -19,7 +19,7 @@ import { humanizeRole, formatAgentBudget, canMessageUserResolved } from '../../m
 import { relativeTime, describeApproval } from '../../main/core/jobs-format-pure.ts';
 import type { Job, JobApproval, TeamAgentInfo, StreamEvent } from '../../main/core/types.ts';
 
-export function TeamCard() {
+export function TeamCard({ onNewAgent }: { onNewAgent?: () => void } = {}) {
   const [agents, setAgents] = useState<TeamAgentInfo[]>([]);
   const [approvals, setApprovals] = useState<JobApproval[]>([]);
   const [jobs, setJobs] = useState<Job[]>([]);
@@ -91,7 +91,12 @@ export function TeamCard() {
       )}
 
       <div>
-        <div className="team-section-head">ESPECIALISTAS · {agents.length}</div>
+        <div className="team-section-head">
+          ESPECIALISTAS · {agents.length}
+          {onNewAgent && (
+            <button type="button" className="sched-btn no-drag team-add" onClick={onNewAgent}>+ AGENT</button>
+          )}
+        </div>
         {agents.length === 0 ? (
           <div className="empty">NO TEAM AGENTS</div>
         ) : (

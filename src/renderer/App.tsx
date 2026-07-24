@@ -25,6 +25,8 @@ import { ReferenceChat } from './components/ReferenceChat.tsx';
 import { GraphCard } from './components/GraphCard.tsx';
 import { ScheduledTasksCard } from './components/ScheduledTasksCard.tsx';
 import { TeamCard } from './components/TeamCard.tsx';
+import { AgentForm } from './components/AgentForm.tsx';
+import type { AgentFormSpec } from '../main/core/agent-augment-pure.ts';
 import { WidgetCard } from './components/WidgetCard.tsx';
 import { HtmlWidgetCard } from './components/HtmlWidgetCard.tsx';
 import type { ReferenceTarget } from '../main/core/reference.ts';
@@ -82,7 +84,7 @@ interface LogRow {
 }
 
 /** Shipped version — shown in the corner HUD and the top-bar title. Bump on release. */
-const VERSION = '1.16.0';
+const VERSION = '1.18.0';
 
 const MAX_LOG = 80;
 const MAX_ALERTS = 12;
@@ -122,6 +124,9 @@ export default function App() {
   const [projectDetail, setProjectDetail] = useState<ProjectDetail | null>(null);
   const [kanbanCards, setKanbanCards] = useState<KanbanCard[]>([]);
   const [teamAgents, setTeamAgents] = useState<TeamAgentInfo[]>([]);
+  // Agent-creation form (Phase 7 stage 5): null = closed; a (possibly empty)
+  // partial spec = open, pre-filled (blank via "+ AGENT", or from an agent.form event).
+  const [agentFormSpec, setAgentFormSpec] = useState<Partial<AgentFormSpec> | null>(null);
   // Human inbox (Phase 7 stage 3): async HITL. Global list + open state; the badge
   // is unreadCount(inbox). Re-fetched on mount and every inbox.changed event.
   const [inbox, setInbox] = useState<InboxMessage[]>([]);
@@ -683,6 +688,11 @@ export default function App() {
         case 'team.changed':
           // Roster / hierarchy changed (create/delete/set_manager) — refresh the Org tab.
           alfred.listTeamAgents().then(setTeamAgents).catch(() => {});
+          break;
+        case 'agent.form':
+          // Alfred proposed creating an agent (team.propose_agent) — open the form
+          // pre-filled instead of it being created silently.
+          setAgentFormSpec(e.spec ?? {});
           break;
         case 'inbox.changed':
           // An ask was raised / answered / read / superseded — refresh the list + badge.
@@ -1379,7 +1389,7 @@ export default function App() {
               </div>
               <div className="agents-section">
                 <div className="team-section-head">◇ EQUIPA · ESPECIALISTAS</div>
-                <TeamCard />
+                <TeamCard onNewAgent={() => setAgentFormSpec({})} />
               </div>
             </div>
           ),
@@ -1675,6 +1685,7 @@ export default function App() {
           onAnswerInbox={answerInbox}
           onSpeak={alfred.speakText}
           onMarkInboxRead={alfred.markInboxRead}
+          onNewAgent={() => setAgentFormSpec({})}
           onClose={closeProject}
         />
       )}
@@ -1687,6 +1698,17 @@ export default function App() {
           onMarkRead={alfred.markInboxRead}
           onOpenCard={openCardProject}
           onClose={() => setInboxOpen(false)}
+        />
+      )}
+
+      {agentFormSpec && (
+        <AgentForm
+          initial={agentFormSpec}
+          agents={teamAgents}
+          catalog={catalog}
+          onAugment={alfred.augmentAgentSpec}
+          onCreate={alfred.createTeamAgent}
+          onClose={() => setAgentFormSpec(null)}
         />
       )}
 

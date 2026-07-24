@@ -884,6 +884,7 @@ body {
   margin-bottom: 6px;
 }
 .team-section-head.amber { color: var(--amb); }
+.team-section-head .team-add { float: right; margin-top: -3px; padding: 2px 8px; font-size: 10px; }
 .team-agent {
   border: 1px solid var(--panel-border);
   padding: 10px 12px;
@@ -1339,6 +1340,13 @@ body {
 
 .pm-body { flex: 1; overflow: auto; padding: 16px; }
 .pm-soon { padding: 60px 0; }
+.pm-team-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px;
+  font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--dim); }
+.pm-team-row { display: flex; align-items: center; gap: 10px; padding: 9px 11px; margin-bottom: 8px;
+  border: 1px solid color-mix(in oklab, var(--acc) 16%, transparent); border-radius: 8px; background: rgba(0,0,0,.2); }
+.pm-team-name { font-weight: 700; color: var(--text); }
+.pm-team-meta { font-family: var(--font-mono); font-size: 11px; color: var(--dim); }
+.pm-team-msg { margin-left: auto; color: var(--mag); }
 
 /* Org chart (Phase 7 stage 2) — nested <ul> connector tree, adapted from the mockup. */
 .pm-org-intro { font-size: 12px; color: var(--dim); line-height: 1.5; margin: 0 0 14px; }
@@ -1541,3 +1549,71 @@ body {
 .ib-answered { border-top: 1px solid color-mix(in oklab, var(--acc) 18%, transparent); padding-top: 12px; }
 .ib-answered-h { font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--grn); }
 .ib-answered-b { margin-top: 8px; font-size: 14px; color: var(--text); white-space: pre-wrap; }
+
+/* ── Agent-creation form (Phase 7 stage 5) — .overlay + af-* ──────────────── */
+.af-panel {
+  position: relative; width: min(720px, 94vw); max-height: 88vh;
+  display: flex; flex-direction: column; overflow: hidden;
+  background: var(--card);
+  border: 1px solid color-mix(in oklab, var(--mag) 40%, transparent);
+  border-radius: 14px;
+  box-shadow: 0 0 0 1px rgba(0,0,0,.5), 0 30px 90px rgba(0,0,0,.6), 0 0 60px color-mix(in oklab, var(--mag) 12%, transparent);
+  font-family: var(--font-head);
+}
+.af-head { display: flex; align-items: center; gap: 12px; padding: 13px 16px; border-bottom: 1px solid color-mix(in oklab, var(--mag) 22%, transparent); }
+.af-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--mag); box-shadow: 0 0 10px var(--mag); flex: none; }
+.af-name { margin: 0; font-size: 17px; font-weight: 700; letter-spacing: 0.04em; color: var(--text); }
+.af-slug { font-family: var(--font-mono); font-size: 11px; color: var(--dim); }
+.af-x { margin-left: auto; background: transparent; border: 1px solid color-mix(in oklab, var(--mag) 32%, transparent); color: var(--dim);
+  border-radius: 6px; width: 28px; height: 28px; cursor: pointer; font-size: 13px; flex: none; }
+.af-x:hover { border-color: var(--red); color: var(--red); }
+
+.af-body { padding: 18px 20px; overflow: auto; }
+.af-intro { font-size: 13px; color: var(--dim); margin: 0 0 16px; line-height: 1.5; }
+.af-two { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+.af-field { margin-bottom: 14px; }
+.af-lab { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 6px; }
+.af-field label { font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--acc); }
+.af-field input, .af-field select, .af-field textarea {
+  width: 100%; box-sizing: border-box; background: rgba(0,0,0,.32); color: var(--text);
+  border: 1px solid color-mix(in oklab, var(--acc) 26%, transparent); border-radius: 8px; padding: 9px 11px;
+  font-family: var(--font-head); font-size: 14px;
+}
+.af-field textarea { min-height: 66px; resize: vertical; }
+.af-field input:focus, .af-field select:focus, .af-field textarea:focus { outline: none; border-color: var(--acc); }
+
+/* ✨ augment toggle (magenta) */
+.af-aug { display: inline-flex; align-items: center; gap: 6px; font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.06em;
+  color: var(--mag); border: 1px solid color-mix(in oklab, var(--mag) 35%, transparent); border-radius: 20px; padding: 3px 10px;
+  cursor: pointer; user-select: none; }
+.af-aug:hover { border-color: var(--mag); }
+.af-aug.on { background: color-mix(in oklab, var(--mag) 16%, transparent); color: #f0d9ff; box-shadow: 0 0 14px color-mix(in oklab, var(--mag) 25%, transparent); }
+.af-star { filter: grayscale(1); opacity: 0.5; }
+.af-aug.on .af-star { filter: none; opacity: 1; }
+/* a flagged field goes dashed magenta */
+.af-augd input, .af-augd select, .af-augd textarea {
+  border-style: dashed; border-color: color-mix(in oklab, var(--mag) 55%, transparent);
+  background: color-mix(in oklab, var(--mag) 6%, transparent); color: var(--mag);
+}
+.af-augd input::placeholder, .af-augd textarea::placeholder { color: color-mix(in oklab, var(--mag) 60%, transparent); }
+
+/* inbox-power toggle switch */
+.af-toggle { display: inline-flex; align-items: center; gap: 9px; cursor: pointer; font-size: 13px; color: var(--text); margin-top: 6px; }
+.af-toggle input { display: none; }
+.af-sw { width: 40px; height: 22px; border-radius: 20px; background: rgba(0,0,0,.4); border: 1px solid color-mix(in oklab, var(--acc) 26%, transparent);
+  position: relative; transition: 0.15s; flex: none; }
+.af-sw::after { content: ""; position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%; background: var(--dim); transition: 0.15s; }
+.af-toggle.on .af-sw { background: color-mix(in oklab, var(--grn) 25%, transparent); border-color: var(--grn); }
+.af-toggle.on .af-sw::after { left: 20px; background: var(--grn); box-shadow: 0 0 10px var(--grn); }
+
+.af-error { margin-top: 6px; font-family: var(--font-mono); font-size: 11px; color: var(--red);
+  border: 1px solid color-mix(in oklab, var(--red) 40%, transparent); border-radius: 8px; padding: 8px 10px; }
+
+.af-foot { display: flex; align-items: center; gap: 10px; padding: 13px 18px; border-top: 1px solid color-mix(in oklab, var(--mag) 20%, transparent); }
+.af-note { font-family: var(--font-mono); font-size: 10.5px; color: var(--mag); flex: 1; }
+.af-btn { font-family: var(--font-mono); font-size: 12px; letter-spacing: 0.06em; background: transparent; color: var(--dim);
+  border: 1px solid color-mix(in oklab, var(--acc) 30%, transparent); border-radius: 8px; padding: 8px 14px; cursor: pointer; }
+.af-btn:hover:not(:disabled) { color: var(--text); border-color: var(--acc); }
+.af-btn.pri { background: color-mix(in oklab, var(--mag) 18%, transparent); color: #f0d9ff; border-color: var(--mag); }
+.af-btn.pri:hover:not(:disabled) { box-shadow: 0 0 22px color-mix(in oklab, var(--mag) 45%, transparent); }
+.af-btn:disabled { opacity: 0.5; cursor: default; }

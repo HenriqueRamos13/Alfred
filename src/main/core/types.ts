@@ -7,6 +7,10 @@
  *     so that pure-logic files can be run with `node --experimental-strip-types`.
  */
 
+// Type-only (erased under --experimental-strip-types → no runtime import cycle):
+// the agent.form event carries a partial agent-creation form spec.
+import type { AgentFormSpec } from './agent-augment-pure.ts';
+
 // ─────────────────────────────────────────────────────────────────────────────
 // JSON Schema (Anthropic tools format — a pragmatic subset)
 // ─────────────────────────────────────────────────────────────────────────────
@@ -438,6 +442,10 @@ export type StreamEvent =
   // heartbeat sweep omits it — the UI refetches the open board regardless).
   | { kind: 'notification.changed'; projectSlug?: string }
   | { kind: 'team.changed' }
+  // The agent (Alfred) proposes creating an agent (team.propose_agent) instead of
+  // silently creating one: the UI opens the creation form PRE-FILLED with this
+  // partial spec, for the user to augment/review/confirm (Phase 7 stage 5).
+  | { kind: 'agent.form'; spec: Partial<AgentFormSpec> }
   // The main conversation was reset: the UI clears the chat (every window).
   | { kind: 'conversation.reset'; sessionId: string }
   // A factory reset completed: the UI reloads to a blank factory state.

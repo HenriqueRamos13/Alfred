@@ -44,6 +44,8 @@ export interface ProjectModalProps {
   onAnswerInbox: (id: string, action: InboxAction, text?: string) => Promise<{ ok: boolean; error?: string }>;
   onSpeak: (text: string) => void;
   onMarkInboxRead: (id: string) => void;
+  /** Open the agent-creation form (Team tab "+ Agent" button). */
+  onNewAgent?: () => void;
   onClose: () => void;
 }
 
@@ -64,7 +66,7 @@ function initials(id: string | null): string {
   return id.replace(/[^a-z0-9]/gi, '').slice(0, 2).toUpperCase() || '·';
 }
 
-export function ProjectModal({ detail, cards, agents, inbox, notifications, onKanban, onAnswerInbox, onSpeak, onMarkInboxRead, onClose }: ProjectModalProps) {
+export function ProjectModal({ detail, cards, agents, inbox, notifications, onKanban, onAnswerInbox, onSpeak, onMarkInboxRead, onNewAgent, onClose }: ProjectModalProps) {
   const [tab, setTab] = useState<Tab>('board');
   const [selected, setSelected] = useState<string | null>(null);
   const [dragId, setDragId] = useState<string | null>(null);
@@ -231,7 +233,25 @@ export function ProjectModal({ detail, cards, agents, inbox, notifications, onKa
 
           {tab === 'activity' && <ActivityFeed notifications={notifications} />}
 
-          {tab === 'team' && <div className="empty pm-soon">TEAM — em breve</div>}
+          {tab === 'team' && (
+            <div className="pm-team">
+              <div className="pm-team-head">
+                <span>ESPECIALISTAS · {agents.length}</span>
+                {onNewAgent && <button type="button" className="pm-btn" onClick={onNewAgent}>+ Agent</button>}
+              </div>
+              {agents.length === 0 ? (
+                <div className="empty">Sem agentes ainda — cria o primeiro.</div>
+              ) : (
+                agents.map((a) => (
+                  <div key={a.id} className="pm-team-row">
+                    <span className="pm-team-name">{a.name}</span>
+                    <span className="pm-team-meta">{a.delegationRole} · {a.provider}:{a.model}</span>
+                    {canMessageUserResolved(a) && <span className="pm-team-msg" title="pode falar com o utilizador">✉</span>}
+                  </div>
+                ))
+              )}
+            </div>
+          )}
         </div>
       </div>
 

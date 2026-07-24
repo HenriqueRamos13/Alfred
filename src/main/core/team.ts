@@ -73,7 +73,7 @@ async function rebuildIndex(db: DB, workspace: string): Promise<void> {
  * Create a roster agent: unique slug id from the (validated) name, persist, then
  * scaffold the private knowledge folder + seed role note and refresh the index.
  */
-export async function createAgent(db: DB, workspace: string, spec: AgentSpec, now: Date = new Date()): Promise<TeamAgent> {
+export async function createAgent(db: DB, workspace: string, spec: AgentSpec, now: Date = new Date(), knowledgeSeed?: string): Promise<TeamAgent> {
   const id = agentIdFromName(spec.name, listAgents(db).map((a) => a.id));
   const agent: TeamAgent = { id, ...spec, createdTs: now.getTime() };
   db.prepare(
@@ -90,6 +90,10 @@ export async function createAgent(db: DB, workspace: string, spec: AgentSpec, no
   await mkdir(knowledgeDir, { recursive: true });
   const seed = `# ${agent.name} — role\n\n_Model: ${agent.model} (${agent.provider}). Private knowledge for this specialist; only ${agent.name} reads this folder._\n\n${agent.role || '_No specialty set yet._'}\n`;
   await writeFile(join(knowledgeDir, 'role.md'), seed, 'utf8');
+  // Optional seed knowledge note (from the creation form's "Seed de conhecimento").
+  if (knowledgeSeed && knowledgeSeed.trim()) {
+    await writeFile(join(knowledgeDir, 'seed.md'), `# Seed knowledge\n\n_Initial notes provided at creation._\n\n${knowledgeSeed.trim()}\n`, 'utf8');
+  }
   await rebuildIndex(db, workspace);
   return agent;
 }

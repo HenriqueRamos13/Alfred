@@ -18,7 +18,7 @@
 import { randomUUID } from 'node:crypto';
 import { rm, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { streamText, tool, jsonSchema, stepCountIs } from 'ai';
+import { streamText, generateText, tool, jsonSchema, stepCountIs } from 'ai';
 import type { LanguageModel, ToolSet } from 'ai';
 import type {
   AccountRecord,
@@ -105,6 +105,7 @@ import {
   DEFAULT_MODEL,
   DEFAULT_MAIN_NAME,
   MODEL_CATALOG,
+  isProviderId,
 } from './modelCatalog.ts';
 import type { AgentConfig, AgentConfigMap, AgentId, ProviderId, CatalogModel } from './modelCatalog.ts';
 import { getSetting, setSetting, insertMessage, getRecentMessages } from './db.ts';
@@ -117,8 +118,20 @@ import {
   updateJob as updateJobDb,
   deleteJob as deleteJobDb,
 } from './jobs.ts';
-import { listAgents, getAgent, deleteAgent, setAgentManager } from './team.ts';
+import { listAgents, getAgent, deleteAgent, setAgentManager, createAgent } from './team.ts';
 import type { TeamAgent } from './team-pure.ts';
+import { validateAgentSpec } from './team-pure.ts';
+import { pickCuratorSpec } from './curator.ts';
+import { buildOrgTree } from './team-format-pure.ts';
+import {
+  augmentPlan,
+  buildAugmentPrompt,
+  mergeAugmented,
+  fillFormSpec,
+  formSpecToCreate,
+  type AgentFormSpec,
+  type AugmentFlags,
+} from './agent-augment-pure.ts';
 import { agentTokensToday } from './budget.ts';
 import { parseTopicsFromIndex } from './team-format-pure.ts';
 import { grillMeEnabled, parseVoiceConfig } from './settings-pure.ts';
@@ -562,6 +575,23 @@ export class Orchestrator {
   }
 }
 
+/**
+ * Tolerant parse of a model reply that should be a single JSON object: strip code
+ * fences, take the outermost {…}. Returns null on anything unparseable so the
+ * augment turn degrades to "return the spec unchanged". Mirrors curator's parser.
+ */
+function parseTolerantJson(text: string): unknown {
+  const fenced = text.replace(/```(?:json)?/gi, '');
+  const start = fenced.indexOf('{');
+  const end = fenced.lastIndexOf('}');
+  if (start === -1 || end <= start) return null;
+  try {
+    return JSON.parse(fenced.slice(start, end + 1));
+  } catch {
+    return null;
+  }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // claude-code conversational brain — bypasses streamText. Runs `claude -p` with
 // session continuity (--resume). Claude Code uses ITS OWN tools; Alfred's tools
@@ -804,6 +834,21 @@ export interface OrchestratorHandle {
    * team.changed on success. Refuses explicitly (cycle / depth cap / unknown id).
    */
   setManager(agentId: string, parentId: string | null): { ok: true } | { ok: false; error: string };
+  /**
+   * AI-augment a draft agent form spec (Phase 7 stage 5): runs ONE read-only cheap
+   * brain turn to fill the flagged/blank fields, given the current roster/hierarchy
+   * as context. NO side effects — never creates an agent; returns the augmented spec
+   * for the user to review. Best-effort: over budget / no cheap brain / a bad reply
+   * → the spec is returned unchanged.
+   */
+  augmentAgentSpec(spec: AgentFormSpec, flags: AugmentFlags): Promise<AgentFormSpec>;
+  /**
+   * Create a roster agent from a completed form spec (the UI "Criar" button). Maps
+   * the form → the roster AgentSpecInput (role type + system prompt fold into `role`),
+   * validates it, persists + scaffolds (incl. the knowledge seed note), and emits
+   * team.changed. Distinct from the `team` tool's `create` op (agent-driven, T2).
+   */
+  createTeamAgent(spec: AgentFormSpec): Promise<{ ok: true; agent: TeamAgent } | { ok: false; error: string }>;
   // ── Projects + Kanban (Phase 7) ──
   /** One project's manifest + file tree (the IPC bridge; core already existed). */
   getProject(slug: string): Promise<ProjectDetail | null>;
@@ -1771,6 +1816,70 @@ export function createOrchestrator(opts: CreateOrchestratorOpts): OrchestratorHa
       const res = setAgentManager(db, agentId, parentId);
       if (res.ok) emit({ kind: 'team.changed' });
       return res;
+    },
+    async augmentAgentSpec(spec, flags) {
+      const fields = augmentPlan(spec, flags);
+      if (fields.length === 0) return spec; // nothing flagged/blank → no model call
+      // Read-only, no side effects. Skip the model when over the daily kill-switch
+      // or no cheap API brain is connected — the user still reviews + creates.
+      const budget = new BudgetTracker(
+        db,
+        { dailyLimit: config.dailyTokenBudget, stepCap: config.stepCap, dailyUsdBudget: config.dailyUsdBudget },
+        sessionId,
+      );
+      if (isOverDailyBudget(budget.snapshot())) return spec;
+      const specId = pickCuratorSpec(process.env, listBrains(process.env));
+      if (!specId) return spec;
+      let provider: ReturnType<typeof resolveProvider>;
+      try {
+        provider = resolveProvider(specId, process.env);
+      } catch (err) {
+        console.error('[alfred:augment] resolve cheap brain failed:', err instanceof Error ? err.message : err);
+        return spec;
+      }
+      // Team context: roster + hierarchy (indented tree) + the models the chosen
+      // provider offers, so the AI picks a valid model and a sensible parent/role.
+      const roster = listAgents(db);
+      const treeLines: string[] = [];
+      const walk = (nodes: ReturnType<typeof buildOrgTree<TeamAgent>>, depth: number): void => {
+        for (const n of nodes) {
+          treeLines.push(`${'  '.repeat(depth)}- ${n.agent.name} (id:${n.agent.id}, ${n.agent.delegationRole}, ${n.agent.provider}:${n.agent.model}) — ${n.agent.role.split('\n')[0] || 'no role'}`);
+          walk(n.children, depth + 1);
+        }
+      };
+      walk(buildOrgTree(roster), 0);
+      const models = isProviderId(spec.provider)
+        ? (MODEL_CATALOG[spec.provider] ?? []).map((m) => `${m.id} (${m.name}, $${m.inputPerM}/$${m.outputPerM} per Mtok)`).join('\n')
+        : '(unknown provider — leave model blank)';
+      const teamContext = [
+        `## Current roster / hierarchy (${roster.length} agents)`,
+        treeLines.length ? treeLines.join('\n') : '(empty)',
+        '',
+        `## Available models for provider "${spec.provider}"`,
+        models,
+      ].join('\n');
+      const prompt = buildAugmentPrompt(spec, fields, teamContext);
+      try {
+        const res = await generateText({ model: provider.languageModel, prompt, maxOutputTokens: 800 });
+        budget.record({ inputTokens: res.usage?.inputTokens ?? 0, outputTokens: res.usage?.outputTokens ?? 0 }, provider.model);
+        const json = parseTolerantJson(res.text);
+        return mergeAugmented(spec, json, fields);
+      } catch (err) {
+        console.error('[alfred:augment] model turn failed:', err instanceof Error ? err.message : err);
+        return spec; // best-effort — the user reviews + can fill by hand
+      }
+    },
+    async createTeamAgent(spec) {
+      const { input, knowledgeSeed } = formSpecToCreate(fillFormSpec(spec));
+      const v = validateAgentSpec(input);
+      if (!v.ok) return { ok: false, error: v.error };
+      // Refuse a parent that doesn't exist (createAgent doesn't check; keep the org honest).
+      if (v.spec.parentId != null && !listAgents(db).some((a) => a.id === v.spec.parentId)) {
+        return { ok: false, error: `no manager with id "${v.spec.parentId}"` };
+      }
+      const agent = await createAgent(db, config.workspace, v.spec, new Date(), knowledgeSeed);
+      emit({ kind: 'team.changed' });
+      return { ok: true, agent };
     },
     getProject(slug) {
       return getProject(db, config.workspace, slug);

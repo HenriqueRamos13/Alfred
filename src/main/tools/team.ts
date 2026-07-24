@@ -12,8 +12,9 @@
 import type { Tool } from './types.ts';
 import { validateAgentSpec } from '../core/team-pure.ts';
 import { createAgent, listAgents, deleteAgent, setAgentManager } from '../core/team.ts';
+import type { AgentFormSpec } from '../core/agent-augment-pure.ts';
 
-type Op = 'create' | 'list' | 'delete' | 'set_manager';
+type Op = 'create' | 'list' | 'delete' | 'set_manager' | 'propose_agent';
 interface Args {
   op: Op;
   name?: string;
@@ -30,6 +31,10 @@ interface Args {
   parentId?: string | null;
   /** op=create (optional): inbox power — may the agent message the user directly (default false, fail-closed). */
   canMessageUser?: boolean;
+  /** op=propose_agent (optional): detailed system prompt / specialty hint to pre-fill. */
+  systemPrompt?: string;
+  /** op=propose_agent (optional): knowledge-seed hint to pre-fill. */
+  knowledgeSeed?: string;
   /** delete target agent id. */
   id?: string;
   /** op=set_manager: the agent to reparent. */
@@ -53,11 +58,15 @@ export const team: Tool<Args> = {
     'list — enumerate the roster (each entry includes parentId + canMessageUser). delete {id} — remove the agent (its folder ' +
     'is left on disk; the index drops it). set_manager {agentId, parentId} — reparent an agent in the hierarchy; refused ' +
     'with an explicit error if it would create a management cycle or exceed the depth cap; parentId null = move to top. ' +
-    'This tool creates/persists agents; RUN one with delegate_to_agent. create/delete/set_manager are T2; list is T0.',
+    'propose_agent {name?, role?, provider?, model?, parentId?, delegationRole?, dailyTokenBudget?, canMessageUser?, ' +
+    'systemPrompt?, knowledgeSeed?} — does NOT create anything; it OPENS the agent-creation FORM for the user, pre-filled ' +
+    'with these fields, so they can augment/review/confirm. PREFER this over create when the USER asks you to "create an ' +
+    'agent" so they stay in control; use create only for programmatic/scripted creation. ' +
+    'This tool creates/persists agents; RUN one with delegate_to_agent. create/delete/set_manager are T2; list + propose_agent are T0.',
   inputSchema: {
     type: 'object',
     properties: {
-      op: { type: 'string', enum: ['create', 'list', 'delete', 'set_manager'] },
+      op: { type: 'string', enum: ['create', 'list', 'delete', 'set_manager', 'propose_agent'] },
       name: { type: 'string', description: 'op=create: the agent display name (e.g. "Coder").' },
       role: { type: 'string', description: 'op=create: the specialty / system-prompt role (optional).' },
       provider: { type: 'string', description: 'op=create: provider id — one of claude-api, claude-cli, openai, deepseek.' },
@@ -87,13 +96,15 @@ export const team: Tool<Args> = {
         type: 'boolean',
         description: 'op=create (optional): grant inbox power to message the user directly. Default false (fail-closed) — an orchestrator can always message the user; a leaf needs this flag.',
       },
+      systemPrompt: { type: 'string', description: 'op=propose_agent (optional): detailed system-prompt / specialty hint to pre-fill in the form.' },
+      knowledgeSeed: { type: 'string', description: 'op=propose_agent (optional): knowledge-seed hint (initial topics/notes) to pre-fill in the form.' },
       id: { type: 'string', description: 'op=delete: the agent id to remove.' },
       agentId: { type: 'string', description: 'op=set_manager: the agent to reparent.' },
     },
     required: ['op'],
   },
 
-  risk: (a) => (a.op === 'list' ? 'T0' : 'T2'),
+  risk: (a) => (a.op === 'list' || a.op === 'propose_agent' ? 'T0' : 'T2'),
 
   async execute(a, ctx) {
     try {
@@ -118,6 +129,24 @@ export const team: Tool<Args> = {
           const res = setAgentManager(ctx.db, a.agentId, parentId);
           if (!res.ok) return { ok: false, error: res.error };
           return { ok: true, result: { agentId: a.agentId, parentId } };
+        }
+        case 'propose_agent': {
+          // No side effects — open the creation form for the user, pre-filled.
+          // Only pass through the known form fields (the renderer's fillFormSpec
+          // ignores anything else and defaults the rest).
+          const spec: Partial<AgentFormSpec> = {};
+          if (typeof a.name === 'string') spec.name = a.name;
+          if (typeof a.role === 'string') spec.role = a.role;
+          if (typeof a.provider === 'string') spec.provider = a.provider;
+          if (typeof a.model === 'string') spec.model = a.model;
+          if (a.parentId != null) spec.parentId = String(a.parentId);
+          if (a.delegationRole === 'leaf' || a.delegationRole === 'orchestrator') spec.delegationRole = a.delegationRole;
+          if (typeof a.dailyTokenBudget === 'number') spec.dailyTokenBudget = a.dailyTokenBudget;
+          if (typeof a.canMessageUser === 'boolean') spec.canMessageUser = a.canMessageUser;
+          if (typeof a.systemPrompt === 'string') spec.systemPrompt = a.systemPrompt;
+          if (typeof a.knowledgeSeed === 'string') spec.knowledgeSeed = a.knowledgeSeed;
+          ctx.emit({ kind: 'agent.form', spec });
+          return { ok: true, result: { proposed: spec } };
         }
         default:
           return { ok: false, error: `Unknown op: ${(a as Args).op}` };

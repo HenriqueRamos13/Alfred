@@ -29,6 +29,8 @@ import type { AgentNotification } from '../main/core/notify-pure.ts';
 import type { NotificationFilter } from '../main/core/notify.ts';
 import type { Graph } from '../main/core/graph.ts';
 import type { ReferenceRequest } from '../main/core/reference.ts';
+import type { AgentFormSpec, AugmentFlags } from '../main/core/agent-augment-pure.ts';
+import type { TeamAgent } from '../main/core/team-pure.ts';
 import type {
   AgentId,
   AgentConfig,
@@ -203,6 +205,12 @@ const api = {
   /** Reparent an agent in the org hierarchy (parentId null = top). Refuses cycles / over-depth. */
   setManager: (agentId: string, parentId: string | null): Promise<{ ok: boolean; error?: string }> =>
     ipcRenderer.invoke('alfred:setManager', agentId, parentId),
+  /** AI-augment a draft agent form spec (fills flagged/blank fields via a cheap read-only turn; no side effects). */
+  augmentAgentSpec: (spec: AgentFormSpec, flags: AugmentFlags): Promise<AgentFormSpec | null> =>
+    ipcRenderer.invoke('alfred:augmentAgentSpec', spec, flags),
+  /** Create a roster agent from a completed form spec (UI "Criar"); emits team.changed. */
+  createTeamAgent: (spec: AgentFormSpec): Promise<{ ok: boolean; error?: string; agent?: TeamAgent }> =>
+    ipcRenderer.invoke('alfred:createTeamAgent', spec),
   /** Overlay window controls (frameless HUD). */
   hideWindow: (): void => ipcRenderer.send('window:hide'),
   quitWindow: (): void => ipcRenderer.send('window:quit'),

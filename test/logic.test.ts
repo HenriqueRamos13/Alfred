@@ -1697,6 +1697,18 @@ import {
   buildOrgTree,
   canMessageUserResolved,
 } from '../src/main/core/team-format-pure.ts';
+import {
+  emptyFormSpec,
+  fillFormSpec,
+  augmentPlan,
+  buildAugmentPrompt,
+  mergeAugmented,
+  validateFormSpec,
+  mergeRole,
+  formSpecToCreate,
+  AUGMENTABLE_FIELDS,
+  type AgentFormSpec,
+} from '../src/main/core/agent-augment-pure.ts';
 
 test('catalog — listModels/findModel/priceOf, Anthropic shared by both Claude providers', () => {
   assert.ok(listModels('deepseek').length === 2);
@@ -3221,6 +3233,119 @@ test('validateAgentSpec — delegationRole defaults to leaf, accepts orchestrato
   assert.ok(leaf.ok && leaf.spec.delegationRole === 'leaf');
   // an unknown role is rejected (not silently coerced)
   assert.equal(validateAgentSpec({ ...base, delegationRole: 'admin' }).ok, false);
+});
+
+// ── agent-augment-pure (Phase 7 stage 5): form spec + AI augment ─────────────
+
+test('augmentPlan — flagged OR blank augmentable fields, un-flagged filled ones excluded', () => {
+  const spec: AgentFormSpec = {
+    ...emptyFormSpec(),
+    role: 'Dev-Back',        // filled
+    model: '',                // blank
+    systemPrompt: 'billing',  // filled
+    knowledgeSeed: '',        // blank
+  };
+  // No flags: only the blank fields (model, knowledgeSeed) are planned.
+  assert.deepEqual(augmentPlan(spec, {}), ['model', 'knowledgeSeed']);
+  // Flag a filled field (systemPrompt) → it joins the plan ("expand my hint").
+  assert.deepEqual(augmentPlan(spec, { systemPrompt: true }), ['model', 'systemPrompt', 'knowledgeSeed']);
+  // Flag everything → all four, in AUGMENTABLE_FIELDS order.
+  assert.deepEqual(augmentPlan(spec, { role: true, model: true, systemPrompt: true, knowledgeSeed: true }), [...AUGMENTABLE_FIELDS]);
+  // A fully filled spec with no flags → nothing to augment.
+  const full: AgentFormSpec = { ...emptyFormSpec(), role: 'QA', model: 'x', systemPrompt: 's', knowledgeSeed: 'k' };
+  assert.deepEqual(augmentPlan(full, {}), []);
+});
+
+test('buildAugmentPrompt — asks only for planned fields, demands JSON-only, carries hints + context', () => {
+  const spec: AgentFormSpec = { ...emptyFormSpec(), name: 'Dario', provider: 'claude-cli', systemPrompt: 'Stripe billing' };
+  const p = buildAugmentPrompt(spec, ['model', 'systemPrompt'], 'roster: pm (orchestrator)');
+  assert.match(p, /"model"/);
+  assert.match(p, /"systemPrompt"/);
+  assert.doesNotMatch(p, /"knowledgeSeed"/); // not in the plan
+  assert.match(p, /ONLY a single JSON object/);
+  assert.match(p, /Stripe billing/);         // the user hint is carried
+  assert.match(p, /roster: pm \(orchestrator\)/); // team context embedded
+});
+
+test('mergeAugmented — fills only planned fields, never clobbers un-flagged, guards model against catalog', () => {
+  const spec: AgentFormSpec = {
+    ...emptyFormSpec(),
+    provider: 'claude-cli',
+    role: 'KEEP-ME',        // user typed, NOT in plan → must survive
+    model: '',
+    systemPrompt: 'hint',   // in plan → gets expanded
+    knowledgeSeed: '',
+  };
+  const merged = mergeAugmented(
+    spec,
+    { role: 'HACKED', model: 'claude-opus-4-8', systemPrompt: 'full prompt', knowledgeSeed: 'a\nb' },
+    ['model', 'systemPrompt', 'knowledgeSeed'],
+  );
+  assert.equal(merged.role, 'KEEP-ME');            // not in plan → untouched despite model output
+  assert.equal(merged.model, 'claude-opus-4-8');   // valid catalog id accepted
+  assert.equal(merged.systemPrompt, 'full prompt');
+  assert.equal(merged.knowledgeSeed, 'a\nb');
+  // A bogus model id is rejected (stays blank), even though it's in the plan.
+  const bad = mergeAugmented({ ...spec }, { model: 'ghost-9' }, ['model']);
+  assert.equal(bad.model, '');
+  // Non-string / blank values are ignored (keep prior).
+  const keep = mergeAugmented({ ...spec, model: 'claude-opus-4-8' }, { model: 42, systemPrompt: '  ' }, ['model', 'systemPrompt']);
+  assert.equal(keep.model, 'claude-opus-4-8');
+  assert.equal(keep.systemPrompt, 'hint');
+  // Input is never mutated.
+  assert.equal(spec.systemPrompt, 'hint');
+});
+
+test('validateFormSpec — collects all errors; ok on a valid spec', () => {
+  const bad = validateFormSpec({ ...emptyFormSpec(), name: '', provider: 'nope' as string, model: 'x', dailyTokenBudget: -1 });
+  assert.equal(bad.ok, false);
+  assert.ok(bad.errors.some((e) => /Nome/.test(e)));
+  assert.ok(bad.errors.some((e) => /Provider/.test(e)));
+  assert.ok(bad.errors.some((e) => /Budget/.test(e)));
+  // Valid provider but off-catalog model.
+  const badModel = validateFormSpec({ ...emptyFormSpec(), name: 'A', provider: 'deepseek', model: 'ghost' });
+  assert.equal(badModel.ok, false);
+  assert.ok(badModel.errors.some((e) => /catálogo/.test(e)));
+  // Fully valid.
+  const ok = validateFormSpec({ ...emptyFormSpec(), name: 'A', provider: 'deepseek', model: 'deepseek-v4-flash', dailyTokenBudget: 30_000 });
+  assert.deepEqual(ok, { ok: true, errors: [] });
+});
+
+test('mergeRole + formSpecToCreate — role type + system prompt fold into one, seed carried', () => {
+  assert.equal(mergeRole({ ...emptyFormSpec(), role: 'QA', systemPrompt: 'test everything' }), 'QA\n\ntest everything');
+  assert.equal(mergeRole({ ...emptyFormSpec(), role: 'QA', systemPrompt: '' }), 'QA');
+  assert.equal(mergeRole({ ...emptyFormSpec(), role: '', systemPrompt: 'just a prompt' }), 'just a prompt');
+  const { input, knowledgeSeed } = formSpecToCreate({
+    ...emptyFormSpec(),
+    name: '  Dario ',
+    role: 'Dev-Back',
+    provider: 'claude-cli',
+    model: 'claude-opus-4-8',
+    parentId: 'pm',
+    canMessageUser: true,
+    delegationRole: 'orchestrator',
+    dailyTokenBudget: 50_000,
+    systemPrompt: 'Stripe + TDD',
+    knowledgeSeed: 'read the billing docs',
+  });
+  assert.equal(input.name, 'Dario');
+  assert.equal(input.role, 'Dev-Back\n\nStripe + TDD');
+  assert.equal(input.parentId, 'pm');
+  assert.equal(input.canMessageUser, true);
+  assert.equal(input.delegationRole, 'orchestrator');
+  assert.equal(input.dailyTokenBudget, 50_000);
+  assert.equal(knowledgeSeed, 'read the billing docs');
+  // The mapped input passes the roster validator.
+  assert.equal(validateAgentSpec(input).ok, true);
+});
+
+test('fillFormSpec — pre-fills from a partial agent.form spec, ignores junk, empty → defaults', () => {
+  const filled = fillFormSpec({ name: 'X', provider: 'deepseek', canMessageUser: true, delegationRole: 'orchestrator', bogus: 1 } as Partial<AgentFormSpec>);
+  assert.equal(filled.name, 'X');
+  assert.equal(filled.provider, 'deepseek');
+  assert.equal(filled.canMessageUser, true);
+  assert.equal(filled.delegationRole, 'orchestrator');
+  assert.deepEqual(fillFormSpec(null), emptyFormSpec());
 });
 
 test('blockedToolsForRole — leaf blocks spawn/scheduling/vault; orchestrator keeps delegate_to_agent', () => {

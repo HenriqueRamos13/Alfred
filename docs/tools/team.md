@@ -17,9 +17,11 @@ This tool **persists + scaffolds** an agent; you **run** one with
 | `list` | — | `{ agents: [...] }` (each includes `parentId` + `canMessageUser`) | T0 |
 | `delete` | `id` | `{ deleted }` | **T2** |
 | `set_manager` | `agentId`, `parentId` | `{ agentId, parentId }` | **T2** |
+| `propose_agent` | `name?`, `role?`, `provider?`, `model?`, `parentId?`, `delegationRole?`, `dailyTokenBudget?`, `canMessageUser?`, `systemPrompt?`, `knowledgeSeed?` | `{ proposed }` + `agent.form` event | T0 |
 
 `create`/`delete`/`set_manager` are **T2** — they establish, remove, or
-restructure a capability. `list` is T0.
+restructure a capability. `list` + `propose_agent` are T0 (`propose_agent` only
+opens a UI form; it never persists an agent).
 
 ## create
 - **`name`** (required) — display name (e.g. `Coder`). The agent **id** is a
@@ -108,6 +110,30 @@ roster agent **cannot** call `team` (it stays with the top-level agent).
 
 ```json
 { "op": "create", "name": "Coder", "provider": "claude-cli", "model": "claude-opus-4-8", "role": "TypeScript/Node refactors", "grant": ["read", "write", "shell"] }
+```
+
+## propose_agent (open the creation form — Phase 7 stage 5)
+
+`propose_agent` **does not create anything**. It emits an **`agent.form`
+`StreamEvent`** carrying the given fields as a *partial* form spec, so the UI opens
+the **agent-creation form pre-filled** for the user to augment (the ✨ per-field AI
+toggles), review, and confirm. Every field is optional — the renderer's
+`fillFormSpec` defaults anything absent/malformed.
+
+**Prefer `propose_agent` over `create` whenever the USER asks you to "create an
+agent"** — it keeps the human in the loop (they pick the model/parent/budget and
+decide `can_message_user`) instead of an agent materialising silently. Use `create`
+only for programmatic/scripted creation where no human review is wanted.
+
+Fields mirror the form: `name`, `role` (a TYPE label like `Dev-Back`/`QA`),
+`provider`, `model`, `parentId`, `delegationRole`, `dailyTokenBudget`,
+`canMessageUser`, `systemPrompt` (the detailed specialty), `knowledgeSeed` (initial
+notes). The form itself can AI-augment the flagged/blank fields via a cheap
+read-only turn (`augmentAgentSpec` IPC) before the user hits **Criar** (which calls
+the `createTeamAgent` IPC — the user path, distinct from this T2 tool `create`).
+
+```json
+{ "op": "propose_agent", "name": "Dario", "provider": "claude-cli", "systemPrompt": "billing + Stripe specialist, TDD" }
 ```
 
 ## Delegation roles + spawn bounds (Phase 6 stage 2)

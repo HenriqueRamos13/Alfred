@@ -35,6 +35,8 @@ import type { BrainInfo } from './core/providers.ts';
 import type { FactoryResetInfo } from './core/orchestrator.ts';
 import type { Graph } from './core/graph.ts';
 import type { ReferenceRequest } from './core/reference.ts';
+import type { AgentFormSpec, AugmentFlags } from './core/agent-augment-pure.ts';
+import type { TeamAgent } from './core/team-pure.ts';
 import {
   AGENT_IDS,
   isProviderId,
@@ -157,6 +159,10 @@ export interface Orchestrator {
   deleteTeamAgent(id: string): Promise<boolean>;
   /** Reparent an agent in the org hierarchy (parentId null = top). Refuses cycles / over-depth explicitly. */
   setManager(agentId: string, parentId: string | null): { ok: boolean; error?: string };
+  /** AI-augment a draft agent form spec (read-only cheap turn; no side effects). */
+  augmentAgentSpec(spec: AgentFormSpec, flags: AugmentFlags): Promise<AgentFormSpec>;
+  /** Create a roster agent from a completed form spec (UI create). Emits team.changed. */
+  createTeamAgent(spec: AgentFormSpec): Promise<{ ok: boolean; error?: string; agent?: TeamAgent }>;
   // ── Projects + Kanban (Phase 7) ──
   /** One project's manifest + file tree by slug (the missing IPC bridge; core exists). */
   getProject(slug: string): ProjectDetail | null | Promise<ProjectDetail | null>;
@@ -531,6 +537,27 @@ export function registerIpc(core: Orchestrator, emit: (e: StreamEvent) => void):
     } catch (err) {
       fail('set manager', err);
       return { ok: false, error: 'set manager failed' };
+    }
+  });
+  // AI-augment a draft form spec (read-only; no side effects). The renderer's
+  // fillFormSpec re-defaults anything malformed, so pass the payload through as a
+  // partial spec and let core + the pure helpers sanitise it.
+  ipcMain.handle('alfred:augmentAgentSpec', async (_e, spec: unknown, flags: unknown): Promise<AgentFormSpec | null> => {
+    try {
+      return await core.augmentAgentSpec((spec ?? {}) as AgentFormSpec, (flags ?? {}) as AugmentFlags);
+    } catch (err) {
+      fail('augment agent spec', err);
+      return null;
+    }
+  });
+  // Create a roster agent from the completed form (the UI "Criar" button). Core
+  // validates (name/provider/model/parent) and emits team.changed on success.
+  ipcMain.handle('alfred:createTeamAgent', async (_e, spec: unknown): Promise<{ ok: boolean; error?: string; agent?: TeamAgent }> => {
+    try {
+      return await core.createTeamAgent((spec ?? {}) as AgentFormSpec);
+    } catch (err) {
+      fail('create team agent', err);
+      return { ok: false, error: 'create team agent failed' };
     }
   });
 
