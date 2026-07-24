@@ -115,14 +115,14 @@ const GAP = 16;
 
 /**
  * Reserved top band (px) that cards never occupy — the macOS menu-bar safe-area
- * (clock/battery stay visible above it). ~32 by default; override with
+ * (clock/battery stay visible above it). ~48 by default; override with
  * ALFRED_TOP_INSET. Guarded for the renderer bundle, where `process` may be
  * absent. Fed into the layout `bounds.top`, so clamp/tile/widget all honour it.
  */
 export const TOP_INSET = ((): number => {
   const raw = typeof process !== 'undefined' ? process.env?.ALFRED_TOP_INSET : undefined;
   const v = Number(raw);
-  return Number.isFinite(v) && v >= 0 ? v : 32;
+  return Number.isFinite(v) && v >= 0 ? v : 48;
 })();
 
 export interface Bounds {
