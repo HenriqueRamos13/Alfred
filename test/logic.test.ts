@@ -37,6 +37,7 @@ import {
 import { watchdogAction, resolveEngine, elevenlabsConfigured } from '../src/main/core/tts.ts';
 import { initialDictation, dictationReduce, shouldAutoSend } from '../src/main/core/dictation.ts';
 import { parseSendDelay, shouldHoldSend, SEND_DELAY_DEFAULT_MS } from '../src/main/core/send-delay-pure.ts';
+import { formatBattery, batteryClass, batteryAbsent } from '../src/main/core/battery-pure.ts';
 import { shell } from '../src/main/tools/shell.ts';
 import { filesystem } from '../src/main/tools/filesystem.ts';
 import { browser } from '../src/main/tools/browser.ts';
@@ -4379,4 +4380,69 @@ test('resolveSttLocale — explicit pick beats env, env beats default', () => {
   // Whitespace is trimmed at both levels.
   assert.equal(resolveSttLocale('  en-US  ', 'pt-BR'), 'en-US');
   assert.equal(resolveSttLocale(undefined, '  en-US '), 'en-US');
+});
+
+// ── corner-HUD battery pure logic ────────────────────────────────────────────
+
+test('formatBattery — whole percent, no bolt when unplugged', () => {
+  assert.equal(formatBattery({ level: 0.87, charging: false }), '87%');
+});
+
+test('formatBattery — charging appends CHG (ASCII: the vendored HUD font has no bolt glyph)', () => {
+  assert.equal(formatBattery({ level: 0.5, charging: true }), '50% CHG');
+});
+
+test('formatBattery — clamps out-of-range levels to 0..100', () => {
+  assert.equal(formatBattery({ level: 1.2, charging: false }), '100%');
+  assert.equal(formatBattery({ level: -0.1, charging: false }), '0%');
+});
+
+test('formatBattery — rounds to the nearest whole percent', () => {
+  assert.equal(formatBattery({ level: 0.876, charging: false }), '88%');
+});
+
+test('batteryClass — charging is green regardless of level', () => {
+  assert.equal(batteryClass({ level: 0.05, charging: true }), 'hud-v on');
+});
+
+test('batteryClass — at or below 20% unplugged is danger', () => {
+  assert.equal(batteryClass({ level: 0.2, charging: false }), 'hud-v danger');
+  assert.equal(batteryClass({ level: 0.19, charging: false }), 'hud-v danger');
+});
+
+test('batteryClass — tone agrees with the rounded digits shown', () => {
+  // 0.204 displays '20%' → must be danger like every other visible 20%.
+  assert.equal(batteryClass({ level: 0.204, charging: false }), 'hud-v danger');
+  // 0.205 displays '21%' → default tone.
+  assert.equal(batteryClass({ level: 0.205, charging: false }), 'hud-v');
+});
+
+test('batteryClass — healthy unplugged is the default tone', () => {
+  assert.equal(batteryClass({ level: 0.21, charging: false }), 'hud-v');
+  assert.equal(batteryClass({ level: 1, charging: false }), 'hud-v');
+});
+
+test('batteryAbsent — the spec "unable to report" sentinel means no battery', () => {
+  assert.equal(
+    batteryAbsent({ level: 1, charging: true, chargingTime: 0, dischargingTime: Infinity }),
+    true,
+  );
+});
+
+test('batteryAbsent — real readings are not the sentinel', () => {
+  // Charging mid-level (finite time to full).
+  assert.equal(
+    batteryAbsent({ level: 0.8, charging: true, chargingTime: 1800, dischargingTime: Infinity }),
+    false,
+  );
+  // Full but unplugged.
+  assert.equal(
+    batteryAbsent({ level: 1, charging: false, chargingTime: Infinity, dischargingTime: 7200 }),
+    false,
+  );
+  // Full, plugged, but still reporting a finite discharge estimate.
+  assert.equal(
+    batteryAbsent({ level: 1, charging: true, chargingTime: 0, dischargingTime: 7200 }),
+    false,
+  );
 });

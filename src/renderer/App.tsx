@@ -33,6 +33,13 @@ import type { ReferenceTarget } from '../main/core/reference.ts';
 import { clampBox, tileLayout, cardOnDisplay, nextDisplayId, panelCards, TOP_INSET, type Bounds } from '../main/core/layout.ts';
 import { initialDictation, dictationReduce, shouldAutoSend } from '../main/core/dictation.ts';
 import { shouldHoldSend, SEND_DELAY_DEFAULT_MS } from '../main/core/send-delay-pure.ts';
+import {
+  formatBattery,
+  batteryClass,
+  batteryAbsent,
+  type BatteryState,
+  type BatteryReading,
+} from '../main/core/battery-pure.ts';
 import { PendingSendBubble, type PendingSend } from './components/PendingSend.tsx';
 import { confirmMatches } from '../main/core/reset-pure.ts';
 import { ACCENT_NAMES, resolveAccent, type AccentName } from '../main/core/accent-pure.ts';
@@ -220,6 +227,11 @@ export default function App() {
   // is tracked separately in `approval`).
   const [clock, setClock] = useState(() => now());
   const [pendingCount, setPendingCount] = useState(0);
+  // Corner-HUD battery — stays null until the API reports a REAL battery; the
+  // line only renders then. Battery-less machines still resolve, with the spec's
+  // "unable to report" sentinel, which `batteryAbsent` filters out — keeping
+  // this null instead of showing a bogus 100%.
+  const [battery, setBattery] = useState<BatteryState | null>(null);
 
   // This window's display identity (baked in at creation via --display-id).
   // Empty displayId = windowed / single-window fallback → no per-display filter.
@@ -355,6 +367,53 @@ export default function App() {
   useEffect(() => {
     const t = setInterval(() => setClock(now()), 1000);
     return () => clearInterval(t);
+  }, []);
+
+  // Corner-HUD battery — Chromium Battery Status API (not in lib.dom, typed
+  // inline). Event-driven, no polling. `getBattery()` resolves even on a
+  // battery-less machine — with the spec's "unable to report" sentinel reading —
+  // so absence is detected via `batteryAbsent` (→ null → line hidden), never by
+  // a rejection.
+  useEffect(() => {
+    type BatteryManagerLike = EventTarget & {
+      level: number;
+      charging: boolean;
+      chargingTime: number;
+      dischargingTime: number;
+    };
+    const nav = navigator as Navigator & { getBattery?: () => Promise<BatteryManagerLike> };
+    if (!nav.getBattery) return;
+    let bm: BatteryManagerLike | null = null;
+    let dead = false;
+    const read = () => {
+      if (!bm || dead) return;
+      const reading: BatteryReading = {
+        level: bm.level,
+        charging: bm.charging,
+        chargingTime: bm.chargingTime,
+        dischargingTime: bm.dischargingTime,
+      };
+      setBattery(
+        batteryAbsent(reading) ? null : { level: reading.level, charging: reading.charging },
+      );
+    };
+    nav
+      .getBattery()
+      .then((m) => {
+        if (dead) return;
+        bm = m;
+        read();
+        m.addEventListener('levelchange', read);
+        m.addEventListener('chargingchange', read);
+      })
+      // Purely defensive: the spec's only rejection path is a permissions-policy
+      // denial, which cannot occur in Alfred's top-level window.
+      .catch(() => {});
+    return () => {
+      dead = true;
+      bm?.removeEventListener('levelchange', read);
+      bm?.removeEventListener('chargingchange', read);
+    };
   }, []);
 
   /** Send a card to the next physical display (cycles). displayId sentinels resolve to the primary. */
@@ -1488,7 +1547,14 @@ export default function App() {
           <span className="hud-ver">v{VERSION}</span>
         </div>
         <div className="hud-corner tr">
-          <span className="hud-line">MONITOR <span className="hud-v">{monIdx}/{monTotal}</span></span>
+          <span className="hud-line">
+            MONITOR <span className="hud-v">{monIdx}/{monTotal}</span>
+            {battery && (
+              <>
+                {' · '}BAT <span className={batteryClass(battery)}>{formatBattery(battery)}</span>
+              </>
+            )}
+          </span>
           <span className="hud-line hud-clock">{clock}</span>
         </div>
         <div className="hud-corner bl">
