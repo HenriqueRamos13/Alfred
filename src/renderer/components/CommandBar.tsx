@@ -6,6 +6,7 @@
 import { useEffect, useRef, useState } from 'react';
 import type { KeyboardEvent, Ref } from 'react';
 import type { AgentStatus, BudgetState } from '../../main/core/types.ts';
+import { primaryAction } from '../../main/core/command-bar-pure.ts';
 
 export interface CommandBarProps {
   status: AgentStatus;
@@ -13,6 +14,8 @@ export interface CommandBarProps {
   budget: BudgetState | null;
   onSubmit: (text: string) => void;
   onKill: () => void;
+  /** Soft cancel the running turn (primary button becomes STOP while processing). */
+  onCancel: () => void;
   /** Lets the parent focus the input programmatically (e.g. ⌘/Ctrl+K). */
   inputRef?: Ref<HTMLTextAreaElement>;
   /** Fired on input focus/blur so the parent can keep the top strip revealed while typing. */
@@ -47,6 +50,7 @@ export function CommandBar({
   budget,
   onSubmit,
   onKill,
+  onCancel,
   inputRef,
   onFocus,
   onBlur,
@@ -85,10 +89,16 @@ export function CommandBar({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [submitSignal]);
 
+  const primary = primaryAction(status); // 'stop' while processing, else 'send'
+
   const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       submit();
+    } else if (e.key === 'Escape' && primary === 'stop') {
+      // Esc while processing = soft cancel (not the emergency kill).
+      e.preventDefault();
+      onCancel();
     }
   };
 
@@ -192,10 +202,11 @@ export function CommandBar({
       )}
       <button
         type="button"
-        onClick={submit}
+        onClick={primary === 'stop' ? onCancel : submit}
         disabled={killed}
+        title={primary === 'stop' ? 'Stop the current turn (Esc) — input stays usable' : undefined}
         style={{
-          background: 'var(--neon-cyan, #22d3ee)',
+          background: primary === 'stop' ? 'var(--neon-amber, #fbbf24)' : 'var(--neon-cyan, #22d3ee)',
           border: 'none',
           color: 'var(--bg, #080c14)',
           borderRadius: 6,
@@ -206,7 +217,7 @@ export function CommandBar({
           opacity: killed ? 0.5 : 1,
         }}
       >
-        Send
+        {primary === 'stop' ? '■ STOP' : 'Send'}
       </button>
       <button
         type="button"

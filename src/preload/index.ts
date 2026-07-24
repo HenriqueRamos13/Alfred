@@ -57,8 +57,10 @@ const api = {
   send: (text: string): Promise<void> => ipcRenderer.invoke('alfred:send', text),
   /** Load recent persisted chat history to repopulate the conversation on open. */
   getHistory: (limit?: number): Promise<ChatMessage[]> => ipcRenderer.invoke('alfred:getHistory', limit),
-  /** Kill switch — abort the running task. */
+  /** Kill switch — abort the running task (latches: suppresses mic/wake). */
   stop: (): void => ipcRenderer.send('alfred:stop'),
+  /** Soft cancel — abort the current turn without latching; input stays usable. */
+  cancel: (): void => ipcRenderer.send('alfred:cancel'),
   /** Resolve a pending HITL approval. `remember` persists an auto-approve rule for this tool:op. */
   resolveApproval: (id: string, decision: ApprovalDecision, remember?: boolean): void =>
     ipcRenderer.send('alfred:resolveApproval', id, decision, remember === true),

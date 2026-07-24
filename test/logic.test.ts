@@ -93,6 +93,7 @@ import { fileURLToPath } from 'node:url';
 import { confirmMatches, factoryResetPaths, factoryResetTables } from '../src/main/core/reset.ts';
 import { grillMeEnabled } from '../src/main/core/settings-pure.ts';
 import { enqueueTurn, TURN_QUEUE_MAX } from '../src/main/core/turn-queue-pure.ts';
+import { primaryAction } from '../src/main/core/command-bar-pure.ts';
 import {
   defaultProviderId,
   parseProviderSpec,
@@ -2734,6 +2735,16 @@ test('enqueueTurn — size guard drops oldest past cap, never silent, never unbo
   assert.equal(over.dropped, 'm0'); // oldest reported for logging
   assert.equal(q.length, TURN_QUEUE_MAX); // bounded
   assert.equal(q[q.length - 1], 'overflow'); // newest kept, order intact
+});
+
+// ── CommandBar primary button (Send ⇄ soft-Stop) ────────────────────────────
+test('primaryAction — stop while processing, send otherwise', () => {
+  assert.equal(primaryAction('thinking'), 'stop');
+  assert.equal(primaryAction('tool'), 'stop');
+  assert.equal(primaryAction('idle'), 'send');
+  assert.equal(primaryAction('done'), 'send');
+  assert.equal(primaryAction('error'), 'send');
+  assert.equal(primaryAction('awaiting-approval'), 'send');
 });
 
 // ── team roster (Phase 5, stage 1): pure id/validation/index ─────────────────

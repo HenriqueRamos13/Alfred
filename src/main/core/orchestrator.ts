@@ -632,7 +632,14 @@ export interface OrchestratorHandle {
   send(text: string): Promise<void>;
   /** Recent persisted chat messages (oldest→newest) for the UI to reload on open. */
   getHistory(limit?: number): ChatMessage[];
+  /** Emergency kill — abort + clear queue + latch (suppresses mic/wake). */
   stop(): void;
+  /**
+   * Soft cancel — abort the live turn + drop pending turns, then go idle. Does
+   * NOT latch: no wakeSuppressed, nothing disabled, conversation/memory intact.
+   * Just stops what Alfred is doing now; the user can type and send immediately.
+   */
+  cancel(): void;
   resolveApproval(resolution: { id: string; decision: ApprovalDecision; remember?: boolean }): void;
   /** DANGEROUS mode (bypass all approvals): read/toggle, persisted. */
   getDangerousMode(): boolean;
@@ -1283,6 +1290,14 @@ export function createOrchestrator(opts: CreateOrchestratorOpts): OrchestratorHa
       wakeSuppressed = true;
       wakeword.stopWakeword();
       stt.stopListening();
+    },
+    cancel() {
+      // Soft stop: abort the live turn (AI-SDK stream OR the claude -p child) and
+      // drop pending turns. No latch — mic/wake untouched, conversation/memory
+      // intact. Go idle now so the primary button flips back to Send immediately.
+      activeAbort?.();
+      turnQueue.length = 0;
+      emit({ kind: 'agent.status', sessionId, status: 'idle' });
     },
     resolveApproval({ id, decision, remember }) {
       gov.resolveApproval(id, decision, remember);

@@ -698,6 +698,14 @@ export default function App() {
     pushLog({ tag: 'KERNEL', tone: 'red', msg: '!! kill switch engaged' });
   };
 
+  // Soft cancel: stop the current turn without latching. Does NOT set `killed`,
+  // so the input stays usable and you can send again right away. main emits
+  // agent.status idle → the primary button flips back to Send on its own.
+  const onCancel = () => {
+    alfred.cancel();
+    pushLog({ tag: 'KERNEL', tone: 'amber', msg: 'cancelado — turno interrompido' });
+  };
+
   const onResolve = (id: string, decision: ApprovalDecision, remember?: boolean) => {
     alfred.resolveApproval(id, decision, remember);
     if (remember && decision === 'approve') {
@@ -1347,6 +1355,7 @@ export default function App() {
           budget={budget}
           onSubmit={onSubmit}
           onKill={onKill}
+          onCancel={onCancel}
           inputRef={commandInputRef}
           onFocus={() => setInputFocused(true)}
           onBlur={() => setInputFocused(false)}

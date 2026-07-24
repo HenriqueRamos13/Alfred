@@ -43,8 +43,10 @@ export interface Orchestrator {
   send(text: string): Promise<void>;
   /** Recent persisted chat messages for the UI to reload on open. */
   getHistory(limit?: number): ChatMessage[] | Promise<ChatMessage[]>;
-  /** Kill switch — abort the running task. */
+  /** Kill switch — abort the running task (latches: suppresses mic/wake). */
   stop(): void;
+  /** Soft cancel — abort the turn without latching; input stays usable. */
+  cancel(): void;
   /** Resolve a pending HITL approval (unblocks governance.requestApproval). `remember` persists an auto-approve rule. */
   resolveApproval(resolution: { id: string; decision: ApprovalDecision; remember?: boolean }): void;
   /** DANGEROUS mode (bypass all approvals): read/toggle, persisted. */
@@ -293,6 +295,7 @@ export function registerIpc(core: Orchestrator, emit: (e: StreamEvent) => void):
   });
 
   ipcMain.on('alfred:stop', () => core.stop());
+  ipcMain.on('alfred:cancel', () => core.cancel());
   ipcMain.on('alfred:startListening', () => {
     try {
       core.startListening();
