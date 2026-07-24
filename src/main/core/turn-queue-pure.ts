@@ -16,3 +16,13 @@ export function enqueueTurn(queue: string[], text: string, max = TURN_QUEUE_MAX)
   if (queue.length > max) return { dropped: queue.shift() ?? null };
   return { dropped: null };
 }
+
+/**
+ * Coalesce a batch of pending turns into ONE prompt (Claude-Code-style): while a
+ * turn runs, the messages that pile up behind it are joined and run as a single
+ * next turn. Empty/whitespace entries are dropped; the rest are joined by a blank
+ * line. One text returns unchanged; an empty (or all-blank) list returns "".
+ */
+export function coalesceTurns(texts: string[]): string {
+  return texts.map((t) => t.trim()).filter((t) => t.length > 0).join('\n\n');
+}

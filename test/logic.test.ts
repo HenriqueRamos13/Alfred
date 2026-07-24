@@ -92,7 +92,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { confirmMatches, factoryResetPaths, factoryResetTables } from '../src/main/core/reset.ts';
 import { grillMeEnabled } from '../src/main/core/settings-pure.ts';
-import { enqueueTurn, TURN_QUEUE_MAX } from '../src/main/core/turn-queue-pure.ts';
+import { enqueueTurn, TURN_QUEUE_MAX, coalesceTurns } from '../src/main/core/turn-queue-pure.ts';
 import { primaryAction } from '../src/main/core/command-bar-pure.ts';
 import {
   defaultProviderId,
@@ -2735,6 +2735,19 @@ test('enqueueTurn — size guard drops oldest past cap, never silent, never unbo
   assert.equal(over.dropped, 'm0'); // oldest reported for logging
   assert.equal(q.length, TURN_QUEUE_MAX); // bounded
   assert.equal(q[q.length - 1], 'overflow'); // newest kept, order intact
+});
+
+test('coalesceTurns — joins a batch into one prompt with a blank line', () => {
+  // three pending turns run as ONE combined turn
+  assert.equal(coalesceTurns(['a', 'b', 'c']), 'a\n\nb\n\nc');
+  // a single turn is returned unchanged
+  assert.equal(coalesceTurns(['only']), 'only');
+  // empty batch → empty string
+  assert.equal(coalesceTurns([]), '');
+  // blank/whitespace entries are dropped and the rest trimmed
+  assert.equal(coalesceTurns(['a', '', '  ', 'b']), 'a\n\nb');
+  assert.equal(coalesceTurns(['  spaced  ']), 'spaced');
+  assert.equal(coalesceTurns(['', '  ']), '');
 });
 
 // ── CommandBar primary button (Send ⇄ soft-Stop) ────────────────────────────

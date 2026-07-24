@@ -91,7 +91,7 @@ import { agentTokensToday } from './budget.ts';
 import { parseTopicsFromIndex } from './team-format-pure.ts';
 import { grillMeEnabled } from './settings-pure.ts';
 import { isAccent, DEFAULT_ACCENT, type AccentName } from './accent-pure.ts';
-import { enqueueTurn } from './turn-queue-pure.ts';
+import { enqueueTurn, coalesceTurns } from './turn-queue-pure.ts';
 import { dayKey } from './budget.ts';
 import { spawnClaudeCli, dangerousArgs } from './claudeSpawn.ts';
 import * as tts from './tts.ts';
@@ -1203,12 +1203,18 @@ export function createOrchestrator(opts: CreateOrchestratorOpts): OrchestratorHa
 
     draining = true;
     try {
-      // Single-flight: one turn at a time, in order. A failed turn is logged and
-      // the drain continues — one bad turn never strands the rest of the queue.
+      // Single-flight + COALESCE (Claude-Code-style): drain ALL currently-queued
+      // turns as ONE combined turn. While a turn runs, later messages pile up
+      // behind it; when it finishes they run together as a single prompt. Each
+      // message was already persisted per-message on enqueue (own bubble) — only
+      // the PROMPT is combined here, never re-persisted. A failed turn is logged
+      // and the drain continues.
       while (turnQueue.length) {
-        const next = turnQueue.shift()!;
+        const batch = turnQueue.splice(0);
+        const combined = coalesceTurns(batch);
+        if (!combined) continue;
         try {
-          await runTurn(next);
+          await runTurn(combined);
         } catch (err) {
           console.error('[alfred] turn failed:', err instanceof Error ? err.message : err);
         }
