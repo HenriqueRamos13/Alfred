@@ -417,6 +417,11 @@ export type StreamEvent =
   // An unattended agent job's sensitive action was queued for approval, or a
   // queued approval was resolved. Stage 3 renders the pending list + buttons.
   | { kind: 'job.approval'; action: 'created' | 'resolved'; approval: JobApproval }
+  // A persisted setting (accent / a toggle) changed in ONE window. Broadcast to
+  // ALL windows so multi-monitor overlays stay in sync: the receiver updates its
+  // local state + re-applies the effect WITHOUT re-invoking the setter (idempotent
+  // → no loop). `value` is the new value (accent name, or a boolean for toggles).
+  | { kind: 'settings.changed'; key: SettingKey; value: string | boolean }
   // The main conversation was reset: the UI clears the chat (every window).
   | { kind: 'conversation.reset'; sessionId: string }
   // A factory reset completed: the UI reloads to a blank factory state.
@@ -424,6 +429,18 @@ export type StreamEvent =
   | { kind: 'error'; sessionId: string; message: string };
 
 export type AgentStatus = 'idle' | 'thinking' | 'tool' | 'awaiting-approval' | 'error' | 'done';
+
+/** Persisted settings synced across windows via the settings.changed event. */
+export type SettingKey =
+  | 'accent'
+  | 'tts_enabled'
+  | 'wakeword_enabled'
+  | 'autosend_enabled'
+  | 'elevenlabs_enabled'
+  | 'widget_scripts_enabled'
+  | 'grill_me_enabled'
+  | 'dangerous_mode'
+  | 'spawn_paused';
 
 /** Explicit wake-listener state, surfaced to the UI (see the wake.status event). */
 export type WakeStatus = 'listening' | 'suppressed' | 'failed' | 'stopped' | 'disabled';

@@ -1292,13 +1292,16 @@ export function createOrchestrator(opts: CreateOrchestratorOpts): OrchestratorHa
     },
     setDangerousMode(on) {
       setSetting(db, 'dangerous_mode', on ? '1' : '0');
-      return isDangerous();
+      const v = isDangerous();
+      emit({ kind: 'settings.changed', key: 'dangerous_mode', value: v });
+      return v;
     },
     getSpawnPaused() {
       return getSetting(db, 'spawn_paused') === '1';
     },
     setSpawnPaused(on) {
       setSetting(db, 'spawn_paused', on ? '1' : '0');
+      emit({ kind: 'settings.changed', key: 'spawn_paused', value: on });
       return on;
     },
     getGrillMe() {
@@ -1306,7 +1309,9 @@ export function createOrchestrator(opts: CreateOrchestratorOpts): OrchestratorHa
     },
     setGrillMe(on) {
       setSetting(db, 'grill_me_enabled', on ? '1' : '0');
-      return grillMeEnabled(getSetting(db, 'grill_me_enabled'));
+      const v = grillMeEnabled(getSetting(db, 'grill_me_enabled'));
+      emit({ kind: 'settings.changed', key: 'grill_me_enabled', value: v });
+      return v;
     },
     resetApprovals() {
       setSetting(db, 'auto_approve', '[]');
@@ -1475,6 +1480,7 @@ export function createOrchestrator(opts: CreateOrchestratorOpts): OrchestratorHa
     setTts(on) {
       setSetting(db, 'tts_enabled', on ? '1' : '0');
       if (!on) tts.stop(); // silence anything mid-utterance immediately
+      emit({ kind: 'settings.changed', key: 'tts_enabled', value: on });
       return on;
     },
     getAccent() {
@@ -1485,6 +1491,7 @@ export function createOrchestrator(opts: CreateOrchestratorOpts): OrchestratorHa
       // Trust boundary: only a known accent name is ever persisted (else default).
       const accent = isAccent(name) ? name : DEFAULT_ACCENT;
       setSetting(db, 'accent', accent);
+      emit({ kind: 'settings.changed', key: 'accent', value: accent });
       return accent;
     },
     getElevenlabs() {
@@ -1494,6 +1501,7 @@ export function createOrchestrator(opts: CreateOrchestratorOpts): OrchestratorHa
       setSetting(db, 'elevenlabs_enabled', on ? '1' : '0');
       tts.setEngineOverride(on ? 'elevenlabs' : null);
       tts.stop(); // switch voice cleanly — drop anything mid-utterance
+      emit({ kind: 'settings.changed', key: 'elevenlabs_enabled', value: on });
       return on;
     },
     getAutosend() {
@@ -1501,6 +1509,7 @@ export function createOrchestrator(opts: CreateOrchestratorOpts): OrchestratorHa
     },
     setAutosend(on) {
       setSetting(db, 'autosend_enabled', on ? '1' : '0');
+      emit({ kind: 'settings.changed', key: 'autosend_enabled', value: on });
       return on;
     },
     getWidgetScripts() {
@@ -1508,6 +1517,7 @@ export function createOrchestrator(opts: CreateOrchestratorOpts): OrchestratorHa
     },
     setWidgetScripts(on) {
       setSetting(db, 'widget_scripts_enabled', on ? '1' : '0');
+      emit({ kind: 'settings.changed', key: 'widget_scripts_enabled', value: on });
       return on;
     },
     startListening() {
@@ -1538,7 +1548,9 @@ export function createOrchestrator(opts: CreateOrchestratorOpts): OrchestratorHa
       } else {
         wakeword.stopWakeword();
       }
-      return wakeEnabled();
+      const v = wakeEnabled();
+      emit({ kind: 'settings.changed', key: 'wakeword_enabled', value: v });
+      return v;
     },
     getWakeStatus() {
       return wakeword.getWakeState();

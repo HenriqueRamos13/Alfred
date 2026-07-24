@@ -603,6 +603,28 @@ export default function App() {
         case 'cost':
           setCost(e.snapshot);
           break;
+        case 'settings.changed':
+          // Another window changed a setting (multi-monitor sync). Update this
+          // window's local state + re-apply the effect. This never calls the
+          // setter, so the originating window receiving its own broadcast is a
+          // no-op re-apply (same value) — no loop.
+          switch (e.key) {
+            case 'accent': {
+              const name = e.value as AccentName;
+              setAccentState(name);
+              applyAccent(name);
+              break;
+            }
+            case 'tts_enabled': setTts(!!e.value); break;
+            case 'wakeword_enabled': setWake(!!e.value); break;
+            case 'autosend_enabled': setAutosend(!!e.value); break;
+            case 'elevenlabs_enabled': setElevenlabs(!!e.value); break;
+            case 'widget_scripts_enabled': setWidgetScripts(!!e.value); break;
+            case 'grill_me_enabled': setGrill(!!e.value); break;
+            case 'dangerous_mode': setDangerous(!!e.value); break;
+            case 'spawn_paused': setSpawnPaused(!!e.value); break;
+          }
+          break;
         case 'conversation.reset':
           setMessages([]);
           setStreaming('');
