@@ -24,7 +24,7 @@ import { TeamCard } from './components/TeamCard.tsx';
 import { WidgetCard } from './components/WidgetCard.tsx';
 import { HtmlWidgetCard } from './components/HtmlWidgetCard.tsx';
 import type { ReferenceTarget } from '../main/core/reference.ts';
-import { clampBox, tileLayout, cardOnDisplay, nextDisplayId, panelCards, type Bounds } from '../main/core/layout.ts';
+import { clampBox, tileLayout, cardOnDisplay, nextDisplayId, panelCards, TOP_INSET, type Bounds } from '../main/core/layout.ts';
 import { initialDictation, dictationReduce, shouldAutoSend } from '../main/core/dictation.ts';
 import { confirmMatches } from '../main/core/reset-pure.ts';
 import { ACCENT_NAMES, resolveAccent, type AccentName } from '../main/core/accent-pure.ts';
@@ -266,7 +266,7 @@ export default function App() {
     const el = canvasRef.current;
     if (!el) return;
     const report = () => {
-      const b = { w: el.clientWidth, h: el.clientHeight };
+      const b = { w: el.clientWidth, h: el.clientHeight, top: TOP_INSET };
       setBounds(b);
       alfred.setViewport(b.w, b.h);
     };

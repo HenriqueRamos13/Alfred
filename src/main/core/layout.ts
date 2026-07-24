@@ -113,9 +113,23 @@ const HEADER_H = 44;
 /** Gutter used by the responsive tiler. */
 const GAP = 16;
 
+/**
+ * Reserved top band (px) that cards never occupy — the macOS menu-bar safe-area
+ * (clock/battery stay visible above it). ~32 by default; override with
+ * ALFRED_TOP_INSET. Guarded for the renderer bundle, where `process` may be
+ * absent. Fed into the layout `bounds.top`, so clamp/tile/widget all honour it.
+ */
+export const TOP_INSET = ((): number => {
+  const raw = typeof process !== 'undefined' ? process.env?.ALFRED_TOP_INSET : undefined;
+  const v = Number(raw);
+  return Number.isFinite(v) && v >= 0 ? v : 32;
+})();
+
 export interface Bounds {
   w: number;
   h: number;
+  /** Reserved top inset (px); cards never sit above it. Absent/0 → no reservation. */
+  top?: number;
 }
 
 interface Box {
@@ -133,8 +147,9 @@ interface Box {
 export function clampBox(box: Box, bounds: Bounds): Box {
   const w = Math.min(Math.max(MIN_W, Math.round(box.w)), Math.max(MIN_W, Math.round(bounds.w)));
   const h = Math.min(Math.max(MIN_H, Math.round(box.h)), Math.max(MIN_H, Math.round(bounds.h)));
+  const top = Math.max(0, Math.round(bounds.top ?? 0));
   const x = Math.min(Math.max(0, Math.round(box.x)), Math.max(0, Math.round(bounds.w) - MIN_VISIBLE));
-  const y = Math.min(Math.max(0, Math.round(box.y)), Math.max(0, Math.round(bounds.h) - HEADER_H));
+  const y = Math.min(Math.max(top, Math.round(box.y)), Math.max(top, Math.round(bounds.h) - HEADER_H));
   return { x, y, w, h };
 }
 
@@ -146,14 +161,15 @@ export function clampBox(box: Box, bounds: Bounds): Box {
 export function tileLayout(ids: readonly string[], bounds: Bounds): Box[] {
   const n = ids.length;
   if (n === 0) return [];
+  const top = Math.max(0, Math.round(bounds.top ?? 0));
   const cols = Math.max(1, Math.min(n, Math.floor(bounds.w / 360) || 1));
   const rows = Math.ceil(n / cols);
   const tileW = Math.max(MIN_W, Math.floor((bounds.w - GAP * (cols + 1)) / cols));
-  const tileH = Math.max(MIN_H, Math.floor((bounds.h - GAP * (rows + 1)) / rows));
+  const tileH = Math.max(MIN_H, Math.floor((bounds.h - top - GAP * (rows + 1)) / rows));
   return ids.map((_, i) => {
     const col = i % cols;
     const row = Math.floor(i / cols);
-    return { x: GAP + col * (tileW + GAP), y: GAP + row * (tileH + GAP), w: tileW, h: tileH };
+    return { x: GAP + col * (tileW + GAP), y: top + GAP + row * (tileH + GAP), w: tileW, h: tileH };
   });
 }
 
@@ -176,9 +192,11 @@ export function widgetBox(corner: string | undefined, idx: number, b: Bounds): B
   const c = corner ?? 'tr';
   const left = c[1] === 'l';
   const top = c[0] === 't';
+  const inset = Math.max(0, Math.round(b.top ?? 0));
   const x = left ? m : Math.max(m, b.w - W - m);
-  // Top corners clear the ~118px command strip; stagger down (top) or up (bottom).
-  const y = top ? 122 + off : Math.max(122, b.h - H - m - off);
+  // Top corners clear the reserved inset + the ~118px command strip; stagger down
+  // (top) or up (bottom). Bottom corners never enter the inset (clamped below it).
+  const y = top ? inset + 122 + off : Math.max(inset + 122, b.h - H - m - off);
   return { x, y, w: W, h: H };
 }
 

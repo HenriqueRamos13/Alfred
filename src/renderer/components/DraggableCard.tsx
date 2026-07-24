@@ -15,7 +15,7 @@
  */
 import { useEffect, useRef, useState, type PointerEvent, type ReactNode } from 'react';
 import type { CardLayout, CardPatch } from '../../main/core/types.ts';
-import { clampBox, MIN_W, MIN_H } from '../../main/core/layout.ts';
+import { clampBox, MIN_W, MIN_H, TOP_INSET } from '../../main/core/layout.ts';
 
 interface Props {
   card: CardLayout;
@@ -84,7 +84,7 @@ export function DraggableCard({ card, meta, onChange, onFocus, onHide, onMoveDis
   const onMove = (e: PointerEvent) => {
     const d = drag.current;
     if (!d) return;
-    const bounds = { w: d.canvasW, h: d.canvasH };
+    const bounds = { w: d.canvasW, h: d.canvasH, top: TOP_INSET };
     if (d.mode === 'move') {
       const x = e.clientX - d.grabDX - d.canvasLeft;
       const y = e.clientY - d.grabDY - d.canvasTop;

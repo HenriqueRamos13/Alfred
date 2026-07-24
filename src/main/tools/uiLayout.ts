@@ -12,7 +12,7 @@
 import { screen } from 'electron';
 import type { Tool } from './types.ts';
 import type { CardLayout, DisplayGeom } from '../core/types.ts';
-import { getLayout, updateCard, arrangeLayout, resetLayout, resolveMoveTarget, type Bounds } from '../core/layout.ts';
+import { getLayout, updateCard, arrangeLayout, resetLayout, resolveMoveTarget, TOP_INSET, type Bounds } from '../core/layout.ts';
 import { getSetting } from '../core/db.ts';
 
 interface Args {
@@ -32,7 +32,7 @@ const view = (cards: CardLayout[]) => cards.map(({ z: _z, ...c }) => c);
 /** Live canvas size the renderer last reported; a safe default before it does. */
 function viewport(db: import('better-sqlite3').Database): Bounds {
   const m = getSetting(db, 'viewport')?.match(/^(\d+)x(\d+)$/);
-  return m ? { w: Number(m[1]), h: Number(m[2]) } : { w: 1280, h: 800 };
+  return m ? { w: Number(m[1]), h: Number(m[2]), top: TOP_INSET } : { w: 1280, h: 800, top: TOP_INSET };
 }
 
 /** Every physical display with its DIP coordinate spaces (empty off-Electron). */
@@ -121,7 +121,7 @@ export const uiLayout: Tool<Args> = {
         const target = resolveMoveTarget(a.displayId, card.displayId, displays);
         if ('error' in target) return { ok: false, error: target.error };
         const box: Bounds = target.display
-          ? { w: target.display.bounds.width, h: target.display.bounds.height }
+          ? { w: target.display.bounds.width, h: target.display.bounds.height, top: TOP_INSET }
           : bounds;
         cards = updateCard(ctx.db, a.id, { x: a.x, y: a.y, displayId: target.displayId }, box);
         break;

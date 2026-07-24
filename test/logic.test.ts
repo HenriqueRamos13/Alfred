@@ -113,6 +113,7 @@ import {
   mergeLayout,
   panelCards,
   widgetBox,
+  TOP_INSET,
   DISPLAY_MAIN,
   DISPLAY_ALL,
 } from '../src/main/core/layout.ts';
@@ -465,6 +466,39 @@ test('tileLayout fits every card inside the bounds, in order', () => {
   const narrow = tileLayout(['a', 'b'], { w: 300, h: 800 });
   assert.equal(narrow[0].x, narrow[1].x);
   assert.ok(narrow[1].y > narrow[0].y);
+});
+
+// ── top inset: cards never occupy the reserved macOS menu-bar safe-area ──────
+
+test('clampBox — bounds.top is the floor for y; a card never rises above the inset', () => {
+  const b = { w: 1000, h: 800, top: 32 };
+  // a card dragged to the very top is pushed down to the inset, not to 0
+  assert.equal(clampBox({ x: 0, y: -50, w: 300, h: 200 }, b).y, 32);
+  assert.equal(clampBox({ x: 0, y: 0, w: 300, h: 200 }, b).y, 32);
+  assert.equal(clampBox({ x: 0, y: 100, w: 300, h: 200 }, b).y, 100); // below inset untouched
+  // the bottom limit (header reachable) still holds and never drops below the inset
+  assert.ok(clampBox({ x: 0, y: 9999, w: 300, h: 200 }, b).y <= b.h - 44);
+  // absent / zero top → old behaviour (floor at 0)
+  assert.equal(clampBox({ x: 0, y: -50, w: 300, h: 200 }, { w: 1000, h: 800 }).y, 0);
+  assert.equal(clampBox({ x: 0, y: -50, w: 300, h: 200 }, { w: 1000, h: 800, top: 0 }).y, 0);
+});
+
+test('tileLayout — the grid starts below the top inset', () => {
+  const tiles = tileLayout(['a', 'b', 'c', 'd'], { w: 1200, h: 800, top: 32 });
+  for (const t of tiles) assert.ok(t.y >= 32, 'no tile enters the reserved top inset');
+  assert.ok(tiles[0].y > 32, 'first row is padded below the inset');
+  // still fits inside the canvas
+  for (const t of tiles) assert.ok(t.y + t.h <= 800 + 1, 'within height');
+});
+
+test('widgetBox — top corners anchor below the inset', () => {
+  const b = { w: 1280, h: 800, top: 32 };
+  assert.ok(widgetBox('tl', 0, b).y >= 32, 'top-left clears the inset');
+  assert.ok(widgetBox('tr', 0, b).y >= 32, 'top-right clears the inset');
+});
+
+test('TOP_INSET is a small non-negative reserved band', () => {
+  assert.ok(TOP_INSET >= 0 && TOP_INSET <= 200);
 });
 
 // ── dynamic widget cards in the layout store ─────────────────────────────────
