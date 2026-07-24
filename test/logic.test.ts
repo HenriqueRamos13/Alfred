@@ -3657,3 +3657,197 @@ test('shouldHoldSend — holds only with a positive delay AND real text', () => 
   assert.ok(!shouldHoldSend(2000, '')); // empty → never holds
   assert.ok(!shouldHoldSend(-5, 'hello')); // guard: non-positive never holds
 });
+
+// ── kanban board pure logic (Phase 7, stage 1) ────────────────────────────────
+
+import {
+  CARD_COLUMNS,
+  PRIORITIES,
+  isCardColumn,
+  isPriority,
+  parseChecklist,
+  parseStringList,
+  validateCardInput,
+  canMoveColumn,
+  doneGateDecision,
+  claimDecision,
+  reorder,
+  lifecycleRecipients,
+  type CardColumn,
+} from '../src/main/core/kanban-pure.ts';
+
+test('validateCardInput — requires projectSlug and title', () => {
+  assert.equal((validateCardInput({ title: 'x' }) as { ok: false; error: string }).error, 'projectSlug is required');
+  assert.equal(
+    (validateCardInput({ projectSlug: 'p' }) as { ok: false; error: string }).error,
+    'title is required',
+  );
+  assert.equal(
+    (validateCardInput({ projectSlug: 'p', title: '   ' }) as { ok: false; error: string }).error,
+    'title is required',
+  );
+});
+
+test('validateCardInput — defaults: backlog / med / createdBy=user / attempts=3 / empty lists', () => {
+  const r = validateCardInput({ projectSlug: 'nimbus', title: '  Ship it  ' });
+  assert.ok(r.ok);
+  if (!r.ok) return;
+  assert.deepEqual(r.spec, {
+    projectSlug: 'nimbus',
+    title: 'Ship it',
+    body: '',
+    column: 'backlog',
+    assigneeId: null,
+    reviewerId: null,
+    createdBy: 'user',
+    forWhom: null,
+    priority: 'med',
+    artifact: '',
+    acceptance: [],
+    dod: [],
+    dependsOn: [],
+    maxAttempts: 3,
+    timeoutMs: null,
+    stopCondition: '',
+  });
+});
+
+test('validateCardInput — rejects bad enums / numbers', () => {
+  assert.equal(
+    (validateCardInput({ projectSlug: 'p', title: 't', column: 'shipping' }) as { ok: false; error: string }).error.includes('column'),
+    true,
+  );
+  assert.equal(
+    (validateCardInput({ projectSlug: 'p', title: 't', priority: 'urgent' }) as { ok: false; error: string }).error.includes('priority'),
+    true,
+  );
+  assert.ok(!validateCardInput({ projectSlug: 'p', title: 't', maxAttempts: 0 }).ok);
+  assert.ok(!validateCardInput({ projectSlug: 'p', title: 't', maxAttempts: 2.5 }).ok);
+  assert.ok(!validateCardInput({ projectSlug: 'p', title: 't', timeoutMs: -1 }).ok);
+  assert.ok(validateCardInput({ projectSlug: 'p', title: 't', timeoutMs: null }).ok); // null is allowed
+});
+
+test('validateCardInput — nullable fields empty→null, createdBy trimmed', () => {
+  const r = validateCardInput({ projectSlug: 'p', title: 't', assigneeId: '  ', reviewerId: 'cto', createdBy: '  pm  ', forWhom: '' });
+  assert.ok(r.ok);
+  if (!r.ok) return;
+  assert.equal(r.spec.assigneeId, null);
+  assert.equal(r.spec.reviewerId, 'cto');
+  assert.equal(r.spec.createdBy, 'pm');
+  assert.equal(r.spec.forWhom, null);
+});
+
+test('parseChecklist — objects, bare strings, JSON string, junk dropped', () => {
+  assert.deepEqual(parseChecklist([{ text: 'a', done: true }, { text: ' b ', done: false }]), [
+    { text: 'a', done: true },
+    { text: 'b', done: false },
+  ]);
+  assert.deepEqual(parseChecklist(['x', '  ', 'y']), [
+    { text: 'x', done: false },
+    { text: 'y', done: false },
+  ]);
+  assert.deepEqual(parseChecklist('[{"text":"j","done":true}]'), [{ text: 'j', done: true }]);
+  assert.deepEqual(parseChecklist('not json'), []);
+  assert.deepEqual(parseChecklist({ text: 'notarray' }), []);
+  assert.deepEqual(parseChecklist([{ done: true }, 42, null]), []); // no text / wrong type
+});
+
+test('parseStringList — dedupes, trims, drops empties; tolerant of JSON string', () => {
+  assert.deepEqual(parseStringList([' NB-1 ', 'NB-1', 'NB-2', '']), ['NB-1', 'NB-2']);
+  assert.deepEqual(parseStringList('["a","b","a"]'), ['a', 'b']);
+  assert.deepEqual(parseStringList('nope'), []);
+  assert.deepEqual(parseStringList(123), []);
+});
+
+test('isCardColumn / isPriority guards', () => {
+  assert.equal(CARD_COLUMNS.length, 7);
+  assert.equal(PRIORITIES.length, 3);
+  for (const c of CARD_COLUMNS) assert.ok(isCardColumn(c));
+  assert.ok(!isCardColumn('shipping'));
+  assert.ok(!isCardColumn(undefined));
+  for (const p of PRIORITIES) assert.ok(isPriority(p));
+  assert.ok(!isPriority('urgent'));
+});
+
+test('canMoveColumn — normal forward/backward flow', () => {
+  assert.ok(canMoveColumn('backlog', 'todo'));
+  assert.ok(canMoveColumn('todo', 'doing'));
+  assert.ok(canMoveColumn('doing', 'review'));
+  assert.ok(canMoveColumn('review', 'done'));
+  assert.ok(canMoveColumn('doing', 'todo')); // step back
+  assert.ok(canMoveColumn('done', 'review')); // re-open, no rigid waterfall
+});
+
+test('canMoveColumn — blocked/failed reachable from ANY lane, from===to is not a move', () => {
+  for (const from of CARD_COLUMNS) {
+    if (from !== 'blocked') assert.ok(canMoveColumn(from as CardColumn, 'blocked'), `${from}→blocked`);
+    if (from !== 'failed') assert.ok(canMoveColumn(from as CardColumn, 'failed'), `${from}→failed`);
+    assert.ok(!canMoveColumn(from as CardColumn, from as CardColumn), `${from}→${from} no-op`);
+  }
+});
+
+test('canMoveColumn — blocked/failed re-open only into active lanes, never straight to done', () => {
+  assert.ok(canMoveColumn('blocked', 'doing'));
+  assert.ok(canMoveColumn('failed', 'todo'));
+  assert.ok(!canMoveColumn('blocked', 'done'));
+  assert.ok(!canMoveColumn('failed', 'done'));
+});
+
+test('canMoveColumn — done not reachable from backlog/todo (must pass through doing/review)', () => {
+  assert.ok(!canMoveColumn('backlog', 'done'));
+  assert.ok(!canMoveColumn('todo', 'done'));
+});
+
+test('doneGateDecision — blocks without artifact / with pending DoD, never a self-declaration', () => {
+  assert.deepEqual(doneGateDecision({ artifact: '', dod: [] }).allowed, false);
+  assert.deepEqual(doneGateDecision({ artifact: '   ', dod: [] }).reasons.length, 1); // artifact only
+  const pending = doneGateDecision({ artifact: 'x.ts', dod: [{ text: 'a', done: true }, { text: 'b', done: false }] });
+  assert.equal(pending.allowed, false);
+  assert.equal(pending.reasons.length, 1);
+  assert.match(pending.reasons[0], /1 definition-of-done/);
+  const both = doneGateDecision({ artifact: '', dod: [{ text: 'a', done: false }] });
+  assert.equal(both.reasons.length, 2);
+});
+
+test('doneGateDecision — allowed when artifact present AND every DoD ticked', () => {
+  const g = doneGateDecision({ artifact: 'src/x.ts + x.test.ts', dod: [{ text: 'a', done: true }, { text: 'b', done: true }] });
+  assert.deepEqual(g, { allowed: true, reasons: [] });
+  // artifact present + empty DoD → allowed (vacuously; the artifact is the floor)
+  assert.equal(doneGateDecision({ artifact: 'x', dod: [] }).allowed, true);
+});
+
+test('claimDecision — 409 never retried: another owner conflicts, same owner / free is ok', () => {
+  assert.deepEqual(claimDecision({ claimedBy: null }, 'lia'), { ok: true });
+  assert.deepEqual(claimDecision({ claimedBy: 'lia' }, 'lia'), { ok: true }); // idempotent re-claim
+  const c = claimDecision({ claimedBy: 'dario' }, 'lia');
+  assert.equal(c.ok, false);
+  if (!c.ok) assert.match(c.reason, /409/);
+  assert.equal(claimDecision({ claimedBy: null }, '  ').ok, false); // needs an agentId
+});
+
+test('reorder — moves a card and re-densifies orderIdx from 0', () => {
+  const cards = [
+    { id: 'a', orderIdx: 0 },
+    { id: 'b', orderIdx: 1 },
+    { id: 'c', orderIdx: 2 },
+  ];
+  assert.deepEqual(reorder(cards, 'c', 0), [
+    { id: 'c', orderIdx: 0 },
+    { id: 'a', orderIdx: 1 },
+    { id: 'b', orderIdx: 2 },
+  ]);
+  // clamp beyond the end
+  assert.deepEqual(reorder(cards, 'a', 99).map((c) => c.id), ['b', 'c', 'a']);
+  // unknown id → order unchanged (just densified)
+  assert.deepEqual(reorder(cards, 'zzz', 0).map((c) => c.id), ['a', 'b', 'c']);
+});
+
+test('lifecycleRecipients — assign→assignee, review→reviewer, done→creator+forWhom (deduped)', () => {
+  const card = { assigneeId: 'dario', reviewerId: 'vera', createdBy: 'marco', forWhom: 'user' };
+  assert.deepEqual(lifecycleRecipients(card, 'assign'), ['dario']);
+  assert.deepEqual(lifecycleRecipients(card, 'review'), ['vera']);
+  assert.deepEqual(lifecycleRecipients(card, 'done'), ['marco', 'user']);
+  // nulls / empties dropped; creator===forWhom deduped
+  assert.deepEqual(lifecycleRecipients({ assigneeId: null, reviewerId: null, createdBy: 'pm', forWhom: 'pm' }, 'done'), ['pm']);
+  assert.deepEqual(lifecycleRecipients({ assigneeId: null, reviewerId: null, createdBy: 'pm', forWhom: null }, 'assign'), []);
+});

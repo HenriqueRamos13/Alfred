@@ -54,7 +54,21 @@ import { runCurator } from './curator.ts';
 import { runAutoReview } from './auto-review.ts';
 import { createSecrets } from './secrets.ts';
 import { createSecretSource } from './secret-source.ts';
-import { getProject, listProjects } from './projects.ts';
+import { getProject, listProjects, type ProjectDetail } from './projects.ts';
+import {
+  createCard,
+  listCards as listKanbanCards,
+  getCard as getKanbanCard,
+  patchCard,
+  moveCard,
+  assignCard,
+  commentCard,
+  claimCard,
+  completeCard,
+  deleteCard as deleteKanbanCard,
+  type CardResult,
+} from './kanban.ts';
+import type { KanbanCard } from './kanban-pure.ts';
 import { getGraph as buildVaultGraph, getNote as readNotePreview, type Graph } from './graph.ts';
 import { factoryResetPaths, factoryResetTables } from './reset.ts';
 import { resolveProvider, listBrains, resolveActiveBrainId } from './providers.ts';
@@ -763,6 +777,19 @@ export interface OrchestratorHandle {
   getTeamAgent(id: string): TeamAgent | undefined;
   /** Delete a roster agent (row + index entry; folder left on disk). false if unknown. */
   deleteTeamAgent(id: string): Promise<boolean>;
+  // ── Projects + Kanban (Phase 7) ──
+  /** One project's manifest + file tree (the IPC bridge; core already existed). */
+  getProject(slug: string): Promise<ProjectDetail | null>;
+  /** Every kanban card on a project's board (Board tab / live refresh). */
+  listCards(projectSlug: string): KanbanCard[];
+  /**
+   * The USER's direct board manipulation from the UI (drag/edit/delete). Routes
+   * to core/kanban with createdBy='user', bypassing tool governance (a user
+   * action, like a layout drag) but honouring the SAME invariants (gated moves,
+   * Done-gate, atomic claim). Emits kanban.changed. Distinct from the governed
+   * `kanban` TOOL the agent uses.
+   */
+  kanban(op: string, args: Record<string, unknown>): CardResult | { ok: boolean; error?: string };
 }
 
 export function createOrchestrator(opts: CreateOrchestratorOpts): OrchestratorHandle {
@@ -1661,6 +1688,43 @@ export function createOrchestrator(opts: CreateOrchestratorOpts): OrchestratorHa
     },
     deleteTeamAgent(id) {
       return deleteAgent(db, config.workspace, id);
+    },
+    getProject(slug) {
+      return getProject(db, config.workspace, slug);
+    },
+    listCards(projectSlug) {
+      return listKanbanCards(db, projectSlug);
+    },
+    kanban(op, args) {
+      const id = typeof args.id === 'string' ? args.id : '';
+      const changed = (r: CardResult) => {
+        if (r.ok) emit({ kind: 'kanban.changed', projectSlug: r.card.projectSlug });
+        return r;
+      };
+      switch (op) {
+        case 'create_card':
+          return changed(createCard(db, { ...args, createdBy: 'user' }));
+        case 'update_card':
+          return changed(patchCard(db, id, args));
+        case 'move_card':
+          return changed(moveCard(db, id, args.column));
+        case 'assign':
+          return changed(assignCard(db, id, args));
+        case 'comment':
+          return changed(commentCard(db, id, String(args.text ?? ''), 'user'));
+        case 'claim':
+          return changed(claimCard(db, id, String(args.agentId ?? 'user')));
+        case 'complete':
+          return changed(completeCard(db, id));
+        case 'delete_card': {
+          const card = getKanbanCard(db, id);
+          const removed = deleteKanbanCard(db, id);
+          if (removed && card) emit({ kind: 'kanban.changed', projectSlug: card.projectSlug });
+          return { ok: removed, error: removed ? undefined : `no card with id "${id}"` };
+        }
+        default:
+          return { ok: false, error: `unknown kanban op: ${op}` };
+      }
     },
   };
 }

@@ -24,6 +24,8 @@ import type {
   TeamAgentInfo,
   WakeStatus,
 } from './core/types.ts';
+import type { ProjectDetail } from './core/projects.ts';
+import type { KanbanCard } from './core/kanban-pure.ts';
 import type { BrainInfo } from './core/providers.ts';
 import type { FactoryResetInfo } from './core/orchestrator.ts';
 import type { Graph } from './core/graph.ts';
@@ -145,6 +147,13 @@ export interface Orchestrator {
   listTeamAgents(): TeamAgentInfo[] | Promise<TeamAgentInfo[]>;
   /** Delete a roster agent (row + index entry). Resolves to whether a row was removed. */
   deleteTeamAgent(id: string): Promise<boolean>;
+  // ── Projects + Kanban (Phase 7) ──
+  /** One project's manifest + file tree by slug (the missing IPC bridge; core exists). */
+  getProject(slug: string): ProjectDetail | null | Promise<ProjectDetail | null>;
+  /** Every kanban card on a project's board. */
+  listCards(projectSlug: string): KanbanCard[] | Promise<KanbanCard[]>;
+  /** The user's direct board op (drag/edit/delete) — see the orchestrator method. */
+  kanban(op: string, args: Record<string, unknown>): { ok: boolean; error?: string } | Promise<{ ok: boolean; error?: string }>;
 }
 
 /** Trust boundary: keep only well-formed numeric/boolean fields from the renderer. */
@@ -471,6 +480,43 @@ export function registerIpc(core: Orchestrator, emit: (e: StreamEvent) => void):
     } catch (err) {
       fail('delete team agent', err);
       return false;
+    }
+  });
+
+  // ── Projects + Kanban (Phase 7) ──
+  ipcMain.handle('alfred:getProject', async (_e, slug: unknown): Promise<ProjectDetail | null> => {
+    if (typeof slug !== 'string' || !slug) return null;
+    try {
+      return (await core.getProject(slug)) ?? null;
+    } catch (err) {
+      fail('get project', err);
+      return null;
+    }
+  });
+  ipcMain.handle('alfred:listCards', async (_e, projectSlug: unknown): Promise<KanbanCard[]> => {
+    if (typeof projectSlug !== 'string' || !projectSlug) return [];
+    try {
+      return await core.listCards(projectSlug);
+    } catch (err) {
+      fail('list cards', err);
+      return [];
+    }
+  });
+  // The user's direct board op. Trust boundary: op is a whitelisted string; args
+  // is coerced to a plain object of primitive/array fields (core re-validates).
+  ipcMain.handle('alfred:kanban', async (_e, op: unknown, rawArgs: unknown): Promise<{ ok: boolean; error?: string }> => {
+    const OPS = ['create_card', 'update_card', 'move_card', 'assign', 'comment', 'claim', 'complete', 'delete_card'];
+    if (typeof op !== 'string' || !OPS.includes(op)) return { ok: false, error: 'unknown kanban op' };
+    const src = (rawArgs ?? {}) as Record<string, unknown>;
+    const args: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(src)) {
+      if (typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean' || Array.isArray(v)) args[k] = v;
+    }
+    try {
+      return await core.kanban(op, args);
+    } catch (err) {
+      fail('kanban', err);
+      return { ok: false, error: 'kanban failed' };
     }
   });
 

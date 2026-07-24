@@ -422,6 +422,9 @@ export type StreamEvent =
   // local state + re-applies the effect WITHOUT re-invoking the setter (idempotent
   // → no loop). `value` is the new value (accent name, or a boolean for toggles).
   | { kind: 'settings.changed'; key: SettingKey; value: string | number | boolean }
+  // A kanban card in `projectSlug`'s board was created/updated/moved/deleted
+  // (Phase 7). The open project modal listens and re-fetches that board's cards.
+  | { kind: 'kanban.changed'; projectSlug: string }
   // The main conversation was reset: the UI clears the chat (every window).
   | { kind: 'conversation.reset'; sessionId: string }
   // A factory reset completed: the UI reloads to a blank factory state.

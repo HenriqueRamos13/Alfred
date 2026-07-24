@@ -181,6 +181,42 @@ CREATE TABLE IF NOT EXISTS team_agents (
   daily_token_budget INTEGER,                    -- per-agent daily token cap; null → unlimited (global kill-switch only)
   created_ts  INTEGER NOT NULL
 );
+
+-- Kanban board (Phase 7): one row per work card, project-scoped by project_slug
+-- (FK-by-convention to projects.slug). A card is a WORK SUBSTRATE — artifact +
+-- acceptance-criteria + definition-of-done + a dependency DAG — so it can only
+-- reach Done when its artifact exists AND every DoD item is ticked (see
+-- kanban-pure.ts doneGateDecision). The FULL column set is created up-front so the
+-- later stages (claim/heartbeat/timeouts/notifications) never re-migrate it. The
+-- struct-y fields are JSON columns; "column" is quoted (it is a SQLite keyword).
+-- Both the governed kanban tool (agent) and the user's UI drag (IPC) write this.
+CREATE TABLE IF NOT EXISTS kanban_cards (
+  id             TEXT PRIMARY KEY,
+  project_slug   TEXT NOT NULL,
+  title          TEXT NOT NULL,
+  body           TEXT NOT NULL DEFAULT '',
+  "column"       TEXT NOT NULL DEFAULT 'backlog',  -- backlog|todo|doing|review|done|blocked|failed
+  assignee_id    TEXT,
+  reviewer_id    TEXT,
+  created_by     TEXT NOT NULL DEFAULT 'user',      -- agentId or 'user'
+  for_whom       TEXT,                              -- agentId or 'user' the deliverable is for
+  priority       TEXT NOT NULL DEFAULT 'med',       -- low|med|high
+  order_idx      INTEGER NOT NULL DEFAULT 0,
+  artifact       TEXT NOT NULL DEFAULT '',
+  acceptance_json TEXT NOT NULL DEFAULT '[]',       -- [{text,done}]
+  dod_json       TEXT NOT NULL DEFAULT '[]',        -- [{text,done}] definition-of-done
+  depends_on_json TEXT NOT NULL DEFAULT '[]',       -- [cardId] dependency DAG
+  claimed_by     TEXT,                              -- atomic claim owner (agentId) or null
+  claimed_ts     INTEGER,
+  attempts       INTEGER NOT NULL DEFAULT 0,
+  max_attempts   INTEGER NOT NULL DEFAULT 3,
+  timeout_ms     INTEGER,
+  stop_condition TEXT NOT NULL DEFAULT '',
+  created_ts     INTEGER NOT NULL,
+  updated_ts     INTEGER NOT NULL,
+  done_ts        INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_kanban_project ON kanban_cards(project_slug, order_idx);
 `;
 
 export function openDb(dbPath: string): AlfredDb {

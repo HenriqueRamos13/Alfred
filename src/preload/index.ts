@@ -20,6 +20,8 @@ import type {
 } from '../main/core/types.ts';
 import type { BrainInfo } from '../main/core/providers.ts';
 import type { FactoryResetInfo } from '../main/core/orchestrator.ts';
+import type { ProjectDetail } from '../main/core/projects.ts';
+import type { KanbanCard } from '../main/core/kanban-pure.ts';
 import type { Graph } from '../main/core/graph.ts';
 import type { ReferenceRequest } from '../main/core/reference.ts';
 import type {
@@ -91,6 +93,13 @@ const api = {
   /** Reference agent: ask one isolated, read-only question about a note/node. Streams reference.* events. */
   askReference: (payload: ReferenceRequest): Promise<void> => ipcRenderer.invoke('alfred:askReference', payload),
   listProjects: (): Promise<ProjectRecord[]> => ipcRenderer.invoke('alfred:listProjects'),
+  /** One project's manifest + file tree by slug (Overview tab). */
+  getProject: (slug: string): Promise<ProjectDetail | null> => ipcRenderer.invoke('alfred:getProject', slug),
+  /** Every kanban card on a project's board (Board tab; re-fetched on kanban.changed). */
+  listCards: (projectSlug: string): Promise<KanbanCard[]> => ipcRenderer.invoke('alfred:listCards', projectSlug),
+  /** The user's direct board op (drag/edit/delete) — resolves {ok, error?} (+ card on success). */
+  kanban: (op: string, args: Record<string, unknown>): Promise<{ ok: boolean; error?: string; card?: KanbanCard; reasons?: string[] }> =>
+    ipcRenderer.invoke('alfred:kanban', op, args),
   listAccounts: (): Promise<AccountRecord[]> => ipcRenderer.invoke('alfred:listAccounts'),
   /** Brain availability (enabled/disabled) for the UI. */
   listBrains: (): Promise<BrainInfo[]> => ipcRenderer.invoke('alfred:listBrains'),

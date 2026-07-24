@@ -963,6 +963,13 @@ body {
 .project-date { margin-left: auto; font-family: var(--font-mono); font-size: 10px; color: var(--dim); flex-shrink: 0; }
 .project-meta { font-family: var(--font-mono); font-size: 10px; color: var(--dim); margin-top: 2px; }
 .project-summary { font-size: 12px; color: var(--muted); margin-top: 4px; }
+.project-open {
+  margin-left: 8px; flex-shrink: 0; cursor: pointer;
+  font-family: var(--font-mono); font-size: 9px; letter-spacing: 0.14em;
+  color: var(--acc); background: transparent;
+  border: 1px solid color-mix(in oklab, var(--acc) 40%, transparent); border-radius: 4px; padding: 2px 8px;
+}
+.project-open:hover { background: color-mix(in oklab, var(--acc) 14%, transparent); box-shadow: 0 0 12px color-mix(in oklab, var(--acc) 30%, transparent); }
 
 /* ── reference panel (isolated ◈ side-thread — magenta accent) ─────── */
 .reference-chat {
@@ -1294,3 +1301,120 @@ body {
 }
 .settings-num-input:focus { border-color: var(--acc); }
 .settings-num-unit { color: var(--dim); }
+
+/* ── Project modal + Kanban board (Phase 7) — .pm-* namespaced ────────────── */
+.pm-panel {
+  position: relative; width: min(1180px, 94vw); height: min(80vh, 780px);
+  display: flex; flex-direction: column; overflow: hidden;
+  background: var(--card);
+  border: 1px solid color-mix(in oklab, var(--acc) 32%, transparent);
+  border-radius: 14px;
+  box-shadow: 0 0 0 1px rgba(0,0,0,.5), 0 30px 90px rgba(0,0,0,.6), 0 0 60px color-mix(in oklab, var(--acc) 10%, transparent);
+  font-family: var(--font-head);
+}
+.pm-panel::before, .pm-panel::after { content: ""; position: absolute; width: 16px; height: 16px; pointer-events: none; }
+.pm-panel::before { top: 8px; left: 8px; border-top: 2px solid var(--acc); border-left: 2px solid var(--acc); }
+.pm-panel::after { bottom: 8px; right: 8px; border-bottom: 2px solid var(--acc); border-right: 2px solid var(--acc); }
+
+.pm-head { display: flex; align-items: center; gap: 12px; padding: 13px 16px; border-bottom: 1px solid color-mix(in oklab, var(--acc) 18%, transparent); }
+.pm-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--grn); box-shadow: 0 0 10px var(--grn); flex: none; }
+.pm-name { margin: 0; font-size: 17px; font-weight: 700; letter-spacing: 0.04em; color: var(--text); }
+.pm-slug { font-family: var(--font-mono); font-size: 11px; color: var(--dim); }
+.pm-status { margin-left: auto; font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.14em; color: var(--amb);
+  border: 1px solid color-mix(in oklab, var(--amb) 40%, transparent); border-radius: 6px; padding: 3px 9px; }
+.pm-x { background: transparent; border: 1px solid color-mix(in oklab, var(--acc) 32%, transparent); color: var(--dim);
+  border-radius: 6px; width: 28px; height: 28px; cursor: pointer; font-size: 13px; flex: none; }
+.pm-x:hover { border-color: var(--red); color: var(--red); }
+
+.pm-tabs { display: flex; gap: 2px; padding: 0 10px; border-bottom: 1px solid color-mix(in oklab, var(--acc) 18%, transparent); background: rgba(0,0,0,.2); }
+.pm-tabs button { font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.14em; text-transform: uppercase;
+  color: var(--dim); background: transparent; border: 0; border-bottom: 2px solid transparent; padding: 10px 14px; cursor: pointer; }
+.pm-tabs button.on { color: var(--text); border-bottom-color: var(--acc); }
+.pm-tabs button:hover { color: var(--text); }
+.pm-n { color: var(--acc); font-size: 10px; }
+
+.pm-error { padding: 8px 16px; font-family: var(--font-mono); font-size: 11px; color: var(--red);
+  background: color-mix(in oklab, var(--red) 8%, transparent); border-bottom: 1px solid color-mix(in oklab, var(--red) 30%, transparent); }
+
+.pm-body { flex: 1; overflow: auto; padding: 16px; }
+.pm-soon { padding: 60px 0; }
+
+/* Overview */
+.pm-stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-bottom: 16px; }
+.pm-stat { border: 1px solid color-mix(in oklab, var(--acc) 18%, transparent); border-radius: 10px; padding: 12px; text-align: center; background: color-mix(in oklab, var(--acc) 3%, transparent); }
+.pm-stat b { display: block; font-size: 24px; font-family: var(--font-mono); color: var(--acc); }
+.pm-stat small { color: var(--dim); font-size: 10px; letter-spacing: 0.12em; text-transform: uppercase; }
+.pm-block { border: 1px solid color-mix(in oklab, var(--acc) 18%, transparent); border-radius: 12px; background: rgba(0,0,0,.22); padding: 14px; margin-bottom: 14px; }
+.pm-block h3 { margin: 0 0 10px; font-size: 11px; letter-spacing: 0.16em; color: var(--acc); font-family: var(--font-mono); text-transform: uppercase; }
+.pm-summary { margin: 0 0 12px; font-size: 14px; color: var(--text); }
+.pm-kv { display: flex; justify-content: space-between; padding: 5px 0; border-bottom: 1px dashed color-mix(in oklab, var(--acc) 10%, transparent); font-size: 13px; }
+.pm-kv span:first-child { color: var(--dim); }
+.pm-kv span:last-child { font-family: var(--font-mono); }
+.pm-files { font-family: var(--font-mono); font-size: 12px; }
+.pm-files div { padding: 3px 0; color: var(--dim); }
+.pm-files div::before { content: "› "; color: var(--acc); }
+
+/* Board */
+.pm-board { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(190px, 1fr); gap: 10px; height: 100%; overflow-x: auto; }
+.pm-col { border: 1px solid color-mix(in oklab, var(--acc) 18%, transparent); border-radius: 12px; background: rgba(0,0,0,.22); display: flex; flex-direction: column; min-height: 300px; }
+.pm-col > h4 { margin: 0; padding: 9px 11px; font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.14em; text-transform: uppercase;
+  color: var(--dim); border-bottom: 1px solid color-mix(in oklab, var(--acc) 18%, transparent); display: flex; justify-content: space-between; align-items: center; }
+.pm-col-doing > h4 { color: var(--acc); }
+.pm-col-review > h4 { color: var(--amb); }
+.pm-col-done > h4 { color: var(--grn); }
+.pm-col-blocked > h4, .pm-col-failed > h4 { color: var(--red); }
+.pm-cnt { font-size: 10px; opacity: 0.7; }
+.pm-stack { padding: 9px; display: flex; flex-direction: column; gap: 9px; min-height: 40px; }
+.pm-kcard { position: relative; border: 1px solid color-mix(in oklab, var(--acc) 30%, transparent); border-radius: 10px;
+  background: linear-gradient(180deg, color-mix(in oklab, var(--acc) 5%, transparent), rgba(7,13,22,.6)); padding: 10px 10px 10px 13px; cursor: grab; }
+.pm-kcard:hover { border-color: var(--acc); box-shadow: 0 0 18px color-mix(in oklab, var(--acc) 14%, transparent); transform: translateY(-1px); }
+.pm-kcard::before { content: ""; position: absolute; top: 0; left: 0; width: 3px; height: 100%; border-radius: 3px 0 0 3px; background: var(--dim); }
+.pm-pri-high::before { background: var(--red); }
+.pm-pri-med::before { background: var(--amb); }
+.pm-pri-low::before { background: var(--grn); }
+.pm-kid { font-family: var(--font-mono); font-size: 9.5px; color: var(--dim); letter-spacing: 0.08em; }
+.pm-kt { font-weight: 600; font-size: 13px; margin: 3px 0 7px; line-height: 1.25; color: var(--text); }
+.pm-kmeta { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.pm-who { display: flex; align-items: center; gap: 5px; font-family: var(--font-mono); font-size: 10px; color: var(--text); }
+.pm-av { width: 19px; height: 19px; border-radius: 50%; display: grid; place-items: center; font-size: 8.5px; font-weight: 700;
+  color: #02141a; background: var(--acc); font-family: var(--font-head); }
+.pm-rev { font-family: var(--font-mono); font-size: 9px; color: var(--amb); border: 1px solid color-mix(in oklab, var(--amb) 35%, transparent); border-radius: 4px; padding: 1px 5px; }
+.pm-dep { display: inline-block; font-family: var(--font-mono); font-size: 8.5px; color: var(--amb);
+  border: 1px solid color-mix(in oklab, var(--amb) 35%, transparent); border-radius: 4px; padding: 1px 5px; margin-top: 6px; }
+.pm-flow { font-family: var(--font-mono); font-size: 9px; color: var(--dim); margin-top: 6px; }
+
+/* Card detail sub-overlay */
+.pm-overlay2 { position: absolute; inset: 0; z-index: 10; display: grid; place-items: center; padding: 30px;
+  background: rgba(2,4,9,.6); backdrop-filter: blur(4px); -webkit-backdrop-filter: blur(4px); }
+.pm-cd { width: min(720px, 94vw); height: auto; max-height: 90%; }
+.pm-cid { font-family: var(--font-mono); font-size: 11px; color: var(--acc); letter-spacing: 0.1em; }
+.pm-title-input { background: transparent; border: 0; border-bottom: 1px solid transparent; color: var(--text); font-family: var(--font-head);
+  font-weight: 700; font-size: 17px; width: 100%; outline: none; padding: 2px 0; }
+.pm-title-input:focus { border-bottom-color: var(--acc); }
+.pm-two { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.pm-field { margin-bottom: 12px; display: flex; flex-direction: column; }
+.pm-field > label { font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--acc); margin-bottom: 5px; }
+.pm-field input, .pm-field select, .pm-field textarea { width: 100%; background: rgba(0,0,0,.32); color: var(--text);
+  border: 1px solid color-mix(in oklab, var(--acc) 28%, transparent); border-radius: 8px; padding: 8px 10px; font-family: var(--font-head); font-size: 13px; }
+.pm-field textarea { resize: vertical; }
+.pm-checklist { display: flex; flex-direction: column; gap: 5px; }
+.pm-chk { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--text); }
+.pm-chk.off { color: var(--dim); }
+.pm-chk .pm-box, .pm-box { width: 17px; height: 17px; min-width: 17px; border-radius: 4px; border: 1px solid color-mix(in oklab, var(--acc) 32%, transparent);
+  display: grid; place-items: center; font-size: 10px; color: var(--grn); background: transparent; cursor: pointer; }
+.pm-chk.on .pm-box { background: color-mix(in oklab, var(--grn) 18%, transparent); border-color: var(--grn); }
+.pm-box.no { color: var(--red); border-color: color-mix(in oklab, var(--red) 40%, transparent); }
+.pm-checklist input { flex: 1; }
+.pm-rm { background: transparent; border: 0; color: var(--red); cursor: pointer; font-size: 12px; }
+.pm-add { align-self: flex-start; margin-top: 4px; font-family: var(--font-mono); font-size: 10px; color: var(--acc);
+  background: transparent; border: 1px dashed color-mix(in oklab, var(--acc) 32%, transparent); border-radius: 6px; padding: 5px 10px; cursor: pointer; }
+.pm-gate { border: 1px solid color-mix(in oklab, var(--amb) 35%, transparent); border-radius: 10px; background: color-mix(in oklab, var(--amb) 5%, transparent); padding: 10px 12px; margin-top: 4px; }
+.pm-gate h5 { margin: 0 0 8px; font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.14em; color: var(--amb); text-transform: uppercase; }
+.pm-gate-verdict { font-family: var(--font-mono); font-size: 11px; margin-top: 8px; }
+.pm-foot { display: flex; align-items: center; gap: 10px; padding: 12px 16px; border-top: 1px solid color-mix(in oklab, var(--acc) 18%, transparent); }
+.pm-foot-note { font-family: var(--font-mono); font-size: 10px; color: var(--dim); flex: 1; }
+.pm-btn { font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.1em; text-transform: uppercase; cursor: pointer;
+  border-radius: 7px; padding: 8px 15px; border: 1px solid color-mix(in oklab, var(--acc) 32%, transparent); background: transparent; color: var(--text); }
+.pm-btn.primary { background: var(--acc); color: #02141a; border-color: var(--acc); font-weight: 700; }
+.pm-btn.ghost { color: var(--red); border-color: color-mix(in oklab, var(--red) 50%, transparent); }
+.pm-btn:disabled { opacity: 0.5; cursor: default; }

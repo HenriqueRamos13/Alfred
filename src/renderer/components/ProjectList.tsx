@@ -16,9 +16,11 @@ export interface ProjectListItem {
 
 export interface ProjectListProps {
   projects: ProjectListItem[];
+  /** Open the per-project modal (Board / Overview). Absent when the AI renders this via render_ui. */
+  onOpen?: (slug: string) => void;
 }
 
-export function ProjectList({ projects }: ProjectListProps) {
+export function ProjectList({ projects, onOpen }: ProjectListProps) {
   if (projects.length === 0) {
     return <div className="empty">NO PROJECTS YET</div>;
   }
@@ -31,6 +33,11 @@ export function ProjectList({ projects }: ProjectListProps) {
             <span className="project-name">{p.name}</span>
             <span className="project-slug">{p.slug}</span>
             <span className="project-date">{relativeTime(p.updated, now)}</span>
+            {onOpen && (
+              <button type="button" className="project-open no-drag" onClick={() => onOpen(p.slug)} title="Open project board">
+                OPEN
+              </button>
+            )}
           </div>
           <div className="project-meta">{p.path ?? p.slug}</div>
           {p.summary && <div className="project-summary">{p.summary}</div>}

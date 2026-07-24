@@ -15,6 +15,7 @@ import { Surface } from './surface.tsx';
 import { CommandBar } from './components/CommandBar.tsx';
 import { ChatLog } from './components/ChatLog.tsx';
 import { ProjectList } from './components/ProjectList.tsx';
+import { ProjectModal } from './components/ProjectModal.tsx';
 import { ApprovalPrompt } from './components/ApprovalPrompt.tsx';
 import { DraggableCard } from './components/DraggableCard.tsx';
 import { ReferenceChat } from './components/ReferenceChat.tsx';
@@ -48,6 +49,8 @@ import type {
   UiNode,
   WakeStatus,
 } from '../main/core/types.ts';
+import type { KanbanCard } from '../main/core/kanban-pure.ts';
+import type { ProjectDetail } from '../main/core/projects.ts';
 import type { BrainInfo } from '../main/core/providers.ts';
 import {
   AGENT_IDS,
@@ -73,7 +76,7 @@ interface LogRow {
 }
 
 /** Shipped version — shown in the corner HUD and the top-bar title. Bump on release. */
-const VERSION = '1.12.0';
+const VERSION = '1.14.0';
 
 const MAX_LOG = 80;
 const MAX_ALERTS = 12;
@@ -106,6 +109,13 @@ export default function App() {
   const [approval, setApproval] = useState<ApprovalRequest | null>(null);
   const [tree, setTree] = useState<UiNode | null>(null);
   const [projects, setProjects] = useState<ProjectRecord[]>([]);
+  // Per-project modal (Phase 7): the open project's slug + its manifest/detail +
+  // its kanban board. A ref mirrors the open slug so the mount-once onStream
+  // closure can refetch the right board on a kanban.changed event.
+  const [openProjectSlug, setOpenProjectSlug] = useState<string | null>(null);
+  const [projectDetail, setProjectDetail] = useState<ProjectDetail | null>(null);
+  const [kanbanCards, setKanbanCards] = useState<KanbanCard[]>([]);
+  const openProjectRef = useRef<string | null>(null);
   const [accounts, setAccounts] = useState<AccountRecord[]>([]);
   const [connectingGmail, setConnectingGmail] = useState(false);
   const [cost, setCost] = useState<CostSnapshot | null>(null);
@@ -411,6 +421,29 @@ export default function App() {
     alfred.listProjects().then(setProjects).catch(() => {});
   };
 
+  // Per-project modal + board (Phase 7). Refetch the open board's cards; used on
+  // open and on every kanban.changed for the open project.
+  const refreshCards = (slug: string) => {
+    alfred.listCards(slug).then(setKanbanCards).catch(() => {});
+  };
+  const openProject = (slug: string) => {
+    openProjectRef.current = slug;
+    setOpenProjectSlug(slug);
+    setKanbanCards([]);
+    setProjectDetail(null);
+    alfred.getProject(slug).then(setProjectDetail).catch(() => {});
+    refreshCards(slug);
+  };
+  const closeProject = () => {
+    openProjectRef.current = null;
+    setOpenProjectSlug(null);
+    setProjectDetail(null);
+    setKanbanCards([]);
+  };
+  // The user's direct board op (drag/edit/delete). Optimistic refresh happens via
+  // the kanban.changed event that the main process emits on success.
+  const doKanban = (op: string, args: Record<string, unknown>) => alfred.kanban(op, args);
+
   const refreshJobs = () => {
     alfred.listJobs().then(setJobs).catch(() => {});
   };
@@ -591,6 +624,13 @@ export default function App() {
           break;
         case 'layout':
           setCards(e.cards);
+          break;
+        case 'kanban.changed':
+          // A card on some project's board changed (from the agent tool or the
+          // user's own op). Refetch only if it's the board currently open.
+          if (openProjectRef.current && e.projectSlug === openProjectRef.current) {
+            alfred.listCards(e.projectSlug).then(setKanbanCards).catch(() => {});
+          }
           break;
         case 'agent.status':
           setStatus(e.status);
@@ -1159,7 +1199,7 @@ export default function App() {
       case 'projects':
         return {
           meta: <span className="panel-meta">{projects.length}</span>,
-          body: <ProjectList projects={projects} />,
+          body: <ProjectList projects={projects} onOpen={openProject} />,
         };
       case 'accounts':
         return {
@@ -1522,6 +1562,10 @@ export default function App() {
             );
           })}
       </div>
+
+      {openProjectSlug && (
+        <ProjectModal detail={projectDetail} cards={kanbanCards} onKanban={doKanban} onClose={closeProject} />
+      )}
 
       {approval && (
         <div className="overlay">
