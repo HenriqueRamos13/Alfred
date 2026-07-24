@@ -98,6 +98,9 @@ export interface Orchestrator {
   /** Voice output toggle (Alfred speaks replies): read/set, persisted. */
   getTts(): boolean | Promise<boolean>;
   setTts(on: boolean): boolean | Promise<boolean>;
+  /** UI accent (recolours only --acc): read/set, persisted, validated, default "cyan". */
+  getAccent(): string | Promise<string>;
+  setAccent(name: string): string | Promise<string>;
   /** ElevenLabs cloud voice toggle (which voice, not whether to speak): read/set, persisted. */
   getElevenlabs(): boolean | Promise<boolean>;
   setElevenlabs(on: boolean): boolean | Promise<boolean>;
@@ -240,6 +243,16 @@ export function registerIpc(core: Orchestrator, emit: (e: StreamEvent) => void):
     } catch (err) {
       fail('set tts', err);
       return false;
+    }
+  });
+
+  ipcMain.handle('alfred:getAccent', guard('get accent', () => core.getAccent(), 'cyan'));
+  ipcMain.handle('alfred:setAccent', async (_e, name: unknown) => {
+    try {
+      return await core.setAccent(typeof name === 'string' ? name : '');
+    } catch (err) {
+      fail('set accent', err);
+      return 'cyan';
     }
   });
 

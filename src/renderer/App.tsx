@@ -27,6 +27,7 @@ import type { ReferenceTarget } from '../main/core/reference.ts';
 import { clampBox, tileLayout, cardOnDisplay, nextDisplayId, panelCards, type Bounds } from '../main/core/layout.ts';
 import { initialDictation, dictationReduce, shouldAutoSend } from '../main/core/dictation.ts';
 import { confirmMatches } from '../main/core/reset-pure.ts';
+import { ACCENT_NAMES, resolveAccent, type AccentName } from '../main/core/accent-pure.ts';
 import type { FactoryResetInfo } from '../main/core/orchestrator.ts';
 import type {
   AgentStatus,
@@ -126,6 +127,7 @@ export default function App() {
   const [factoryConfirm, setFactoryConfirm] = useState('');
   const [factoryBusy, setFactoryBusy] = useState(false);
   const [tts, setTts] = useState(false);
+  const [accent, setAccentState] = useState<AccentName>('cyan');
   const [elevenlabs, setElevenlabs] = useState(false); // ElevenLabs cloud voice (orthogonal to VOICE on/off)
   const [wake, setWake] = useState(false);
   const [widgetScripts, setWidgetScripts] = useState(false); // run tier-2 widget JS (sandboxed, no network); default OFF
@@ -452,6 +454,12 @@ export default function App() {
     alfred.getGrillMe().then(setGrill).catch(() => {});
     // Reflect the persisted voice-output toggle.
     alfred.getTts().then(setTts).catch(() => {});
+    // Reflect + apply the persisted UI accent (recolours --acc at the root).
+    alfred.getAccent().then((a) => {
+      const name = a as AccentName;
+      setAccentState(name);
+      applyAccent(name);
+    }).catch(() => {});
     // Reflect the persisted ElevenLabs voice toggle (default off).
     alfred.getElevenlabs().then(setElevenlabs).catch(() => {});
     // Reflect the persisted auto-send toggle (default off).
@@ -750,6 +758,28 @@ export default function App() {
       });
   };
 
+  // Recolour the whole neon UI by overriding only --acc on the root element; every
+  // color-mix derivative and alias (--cyan/--neon-cyan) follows automatically. The
+  // semantic tokens (--grn/--red/--amb) are untouched.
+  const applyAccent = (name: AccentName) => {
+    document.documentElement.style.setProperty('--acc', resolveAccent(name));
+  };
+
+  const pickAccent = (name: AccentName) => {
+    if (name === accent) return;
+    setAccentState(name); // optimistic
+    applyAccent(name); // recolour immediately
+    alfred.setAccent(name).then((eff) => {
+      // Honour the persisted (validated) value if it differs from the optimistic one.
+      const effName = eff as AccentName;
+      if (effName !== name) {
+        setAccentState(effName);
+        applyAccent(effName);
+      }
+    }).catch(() => {});
+    pushLog({ tag: 'APPEARANCE', tone: 'cyan', msg: `accent → ${name}` });
+  };
+
   const toggleTts = () => {
     const next = !tts;
     setTts(next); // optimistic
@@ -1037,6 +1067,8 @@ export default function App() {
           body: (
             <SettingsCard
               tts={tts}
+              accent={accent}
+              onPickAccent={pickAccent}
               autosend={autosend}
               elevenlabs={elevenlabs}
               grill={grill}
@@ -1533,6 +1565,8 @@ function Toggle({
  */
 function SettingsCard({
   tts,
+  accent,
+  onPickAccent,
   autosend,
   elevenlabs,
   grill,
@@ -1549,6 +1583,8 @@ function SettingsCard({
   onResetApprovals,
 }: {
   tts: boolean;
+  accent: AccentName;
+  onPickAccent: (name: AccentName) => void;
   autosend: boolean;
   elevenlabs: boolean;
   grill: boolean;
@@ -1566,6 +1602,24 @@ function SettingsCard({
 }) {
   return (
     <div className="settings-prefs">
+      <div className="settings-group">
+        <div className="settings-group-head">APARÊNCIA · ACCENT</div>
+        <div className="accent-swatches">
+          {ACCENT_NAMES.map((name) => (
+            <button
+              key={name}
+              type="button"
+              className={`accent-swatch no-drag${name === accent ? ' active' : ''}`}
+              style={{ background: resolveAccent(name) }}
+              onClick={() => onPickAccent(name)}
+              title={name}
+              aria-label={name}
+              aria-pressed={name === accent}
+            />
+          ))}
+        </div>
+      </div>
+
       <div className="settings-group">
         <div className="settings-group-head">VOZ</div>
         <Toggle

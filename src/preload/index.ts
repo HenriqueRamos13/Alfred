@@ -117,6 +117,9 @@ const api = {
   /** Voice output toggle (Alfred speaks replies) — persisted; read on mount. */
   getTts: (): Promise<boolean> => ipcRenderer.invoke('alfred:getTts'),
   setTts: (on: boolean): Promise<boolean> => ipcRenderer.invoke('alfred:setTts', on),
+  /** UI accent (recolours only --acc) — persisted; read on mount. Returns the effective name. */
+  getAccent: (): Promise<string> => ipcRenderer.invoke('alfred:getAccent'),
+  setAccent: (name: string): Promise<string> => ipcRenderer.invoke('alfred:setAccent', name),
   /** ElevenLabs cloud voice toggle (which voice, orthogonal to VOICE on/off) — persisted; read on mount. */
   getElevenlabs: (): Promise<boolean> => ipcRenderer.invoke('alfred:getElevenlabs'),
   setElevenlabs: (on: boolean): Promise<boolean> => ipcRenderer.invoke('alfred:setElevenlabs', on),

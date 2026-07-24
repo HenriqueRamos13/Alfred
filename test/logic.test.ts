@@ -211,6 +211,7 @@ import {
 import { isSensitiveEnvKey, scrubbedEnv } from '../src/main/core/env-scoping-pure.ts';
 import { recallMode, sanitizeFtsQuery, windowSlice } from '../src/main/core/session-recall-pure.ts';
 import { scanMemoryText } from '../src/main/core/memory-scan-pure.ts';
+import { ACCENTS, ACCENT_NAMES, DEFAULT_ACCENT, isAccent, resolveAccent } from '../src/main/core/accent-pure.ts';
 import { shouldRecord, parseReviewProposal } from '../src/main/core/auto-review-pure.ts';
 
 test('classifyAction — read/list/search are T0 autopilot', () => {
@@ -3537,4 +3538,33 @@ test('scanMemoryText — invisible/bidi/homoglyph Unicode is suspicious', () => 
   assert.equal(scanMemoryText('Аdmin access granted').risk, 'suspicious');
   // stray <script>
   assert.equal(scanMemoryText('a <script> tag in a note').risk, 'suspicious');
+});
+
+test('resolveAccent — every known name maps to its hex', () => {
+  assert.equal(resolveAccent('cyan'), '#59e8ff');
+  assert.equal(resolveAccent('amber'), '#ffb45e');
+  assert.equal(resolveAccent('magenta'), '#c77bff');
+  assert.equal(resolveAccent('green'), '#4dffa6');
+  assert.equal(resolveAccent('blue'), '#5e9bff');
+  assert.equal(resolveAccent('orange'), '#ff8f4d');
+  for (const name of ACCENT_NAMES) assert.equal(resolveAccent(name), ACCENTS[name]);
+});
+
+test('resolveAccent — unknown / malformed falls back to cyan (default)', () => {
+  assert.equal(resolveAccent('chartreuse'), ACCENTS.cyan);
+  assert.equal(resolveAccent(''), ACCENTS.cyan);
+  assert.equal(resolveAccent(undefined), ACCENTS.cyan);
+  assert.equal(resolveAccent(null), ACCENTS.cyan);
+  assert.equal(resolveAccent(42), ACCENTS.cyan);
+  assert.equal(resolveAccent('toString'), ACCENTS.cyan); // not fooled by Object.prototype
+  assert.equal(DEFAULT_ACCENT, 'cyan');
+});
+
+test('isAccent — guards the setAccent validation boundary', () => {
+  assert.ok(isAccent('cyan'));
+  assert.ok(isAccent('orange'));
+  assert.ok(!isAccent('nope'));
+  assert.ok(!isAccent('hasOwnProperty'));
+  assert.ok(!isAccent(undefined));
+  assert.equal(ACCENT_NAMES.length, 6);
 });

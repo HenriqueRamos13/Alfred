@@ -90,6 +90,7 @@ import type { TeamAgent } from './team-pure.ts';
 import { agentTokensToday } from './budget.ts';
 import { parseTopicsFromIndex } from './team-format-pure.ts';
 import { grillMeEnabled } from './settings-pure.ts';
+import { isAccent, DEFAULT_ACCENT, type AccentName } from './accent-pure.ts';
 import { enqueueTurn } from './turn-queue-pure.ts';
 import { dayKey } from './budget.ts';
 import { spawnClaudeCli, dangerousArgs } from './claudeSpawn.ts';
@@ -694,6 +695,9 @@ export interface OrchestratorHandle {
   /** Voice output (Alfred speaks replies): read/toggle, persisted, default OFF. */
   getTts(): boolean;
   setTts(on: boolean): boolean;
+  /** UI accent (recolours only --acc): read/set, persisted, validated, default "cyan". */
+  getAccent(): AccentName;
+  setAccent(name: string): AccentName;
   /** ElevenLabs cloud voice on/off — orthogonal to tts_enabled (speaks or not);
    * this picks WHICH voice. Persisted, default OFF. */
   getElevenlabs(): boolean;
@@ -1472,6 +1476,16 @@ export function createOrchestrator(opts: CreateOrchestratorOpts): OrchestratorHa
       setSetting(db, 'tts_enabled', on ? '1' : '0');
       if (!on) tts.stop(); // silence anything mid-utterance immediately
       return on;
+    },
+    getAccent() {
+      const raw = getSetting(db, 'accent');
+      return isAccent(raw) ? raw : DEFAULT_ACCENT;
+    },
+    setAccent(name) {
+      // Trust boundary: only a known accent name is ever persisted (else default).
+      const accent = isAccent(name) ? name : DEFAULT_ACCENT;
+      setSetting(db, 'accent', accent);
+      return accent;
     },
     getElevenlabs() {
       return getSetting(db, 'elevenlabs_enabled') === '1';
