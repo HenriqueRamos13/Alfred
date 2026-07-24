@@ -432,6 +432,11 @@ export type StreamEvent =
   // An inbox message was raised (agent ask_user) or answered/read/superseded
   // (Phase 7 stage 3). The UI re-fetches the inbox list + the unread badge.
   | { kind: 'inbox.changed' }
+  // An agent_notification was created (a card lifecycle event, a dependency wake,
+  // an inbox reply, a heartbeat nudge/escalation) — Phase 7 stage 4. The open
+  // project's Activity feed re-fetches. projectSlug scopes it when known (a global
+  // heartbeat sweep omits it — the UI refetches the open board regardless).
+  | { kind: 'notification.changed'; projectSlug?: string }
   | { kind: 'team.changed' }
   // The main conversation was reset: the UI clears the chat (every window).
   | { kind: 'conversation.reset'; sessionId: string }
@@ -452,7 +457,26 @@ export type SettingKey =
   | 'grill_me_enabled'
   | 'dangerous_mode'
   | 'spawn_paused'
-  | 'send_delay_ms';
+  | 'send_delay_ms'
+  | 'voice_config';
+
+/**
+ * TTS voice knobs the settings card can override at runtime (hot-applied, no
+ * restart). Persisted as one JSON `voice_config` setting; the matching .env vars
+ * (ALFRED_TTS_ENGINE/VOICE/RATE, ELEVENLABS_VOICE_ID) stay the default when a
+ * field is unset. Every field is an optional string — blank means "use the
+ * default". Not for secrets: the ElevenLabs voice id is public, the API key is not.
+ */
+export interface VoiceConfig {
+  /** Base engine: 'say' | 'kokoro' (ElevenLabs is the separate 11LABS toggle). */
+  engine?: string;
+  /** Voice name (say) or voice id (kokoro) — one field, per-engine default applies when blank. */
+  voice?: string;
+  /** `say` speaking rate in words/min (optional; say only). */
+  rate?: string;
+  /** ElevenLabs voice id (public identifier, not a secret). */
+  elevenVoiceId?: string;
+}
 
 /** Explicit wake-listener state, surfaced to the UI (see the wake.status event). */
 export type WakeStatus = 'listening' | 'suppressed' | 'failed' | 'stopped' | 'disabled';

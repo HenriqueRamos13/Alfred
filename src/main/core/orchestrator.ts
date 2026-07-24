@@ -35,6 +35,7 @@ import type {
   TeamAgentInfo,
   Tool,
   ToolCtx,
+  VoiceConfig,
   WakeStatus,
 } from './types.ts';
 import { getLayout as readLayout, updateCard as writeCard } from './layout.ts';
@@ -69,6 +70,14 @@ import {
   type CardResult,
 } from './kanban.ts';
 import type { KanbanCard } from './kanban-pure.ts';
+import {
+  applyCardNotifications,
+  notifyReply,
+  listNotifications as listNotificationRows,
+  markNotificationSeen as markNotificationSeenRow,
+  type NotificationFilter,
+} from './notify.ts';
+import type { AgentNotification } from './notify-pure.ts';
 import {
   listInbox as listInboxMessages,
   answerInbox as answerInboxMessage,
@@ -112,7 +121,7 @@ import { listAgents, getAgent, deleteAgent, setAgentManager } from './team.ts';
 import type { TeamAgent } from './team-pure.ts';
 import { agentTokensToday } from './budget.ts';
 import { parseTopicsFromIndex } from './team-format-pure.ts';
-import { grillMeEnabled } from './settings-pure.ts';
+import { grillMeEnabled, parseVoiceConfig } from './settings-pure.ts';
 import { parseSendDelay } from './send-delay-pure.ts';
 import { isAccent, DEFAULT_ACCENT, type AccentName } from './accent-pure.ts';
 import { enqueueTurn, coalesceTurns } from './turn-queue-pure.ts';
@@ -733,6 +742,10 @@ export interface OrchestratorHandle {
    * this picks WHICH voice. Persisted, default OFF. */
   getElevenlabs(): boolean;
   setElevenlabs(on: boolean): boolean;
+  /** TTS voice knobs (engine/voice/rate/eleven voice id): read/set, persisted as one
+   * JSON setting, hot-applied to tts.ts. Unset fields fall back to the .env defaults. */
+  getVoiceConfig(): VoiceConfig;
+  setVoiceConfig(patch: VoiceConfig): VoiceConfig;
   /** Auto-send (submit dictation on stt.final, no "Alfred enviar"): read/toggle, persisted, default OFF. */
   getAutosend(): boolean;
   setAutosend(on: boolean): boolean;
@@ -817,6 +830,15 @@ export interface OrchestratorHandle {
   answerInbox(id: string, action: string, text?: string): InboxResult;
   /** Mark a message read (drops the unread dot / badge). Emits inbox.changed. */
   markInboxRead(id: string): InboxMessage | undefined;
+  // ── Notifications + heartbeat (Phase 7 stage 4) — self-orchestration wakes. ──
+  /** Notifications (optionally filtered by recipient/project/unseen), newest first — the Activity feed. */
+  listNotifications(filter?: NotificationFilter): AgentNotification[];
+  /** Mark one notification seen (drops it from the unseen wake queue). Emits notification.changed. */
+  markNotificationSeen(id: string): AgentNotification | undefined;
+  /** Read the heartbeat toggle + sweep interval (enabled default OFF). */
+  getHeartbeat(): { enabled: boolean; intervalMs: number };
+  /** Persist the heartbeat toggle / interval and re-arm the sweep. */
+  setHeartbeat(patch: { enabled?: boolean; intervalMs?: number }): { enabled: boolean; intervalMs: number };
 }
 
 export function createOrchestrator(opts: CreateOrchestratorOpts): OrchestratorHandle {
@@ -1308,9 +1330,18 @@ export function createOrchestrator(opts: CreateOrchestratorOpts): OrchestratorHa
   });
   scheduler.start();
 
+  /** Current heartbeat toggle + sweep interval (enabled default OFF, interval default 60s). */
+  const readHeartbeat = (): { enabled: boolean; intervalMs: number } => {
+    const enabled = getSetting(db, 'heartbeat_enabled') === '1';
+    const raw = Number(getSetting(db, 'heartbeat_interval_ms'));
+    return { enabled, intervalMs: Number.isFinite(raw) && raw > 0 ? raw : 60_000 };
+  };
+
   // Sync the ElevenLabs voice override from its persisted toggle at boot (tts.ts
   // has no DB, so the engine override lives here).
   tts.setEngineOverride(getSetting(db, 'elevenlabs_enabled') === '1' ? 'elevenlabs' : null);
+  // Same for the settings-card voice knobs (engine/voice/rate/eleven voice id).
+  tts.setVoiceConfig(parseVoiceConfig(getSetting(db, 'voice_config')));
 
   // Arm the wake listener at startup when enabled (no-op without the binary).
   startWake();
@@ -1587,6 +1618,22 @@ export function createOrchestrator(opts: CreateOrchestratorOpts): OrchestratorHa
       emit({ kind: 'settings.changed', key: 'elevenlabs_enabled', value: on });
       return on;
     },
+    getVoiceConfig() {
+      return parseVoiceConfig(getSetting(db, 'voice_config'));
+    },
+    setVoiceConfig(patch) {
+      // Merge onto the current config, then re-parse the whole thing: parseVoiceConfig
+      // is the trust boundary — it drops junk keys / non-strings from the untrusted
+      // renderer patch, and a blank field clears that override (reverts to .env/default).
+      const current = parseVoiceConfig(getSetting(db, 'voice_config'));
+      const merged = parseVoiceConfig(JSON.stringify({ ...current, ...(patch ?? {}) }));
+      const json = JSON.stringify(merged);
+      setSetting(db, 'voice_config', json);
+      tts.setVoiceConfig(merged); // hot-apply — next utterance uses it
+      tts.stop(); // switch voice cleanly — drop anything mid-utterance
+      emit({ kind: 'settings.changed', key: 'voice_config', value: json });
+      return merged;
+    },
     getAutosend() {
       return getSetting(db, 'autosend_enabled') === '1';
     },
@@ -1734,7 +1781,14 @@ export function createOrchestrator(opts: CreateOrchestratorOpts): OrchestratorHa
     kanban(op, args) {
       const id = typeof args.id === 'string' ? args.id : '';
       const changed = (r: CardResult) => {
-        if (r.ok) emit({ kind: 'kanban.changed', projectSlug: r.card.projectSlug });
+        if (r.ok) {
+          // Create the targeted wake notifications (assign/review/done + dependency
+          // wakes) this transition earned, BEFORE the board emit so an auto-unblock
+          // is already reflected when the UI re-fetches.
+          const notes = applyCardNotifications(db, r.card, r.events ?? []);
+          emit({ kind: 'kanban.changed', projectSlug: r.card.projectSlug });
+          if (notes.length) emit({ kind: 'notification.changed', projectSlug: r.card.projectSlug });
+        }
         return r;
       };
       switch (op) {
@@ -1777,13 +1831,38 @@ export function createOrchestrator(opts: CreateOrchestratorOpts): OrchestratorHa
     },
     answerInbox(id, action, text) {
       const res = answerInboxMessage(db, id, action, text);
-      if (res.ok) emit({ kind: 'inbox.changed' });
+      if (res.ok) {
+        emit({ kind: 'inbox.changed' });
+        // Re-wake the agent that raised the ask: an answer creates a `reply`
+        // notification back to its from_agent (the top-level Alfred turn is skipped).
+        const note = notifyReply(db, res.message);
+        if (note) emit({ kind: 'notification.changed', projectSlug: note.projectSlug ?? undefined });
+      }
       return res;
     },
     markInboxRead(id) {
       const msg = markInboxReadMessage(db, id);
       if (msg) emit({ kind: 'inbox.changed' });
       return msg;
+    },
+    listNotifications(filter) {
+      return listNotificationRows(db, filter);
+    },
+    markNotificationSeen(id) {
+      const note = markNotificationSeenRow(db, id);
+      if (note) emit({ kind: 'notification.changed', projectSlug: note.projectSlug ?? undefined });
+      return note;
+    },
+    getHeartbeat() {
+      return readHeartbeat();
+    },
+    setHeartbeat(patch) {
+      if (typeof patch.enabled === 'boolean') setSetting(db, 'heartbeat_enabled', patch.enabled ? '1' : '0');
+      if (typeof patch.intervalMs === 'number' && Number.isFinite(patch.intervalMs) && patch.intervalMs > 0) {
+        setSetting(db, 'heartbeat_interval_ms', String(Math.floor(patch.intervalMs)));
+      }
+      scheduler.armHeartbeat(); // re-arm the sweep from the new settings
+      return readHeartbeat();
     },
   };
 }

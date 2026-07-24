@@ -21,6 +21,7 @@ import {
   type CardInput,
   type ChecklistItem,
   type KanbanCard,
+  type LifecycleEvent,
 } from './kanban-pure.ts';
 
 type DB = import('better-sqlite3').Database;
@@ -98,6 +99,18 @@ export function getCard(db: DB, id: string): KanbanCard | undefined {
   return r ? rowToCard(r) : undefined;
 }
 
+/**
+ * Every card (across ALL projects) currently sitting in one of `columns` — the
+ * heartbeat sweeps `['doing','review']` in ONE global pass (never a job per card).
+ */
+export function listCardsByColumns(db: DB, columns: readonly string[]): KanbanCard[] {
+  if (columns.length === 0) return [];
+  const ph = columns.map(() => '?').join(',');
+  return (
+    db.prepare(`SELECT * FROM kanban_cards WHERE "column" IN (${ph}) ORDER BY project_slug, order_idx`).all(...columns) as Row[]
+  ).map(rowToCard);
+}
+
 /** Human-friendly, per-project unique id: `<PREFIX>-<n>` (n = max numeric suffix + 1). */
 function nextCardId(db: DB, projectSlug: string): string {
   const prefix = (projectSlug.replace(/[^a-z0-9]/gi, '').slice(0, 3) || 'card').toUpperCase();
@@ -163,7 +176,13 @@ export function createCard(db: DB, input: CardInput): CardResult {
     now,
     doneTs: s.column === 'done' ? now : null,
   });
-  return { ok: true, card: getCard(db, id)! };
+  // Lifecycle events a fresh card fires: an initial assignee → assign; opened
+  // straight into review/done → the matching event (self-orchestration wakes).
+  const events: LifecycleEvent[] = [];
+  if (s.assigneeId) events.push('assign');
+  if (s.column === 'review') events.push('review');
+  if (s.column === 'done') events.push('done');
+  return { ok: true, card: getCard(db, id)!, events };
 }
 
 /** Editable subset a patch may carry (column change is gated; see patchCard). */
@@ -182,7 +201,15 @@ export interface CardPatchInput {
   stopCondition?: unknown;
 }
 
-export type CardResult = { ok: true; card: KanbanCard } | { ok: false; error: string; reasons?: string[] };
+/**
+ * `events` (Phase 7 stage 4) lists the lifecycle transitions THIS write caused —
+ * `assign` (a new assignee), `review` (moved to review), `done` (moved to done).
+ * The write surfaces (kanban tool + user IPC) feed it to applyCardNotifications to
+ * create the targeted wake notifications. Empty for a comment/claim/field edit.
+ */
+export type CardResult =
+  | { ok: true; card: KanbanCard; events?: LifecycleEvent[] }
+  | { ok: false; error: string; reasons?: string[] };
 
 /**
  * Patch a card. A `column` change is routed through canMoveColumn AND, when the
@@ -199,6 +226,7 @@ export function patchCard(db: DB, id: string, patch: CardPatchInput): CardResult
 
   const sets: string[] = [];
   const vals: Record<string, unknown> = { id, now };
+  const events: LifecycleEvent[] = [];
   const set = (col: string, key: string, value: unknown) => {
     sets.push(`${col} = @${key}`);
     vals[key] = value;
@@ -212,7 +240,13 @@ export function patchCard(db: DB, id: string, patch: CardPatchInput): CardResult
   if (patch.body !== undefined) set('body', 'body', String(patch.body));
   if (patch.artifact !== undefined) set('artifact', 'artifact', String(patch.artifact));
   if (patch.stopCondition !== undefined) set('stop_condition', 'stopCondition', String(patch.stopCondition));
-  if (patch.assigneeId !== undefined) set('assignee_id', 'assigneeId', nullable(patch.assigneeId));
+  if (patch.assigneeId !== undefined) {
+    const newAssignee = nullable(patch.assigneeId);
+    set('assignee_id', 'assigneeId', newAssignee);
+    // Fire `assign` only when the owner actually CHANGES to a real agent (not on a
+    // no-op re-save or a clear), so the assignee is woken once per real handoff.
+    if (newAssignee && newAssignee !== card.assigneeId) events.push('assign');
+  }
   if (patch.reviewerId !== undefined) set('reviewer_id', 'reviewerId', nullable(patch.reviewerId));
   if (patch.forWhom !== undefined) set('for_whom', 'forWhom', nullable(patch.forWhom));
   if (patch.priority !== undefined) {
@@ -241,12 +275,14 @@ export function patchCard(db: DB, id: string, patch: CardPatchInput): CardResult
     }
     set('"column"', 'column', to);
     set('done_ts', 'doneTs', to === 'done' ? now : null);
+    if (to === 'review') events.push('review');
+    if (to === 'done') events.push('done');
   }
 
-  if (sets.length === 0) return { ok: true, card }; // nothing to change
+  if (sets.length === 0) return { ok: true, card, events }; // nothing to change
   sets.push('updated_ts = @now');
   db.prepare(`UPDATE kanban_cards SET ${sets.join(', ')} WHERE id = @id`).run(vals);
-  return { ok: true, card: getCard(db, id)! };
+  return { ok: true, card: getCard(db, id)!, events };
 }
 
 function nullable(v: unknown): string | null {

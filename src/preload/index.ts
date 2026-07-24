@@ -16,6 +16,7 @@ import type {
   Job,
   JobApproval,
   TeamAgentInfo,
+  VoiceConfig,
   WakeStatus,
 } from '../main/core/types.ts';
 import type { BrainInfo } from '../main/core/providers.ts';
@@ -24,6 +25,8 @@ import type { ProjectDetail } from '../main/core/projects.ts';
 import type { KanbanCard } from '../main/core/kanban-pure.ts';
 import type { InboxMessage } from '../main/core/inbox-pure.ts';
 import type { InboxFilter, InboxResult } from '../main/core/inbox.ts';
+import type { AgentNotification } from '../main/core/notify-pure.ts';
+import type { NotificationFilter } from '../main/core/notify.ts';
 import type { Graph } from '../main/core/graph.ts';
 import type { ReferenceRequest } from '../main/core/reference.ts';
 import type {
@@ -112,6 +115,17 @@ const api = {
     ipcRenderer.invoke('alfred:answerInbox', id, action, text),
   /** Mark a message read (drops the unread badge). */
   markInboxRead: (id: string): Promise<InboxMessage | null> => ipcRenderer.invoke('alfred:markInboxRead', id),
+  // ── Notifications + heartbeat (Phase 7 stage 4) — self-orchestration wakes. ──
+  /** Notifications for the Activity feed, optionally filtered (newest first); re-fetched on notification.changed. */
+  listNotifications: (filter?: NotificationFilter): Promise<AgentNotification[]> =>
+    ipcRenderer.invoke('alfred:listNotifications', filter),
+  /** Mark one notification seen (drops it from the unseen wake queue). */
+  markNotificationSeen: (id: string): Promise<AgentNotification | null> =>
+    ipcRenderer.invoke('alfred:markNotificationSeen', id),
+  /** Heartbeat toggle + sweep interval — persisted; read on mount. Default OFF. */
+  getHeartbeat: (): Promise<{ enabled: boolean; intervalMs: number }> => ipcRenderer.invoke('alfred:getHeartbeat'),
+  setHeartbeat: (patch: { enabled?: boolean; intervalMs?: number }): Promise<{ enabled: boolean; intervalMs: number }> =>
+    ipcRenderer.invoke('alfred:setHeartbeat', patch),
   listAccounts: (): Promise<AccountRecord[]> => ipcRenderer.invoke('alfred:listAccounts'),
   /** Brain availability (enabled/disabled) for the UI. */
   listBrains: (): Promise<BrainInfo[]> => ipcRenderer.invoke('alfred:listBrains'),
@@ -146,6 +160,9 @@ const api = {
   /** ElevenLabs cloud voice toggle (which voice, orthogonal to VOICE on/off) — persisted; read on mount. */
   getElevenlabs: (): Promise<boolean> => ipcRenderer.invoke('alfred:getElevenlabs'),
   setElevenlabs: (on: boolean): Promise<boolean> => ipcRenderer.invoke('alfred:setElevenlabs', on),
+  /** TTS voice knobs (engine/voice/rate/eleven voice id) — persisted; .env is the default. Read on mount. */
+  getVoiceConfig: (): Promise<VoiceConfig> => ipcRenderer.invoke('alfred:getVoiceConfig'),
+  setVoiceConfig: (patch: VoiceConfig): Promise<VoiceConfig> => ipcRenderer.invoke('alfred:setVoiceConfig', patch),
   /** Auto-send (submit dictation on stt.final) toggle — persisted; read on mount. */
   getAutosend: (): Promise<boolean> => ipcRenderer.invoke('alfred:getAutosend'),
   setAutosend: (on: boolean): Promise<boolean> => ipcRenderer.invoke('alfred:setAutosend', on),

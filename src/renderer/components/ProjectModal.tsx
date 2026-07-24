@@ -24,6 +24,7 @@ import {
 import { buildOrgTree, canMessageUserResolved, type OrgNode } from '../../main/core/team-format-pure.ts';
 import { InboxView } from './Inbox.tsx';
 import { unreadCount, type InboxAction, type InboxMessage } from '../../main/core/inbox-pure.ts';
+import type { AgentNotification, NotificationKind } from '../../main/core/notify-pure.ts';
 import type { ProjectDetail } from '../../main/core/projects.ts';
 import type { TeamAgentInfo } from '../../main/core/types.ts';
 
@@ -37,6 +38,8 @@ export interface ProjectModalProps {
   agents: TeamAgentInfo[];
   /** All inbox messages (the Inbox tab filters to this project). */
   inbox: InboxMessage[];
+  /** This project's notifications (Activity feed + board nudge indicator). */
+  notifications: AgentNotification[];
   onKanban: (op: string, args: Record<string, unknown>) => Promise<KanbanResult>;
   onAnswerInbox: (id: string, action: InboxAction, text?: string) => Promise<{ ok: boolean; error?: string }>;
   onSpeak: (text: string) => void;
@@ -61,7 +64,7 @@ function initials(id: string | null): string {
   return id.replace(/[^a-z0-9]/gi, '').slice(0, 2).toUpperCase() || '·';
 }
 
-export function ProjectModal({ detail, cards, agents, inbox, onKanban, onAnswerInbox, onSpeak, onMarkInboxRead, onClose }: ProjectModalProps) {
+export function ProjectModal({ detail, cards, agents, inbox, notifications, onKanban, onAnswerInbox, onSpeak, onMarkInboxRead, onClose }: ProjectModalProps) {
   const [tab, setTab] = useState<Tab>('board');
   const [selected, setSelected] = useState<string | null>(null);
   const [dragId, setDragId] = useState<string | null>(null);
@@ -70,6 +73,8 @@ export function ProjectModal({ detail, cards, agents, inbox, onKanban, onAnswerI
   const m = detail?.manifest;
   const selectedCard = selected ? cards.find((c) => c.id === selected) ?? null : null;
   const projectInbox = inbox.filter((x) => x.projectSlug === m?.slug);
+  // Cards a heartbeat has poked (nudge/escalation) → the ⟳ overdue pulse on the board.
+  const nudged = new Set(notifications.filter((n) => n.kind === 'nudge' || n.kind === 'escalation').map((n) => n.cardId));
 
   const run = async (op: string, args: Record<string, unknown>) => {
     setError('');
@@ -172,6 +177,7 @@ export function ProjectModal({ detail, cards, agents, inbox, onKanban, onAnswerI
                         >
                           <div className="pm-kid">
                             {c.id}
+                            {nudged.has(c.id) && <span className="pm-nudge" title="overdue — the heartbeat has poked the assignee">⟳</span>}
                             {c.awaitingHuman && <span className="pm-waiting" title="waiting human — inbox ask pending">⏳ waiting human</span>}
                           </div>
                           <div className="pm-kt">{c.title}</div>
@@ -223,9 +229,9 @@ export function ProjectModal({ detail, cards, agents, inbox, onKanban, onAnswerI
             </div>
           )}
 
-          {(tab === 'team' || tab === 'activity') && (
-            <div className="empty pm-soon">{tab.toUpperCase()} — em breve</div>
-          )}
+          {tab === 'activity' && <ActivityFeed notifications={notifications} />}
+
+          {tab === 'team' && <div className="empty pm-soon">TEAM — em breve</div>}
         </div>
       </div>
 
@@ -250,10 +256,70 @@ function Stat({ n, label }: { n: number; label: string }) {
   );
 }
 
+// ── Activity feed (Phase 7 stage 4) — the project's append-only governance audit ──
+// Every self-orchestration wake (assignment, review request, completion, dependency
+// clearing, inbox reply, heartbeat nudge/escalation), most recent at the top, with a
+// timestamp + a colour-coded kind. Read-only view of the notification rows.
+
+const NOTIF_TONE: Record<NotificationKind, string> = {
+  assigned: 'var(--acc)',
+  review_requested: 'var(--amb)',
+  done: 'var(--grn)',
+  dep_ready: 'var(--acc)',
+  reply: 'var(--mag)',
+  nudge: 'var(--amb)',
+  escalation: 'var(--red)',
+};
+const NOTIF_LABEL: Record<NotificationKind, string> = {
+  assigned: 'assigned',
+  review_requested: 'review',
+  done: 'done',
+  dep_ready: 'dep ready',
+  reply: 'reply',
+  nudge: 'nudge',
+  escalation: 'escalation',
+};
+
+function ago(ts: number): string {
+  const s = Math.max(0, Math.floor((Date.now() - ts) / 1000));
+  if (s < 60) return `${s}s`;
+  if (s < 3600) return `${Math.floor(s / 60)}m`;
+  if (s < 86400) return `${Math.floor(s / 3600)}h`;
+  return `${Math.floor(s / 86400)}d`;
+}
+
+function ActivityFeed({ notifications }: { notifications: AgentNotification[] }) {
+  if (notifications.length === 0) return <div className="empty">NO ACTIVITY YET</div>;
+  return (
+    <div className="pm-activity">
+      {notifications.map((n) => (
+        <div key={n.id} className={`pm-act-row${n.seenTs == null ? ' unseen' : ''}`}>
+          <span className="pm-act-kind" style={{ color: NOTIF_TONE[n.kind], borderColor: NOTIF_TONE[n.kind] }}>
+            {NOTIF_LABEL[n.kind] ?? n.kind}
+          </span>
+          <span className="pm-act-to" title="recipient">→ {n.toAgentId}</span>
+          <span className="pm-act-text">{n.text}</span>
+          {n.cardId && <span className="pm-act-card">{n.cardId}</span>}
+          <span className="pm-act-ago" title={new Date(n.createdTs).toLocaleString()}>{ago(n.createdTs)}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 // ── Org chart (Phase 7 stage 2) ──────────────────────────────────────────────
 // Renders the pure buildOrgTree forest as a nested <ul>. Renderer-safe: the only
 // team import is team-format-pure (no node:*). Card count = OPEN cards (not Done)
 // assigned to that agent on THIS project's board.
+
+/** Live state of an agent, derived from ITS cards on this board (worst-state wins). */
+function liveStatus(agentId: string, cards: KanbanCard[]): { key: string; label: string } {
+  const mine = cards.filter((c) => c.assigneeId === agentId);
+  if (mine.some((c) => c.awaitingHuman)) return { key: 'waiting-human', label: 'waiting human' };
+  if (mine.some((c) => c.column === 'blocked')) return { key: 'blocked', label: 'blocked' };
+  if (mine.some((c) => c.column === 'doing' || c.column === 'review')) return { key: 'working', label: 'working' };
+  return { key: 'idle', label: 'idle' };
+}
 
 function OrgTree({ nodes, cards }: { nodes: OrgNode<TeamAgentInfo>[]; cards: KanbanCard[] }) {
   return (
@@ -262,12 +328,14 @@ function OrgTree({ nodes, cards }: { nodes: OrgNode<TeamAgentInfo>[]; cards: Kan
         const a = n.agent;
         const orch = a.delegationRole === 'orchestrator';
         const openCards = cards.filter((c) => c.assigneeId === a.id && c.column !== 'done').length;
+        const st = liveStatus(a.id, cards);
         return (
           <li key={a.id}>
             <div className={`pm-node${orch ? ' orchestrator' : ''}`}>
               <div className="pm-node-nm">
                 <span className="pm-av">{initials(a.id)}</span>
                 {a.name}
+                <span className={`pm-live pm-live-${st.key}`} title={`estado: ${st.label}`}>{st.label}</span>
                 {canMessageUserResolved(a) && <span className="pm-node-msg" title="pode falar com o utilizador">✉</span>}
               </div>
               <div className="pm-node-rl">{orch ? 'orchestrator' : 'leaf'}</div>

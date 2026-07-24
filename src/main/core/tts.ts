@@ -34,6 +34,8 @@ import { randomUUID } from 'node:crypto';
 import { unlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { resolveConfigValue } from './settings-pure.ts';
+import type { VoiceConfig } from './types.ts';
 
 const MODEL_ID = 'onnx-community/Kokoro-82M-v1.0-ONNX';
 const DEFAULT_KOKORO_VOICE = 'af_heart';
@@ -55,6 +57,15 @@ export function setEngineOverride(v: 'elevenlabs' | null): void {
   engineOverride = v;
 }
 
+/** Runtime TTS knobs from the settings card (engine/voice/rate/eleven voice id).
+ * The orchestrator syncs this on boot and on every card edit (tts.ts has no DB).
+ * Each field, when set, overrides the matching ALFRED_TTS_ / ELEVENLABS_VOICE_ID
+ * env var; blank/unset → the env value, then the built-in default. */
+let voiceCfg: VoiceConfig = {};
+export function setVoiceConfig(c: VoiceConfig | undefined): void {
+  voiceCfg = c ?? {};
+}
+
 /**
  * PURE — decide the engine from the runtime override + ALFRED_TTS_ENGINE.
  * The override ('elevenlabs' when the 11LABS toggle is ON) always wins; else
@@ -74,7 +85,7 @@ export function elevenlabsConfigured(apiKey: string | undefined, voiceId: string
 /** Selected engine — 'say' (default) only works on macOS; 'kokoro' is
  * cross-platform; 'elevenlabs' is cloud (needs a key+voice_id, else falls back). */
 function getEngine(): Engine {
-  return resolveEngine(engineOverride, process.env.ALFRED_TTS_ENGINE);
+  return resolveEngine(engineOverride, resolveConfigValue(voiceCfg.engine, process.env.ALFRED_TTS_ENGINE, ''));
 }
 
 /** Kokoro precision. Unknown/unset → fp32 (least robotic). */
@@ -262,8 +273,23 @@ async function synthAndPlay(text: string, live: () => boolean): Promise<void> {
 
   const model = await getModel();
   if (!live()) return;
-  const voice = process.env.ALFRED_TTS_VOICE?.trim() || DEFAULT_KOKORO_VOICE;
-  const audio = await model.generate(text, { voice });
+  // The `voice` field is shared with `say`, so under kokoro it may hold a macOS
+  // voice name kokoro doesn't know (e.g. after switching engines). Mirror the say
+  // path: retry once with the default kokoro voice so a stale voice never silences
+  // Alfred. (kokoro voices are EN-only ids like af_heart — unlike say's names.)
+  const voice = resolveConfigValue(voiceCfg.voice, process.env.ALFRED_TTS_VOICE, DEFAULT_KOKORO_VOICE);
+  let audio;
+  try {
+    audio = await model.generate(text, { voice });
+  } catch (err) {
+    if (voice === DEFAULT_KOKORO_VOICE) throw err; // already the default — nothing to fall back to
+    console.warn(
+      `[alfred] tts: kokoro voice "${voice}" unavailable — retrying with ${DEFAULT_KOKORO_VOICE}:`,
+      err instanceof Error ? err.message : err,
+    );
+    if (!live()) return;
+    audio = await model.generate(text, { voice: DEFAULT_KOKORO_VOICE });
+  }
   if (!live()) return;
   const wav = join(tmpdir(), `alfred-tts-${randomUUID()}.wav`);
   await audio.save(wav);
@@ -281,7 +307,7 @@ async function synthAndPlay(text: string, live: () => boolean): Promise<void> {
  * never goes silent. Uses Node's global fetch. */
 async function elevenPlay(text: string, live: () => boolean): Promise<void> {
   const apiKey = process.env.ELEVENLABS_API_KEY?.trim();
-  const voiceId = process.env.ELEVENLABS_VOICE_ID?.trim() || DEFAULT_ELEVEN_VOICE;
+  const voiceId = resolveConfigValue(voiceCfg.elevenVoiceId, process.env.ELEVENLABS_VOICE_ID, DEFAULT_ELEVEN_VOICE);
   if (!elevenlabsConfigured(apiKey, voiceId)) {
     console.warn('[alfred] tts: ElevenLabs on but ELEVENLABS_API_KEY / ELEVENLABS_VOICE_ID missing — using `say`');
     return sayPlay(text, live);
@@ -319,8 +345,8 @@ async function elevenPlay(text: string, live: () => boolean): Promise<void> {
  * Alfred never goes silent. A deliberate stop() shows up as a null exit code
  * (killed), so it doesn't trigger the retry. */
 async function sayPlay(text: string, live: () => boolean): Promise<void> {
-  const voice = process.env.ALFRED_TTS_VOICE?.trim() || DEFAULT_SAY_VOICE;
-  const rate = process.env.ALFRED_TTS_RATE?.trim();
+  const voice = resolveConfigValue(voiceCfg.voice, process.env.ALFRED_TTS_VOICE, DEFAULT_SAY_VOICE);
+  const rate = resolveConfigValue(voiceCfg.rate, process.env.ALFRED_TTS_RATE, '');
   const rateArgs = rate ? ['-r', rate] : [];
   const code = await runPlayer('say', ['-v', voice, ...rateArgs, text], live, text);
   if (live() && code !== 0 && code !== null) {

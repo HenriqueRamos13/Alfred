@@ -26,6 +26,7 @@ import {
   deleteCard,
   type CardResult,
 } from '../core/kanban.ts';
+import { applyCardNotifications } from '../core/notify.ts';
 
 type Op =
   | 'create_card'
@@ -212,7 +213,12 @@ export const kanban: Tool<Args> = {
 
       if (!res.ok) return { ok: false, error: res.error + (res.reasons?.length ? `: ${res.reasons.join('; ')}` : '') };
       slug = res.card.projectSlug || slug;
+      // Create the targeted wake notifications this transition earned (assign /
+      // review / done + dependency wakes) BEFORE the board emit, so an auto-unblock
+      // is already reflected when the board re-fetches.
+      const notes = applyCardNotifications(ctx.db, res.card, res.events ?? []);
       ctx.emit({ kind: 'kanban.changed', projectSlug: slug });
+      if (notes.length) ctx.emit({ kind: 'notification.changed', projectSlug: slug });
       return { ok: true, result: { card: res.card } };
     } catch (err) {
       return { ok: false, error: (err as Error).message };

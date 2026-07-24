@@ -92,7 +92,7 @@ import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { confirmMatches, factoryResetPaths, factoryResetTables } from '../src/main/core/reset.ts';
-import { grillMeEnabled } from '../src/main/core/settings-pure.ts';
+import { grillMeEnabled, resolveConfigValue, parseVoiceConfig } from '../src/main/core/settings-pure.ts';
 import { enqueueTurn, TURN_QUEUE_MAX, coalesceTurns } from '../src/main/core/turn-queue-pure.ts';
 import { primaryAction } from '../src/main/core/command-bar-pure.ts';
 import {
@@ -367,6 +367,62 @@ test('grillMeEnabled — default ON, only explicit "0" disables', () => {
   assert.equal(grillMeEnabled('1'), true);
   assert.equal(grillMeEnabled(''), true); // anything not "0" → ON
   assert.equal(grillMeEnabled('0'), false);
+});
+
+// ── voice config: setting > env > default resolution + safe JSON parse ──────────
+
+test('resolveConfigValue — persisted setting wins, else env, else fallback', () => {
+  assert.equal(resolveConfigValue('kokoro', 'say', 'x'), 'kokoro'); // setting wins
+  assert.equal(resolveConfigValue(undefined, 'say', 'x'), 'say'); // no setting → env
+  assert.equal(resolveConfigValue('', 'say', 'x'), 'say'); // blank setting → env
+  assert.equal(resolveConfigValue('   ', 'say', 'x'), 'say'); // whitespace → env
+  assert.equal(resolveConfigValue(undefined, undefined, 'x'), 'x'); // neither → fallback
+  assert.equal(resolveConfigValue('  ', '  ', 'x'), 'x'); // both blank → fallback
+  assert.equal(resolveConfigValue('  Felipe (Enhanced)  ', undefined, 'x'), 'Felipe (Enhanced)'); // trimmed, inner space kept
+});
+
+test('parseVoiceConfig — blank / malformed / non-object all yield {}', () => {
+  assert.deepEqual(parseVoiceConfig(undefined), {});
+  assert.deepEqual(parseVoiceConfig(''), {});
+  assert.deepEqual(parseVoiceConfig('   '), {});
+  assert.deepEqual(parseVoiceConfig('not json'), {});
+  assert.deepEqual(parseVoiceConfig('"a string"'), {}); // valid JSON, not an object
+  assert.deepEqual(parseVoiceConfig('42'), {});
+  assert.deepEqual(parseVoiceConfig('null'), {});
+  assert.deepEqual(parseVoiceConfig('["a"]'), {}); // array → no known keys survive
+});
+
+test('parseVoiceConfig — keeps only known non-blank string fields, trims, drops junk', () => {
+  assert.deepEqual(
+    parseVoiceConfig(JSON.stringify({ engine: 'kokoro', voice: '  af_heart ', rate: '180', elevenVoiceId: 'v1' })),
+    { engine: 'kokoro', voice: 'af_heart', rate: '180', elevenVoiceId: 'v1' },
+  );
+  // blank strings dropped (means "revert to env/default"); unknown keys ignored;
+  // non-string values (injection / corruption) ignored.
+  assert.deepEqual(
+    parseVoiceConfig(JSON.stringify({ voice: '', engine: 'say', evil: 'x', rate: 200 })),
+    { engine: 'say' },
+  );
+});
+
+test('parseVoiceConfig — validates rate (positive int) and elevenVoiceId (alphanumeric)', () => {
+  // rate feeds `say -r <n>`; a bad value makes say fail BOTH attempts → permanent
+  // silence, so only a positive integer survives (else revert to env/default).
+  assert.deepEqual(parseVoiceConfig(JSON.stringify({ rate: '180' })), { rate: '180' });
+  assert.deepEqual(parseVoiceConfig(JSON.stringify({ rate: 'fast' })), {});
+  assert.deepEqual(parseVoiceConfig(JSON.stringify({ rate: '-5' })), {});
+  assert.deepEqual(parseVoiceConfig(JSON.stringify({ rate: '0' })), {});
+  assert.deepEqual(parseVoiceConfig(JSON.stringify({ rate: '3.5' })), {});
+  // elevenVoiceId is interpolated into the ElevenLabs URL path — alphanumeric only,
+  // so a `../`/`/` value can't retarget the authenticated request to another endpoint.
+  assert.deepEqual(
+    parseVoiceConfig(JSON.stringify({ elevenVoiceId: 'JTMaHm6sHVI3NZgPaWDz' })),
+    { elevenVoiceId: 'JTMaHm6sHVI3NZgPaWDz' },
+  );
+  assert.deepEqual(parseVoiceConfig(JSON.stringify({ elevenVoiceId: '../../v1/user' })), {});
+  assert.deepEqual(parseVoiceConfig(JSON.stringify({ elevenVoiceId: 'a/b' })), {});
+  // free-form fields keep inner spaces/parens (say voice names like "Felipe (Enhanced)").
+  assert.deepEqual(parseVoiceConfig(JSON.stringify({ voice: 'Felipe (Enhanced)' })), { voice: 'Felipe (Enhanced)' });
 });
 
 // ── providers / brain selection ────────────────────────────────────────────────
@@ -4014,4 +4070,122 @@ test('unreadCount — unopened + not superseded', () => {
   ];
   assert.equal(unreadCount(msgs), 2);
   assert.equal(unreadCount([]), 0);
+});
+
+// ── notify-pure (Phase 7 stage 4): heartbeat + dependency wake + notify perm ──
+
+import {
+  heartbeatTick,
+  dependencyWakes,
+  notifyPermission,
+  escalationTarget,
+  isNotificationKind,
+  DEFAULT_HEARTBEAT_CONFIG,
+  NOTIFICATION_KINDS,
+  type HeartbeatCard,
+  type NudgeState,
+} from '../src/main/core/notify-pure.ts';
+
+const HB = { pokeIntervalMs: 1000, maxNudges: 3, timeoutMs: 100_000 };
+const openCard = (over: Partial<HeartbeatCard> = {}): HeartbeatCard => ({
+  id: 'C-1', projectSlug: 'p', column: 'doing', assigneeId: 'dev', updatedTs: 0, timeoutMs: null, ...over,
+});
+const org = [
+  { id: 'dev', parentId: 'lead', delegationRole: 'leaf' as const },
+  { id: 'lead', parentId: 'cto', delegationRole: 'orchestrator' as const },
+  { id: 'cto', parentId: null, delegationRole: 'orchestrator' as const },
+];
+
+test('isNotificationKind + kinds set', () => {
+  assert.equal(isNotificationKind('nudge'), true);
+  assert.equal(isNotificationKind('escalation'), true);
+  assert.equal(isNotificationKind('bogus'), false);
+  assert.equal(isNotificationKind(7), false);
+  assert.equal(NOTIFICATION_KINDS.includes('dep_ready'), true);
+  assert.equal(DEFAULT_HEARTBEAT_CONFIG.maxNudges, 3); // finite, never "unlimited"
+});
+
+test('heartbeatTick — nudges the assignee only after the poke interval, targeted', () => {
+  const cards = [openCard()];
+  // fresh (idle < poke) → nothing
+  assert.deepEqual(heartbeatTick(cards, org, 500, HB), []);
+  // idle past the poke → ONE nudge to the assignee (not a broadcast)
+  const a = heartbeatTick(cards, org, 2000, HB);
+  assert.equal(a.length, 1);
+  assert.deepEqual(a[0], { toAgentId: 'dev', cardId: 'C-1', projectSlug: 'p', kind: 'nudge' });
+});
+
+test('heartbeatTick — only OPEN lanes (doing/review) with an assignee', () => {
+  const now = 999_999;
+  assert.deepEqual(heartbeatTick([openCard({ column: 'todo' })], org, now, HB), []);
+  assert.deepEqual(heartbeatTick([openCard({ column: 'done' })], org, now, HB), []);
+  assert.deepEqual(heartbeatTick([openCard({ column: 'blocked' })], org, now, HB), []);
+  assert.deepEqual(heartbeatTick([openCard({ assigneeId: null })], org, now, HB), []); // unowned → no target
+  assert.equal(heartbeatTick([openCard({ column: 'review' })], org, now, HB).length, 1);
+});
+
+test('heartbeatTick — self-limiting: after maxNudges escalate ONCE up the parent chain', () => {
+  const cards = [openCard()];
+  // count already at the cap → escalate to the assignee's parent (lead), not a nudge
+  const esc = heartbeatTick(cards, org, 2000, HB, { 'C-1': { count: 3, lastTs: 0, escalated: false } });
+  assert.deepEqual(esc, [{ toAgentId: 'lead', cardId: 'C-1', projectSlug: 'p', kind: 'escalation' }]);
+  // already escalated → capped, NOTHING more (never loops "unlimited")
+  assert.deepEqual(heartbeatTick(cards, org, 9_999_999, HB, { 'C-1': { count: 3, lastTs: 0, escalated: true } }), []);
+});
+
+test('heartbeatTick — nudges are SPACED by the poke interval (lastTs), not fired every tick', () => {
+  const cards = [openCard({ updatedTs: 0 })];
+  const st: Record<string, NudgeState> = { 'C-1': { count: 1, lastTs: 1500, escalated: false } };
+  assert.deepEqual(heartbeatTick(cards, org, 2000, HB, st), []); // only 500ms since last poke
+  assert.equal(heartbeatTick(cards, org, 2600, HB, st).length, 1); // >1000ms since last poke → nudge
+});
+
+test('heartbeatTick — hard timeout escalates even below maxNudges', () => {
+  const cards = [openCard({ updatedTs: 0, timeoutMs: 5000 })];
+  const a = heartbeatTick(cards, org, 6000, HB, { 'C-1': { count: 0, lastTs: 0, escalated: false } });
+  assert.equal(a[0].kind, 'escalation');
+});
+
+test('heartbeatTick — escalation at the top of the org goes to the user', () => {
+  const cards = [openCard({ assigneeId: 'cto' })];
+  const a = heartbeatTick(cards, org, 2000, HB, { 'C-1': { count: 3, lastTs: 0, escalated: false } });
+  assert.equal(a[0].toAgentId, 'user');
+});
+
+test('escalationTarget — parent or null at the top', () => {
+  assert.equal(escalationTarget('dev', org), 'lead');
+  assert.equal(escalationTarget('lead', org), 'cto');
+  assert.equal(escalationTarget('cto', org), null);
+  assert.equal(escalationTarget('ghost', org), null);
+});
+
+test('dependencyWakes — wakes downstream assignees; unblock only when ALL deps done', () => {
+  const cards = [
+    { id: 'A', column: 'done', assigneeId: 'x', dependsOn: [] },
+    { id: 'B', column: 'done', assigneeId: 'x', dependsOn: [] },
+    { id: 'C', column: 'blocked', assigneeId: 'dev', dependsOn: ['A', 'B'] }, // both deps done
+    { id: 'D', column: 'blocked', assigneeId: 'dev2', dependsOn: ['A', 'Z'] }, // Z not done
+    { id: 'E', column: 'doing', assigneeId: null, dependsOn: ['A'] }, // unassigned
+  ];
+  const w = dependencyWakes(cards, 'A');
+  const byId = Object.fromEntries(w.map((x) => [x.cardId, x]));
+  assert.equal(w.length, 3); // C, D, E depend on A
+  assert.deepEqual(byId['C'], { cardId: 'C', toAgentId: 'dev', allDepsDone: true, unblock: true });
+  assert.deepEqual(byId['D'], { cardId: 'D', toAgentId: 'dev2', allDepsDone: false, unblock: false });
+  assert.deepEqual(byId['E'], { cardId: 'E', toAgentId: null, allDepsDone: true, unblock: false }); // not blocked
+});
+
+test('notifyPermission — leaf up-only; orchestrator up or down; never self/sideways', () => {
+  // leaf dev may notify its managers (up the chain), never a peer or itself
+  assert.equal(notifyPermission('dev', 'lead', org), true);
+  assert.equal(notifyPermission('dev', 'cto', org), true); // grandparent still up-chain
+  assert.equal(notifyPermission('dev', 'dev', org), false); // self
+  // leaf cannot notify DOWN (dev has no reports anyway) nor sideways
+  const org2 = [...org, { id: 'peer', parentId: 'lead', delegationRole: 'leaf' as const }];
+  assert.equal(notifyPermission('dev', 'peer', org2), false); // sibling — refused
+  // orchestrator lead may notify DOWN to its report dev, and UP to cto
+  assert.equal(notifyPermission('lead', 'dev', org2), true);
+  assert.equal(notifyPermission('lead', 'cto', org2), true);
+  // unknown sender → false (the tool allows top-level Alfred explicitly, not here)
+  assert.equal(notifyPermission('alfred', 'dev', org), false);
 });

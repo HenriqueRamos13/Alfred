@@ -38,6 +38,7 @@ import { runGovernedTool, classifyAction, trifectaImpact, maskSecrets } from './
 import { safeFetch } from './url-safety.ts';
 import { addWidgetCard, removeWidgetCard, widgetBox, WIDGET_PREFIX, DISPLAY_MAIN, type Bounds } from './layout.ts';
 import { getSetting } from './db.ts';
+import { runHeartbeatTick } from './notify.ts';
 import { BudgetTracker, isOverDailyBudget, callSignature } from './budget.ts';
 import { resolveProvider } from './providers.ts';
 import { runStudy } from '../tools/agent-study.ts';
@@ -48,6 +49,12 @@ type DB = import('better-sqlite3').Database;
 // setTimeout truncates delays above ~24.8 days (2^31-1 ms) and would fire
 // immediately; clamp and re-arm past the ceiling.
 const MAX_DELAY = 2_147_483_647;
+
+// Heartbeat sweep (Phase 7 stage 4): ONE global timer scans every open card each
+// tick (not a job per card). Cheap (zero tokens); nudges are spaced by the poke
+// interval regardless of the sweep cadence, so a brisk default sweep is fine.
+const DEFAULT_HEARTBEAT_SWEEP_MS = 60_000;
+const MIN_HEARTBEAT_SWEEP_MS = 30_000;
 
 /** Is a pid alive? kill(pid,0) throws ESRCH when gone; EPERM means it exists (not ours). */
 function pidAlive(pid: number): boolean {
@@ -426,6 +433,7 @@ export function rescheduleJob(jobId: string): void {
 
 export class JobScheduler {
   private readonly timers = new Map<string, ReturnType<typeof setTimeout>>();
+  private heartbeatTimer?: ReturnType<typeof setInterval>;
   private readonly db: DB;
   private readonly runJob: JobRunner;
   private readonly now: () => number;
@@ -867,11 +875,42 @@ export class JobScheduler {
         this.log(`start: could not arm job ${job.id}: ${err instanceof Error ? err.message : String(err)}`);
       }
     }
+    this.armHeartbeat();
+  }
+
+  /**
+   * (Re)arm the global heartbeat sweep from its settings — `heartbeat_enabled`
+   * (default OFF) + `heartbeat_interval_ms` (clamped ≥ 30s, default 60s). Disabled
+   * → cleared. The tick only WRITES notifications (safe unattended), never runs a
+   * governed tool. Called on boot and whenever the toggle changes. .unref()'d so it
+   * never holds the process open (dormant-safe).
+   */
+  armHeartbeat(): void {
+    if (this.heartbeatTimer) {
+      clearInterval(this.heartbeatTimer);
+      this.heartbeatTimer = undefined;
+    }
+    if (getSetting(this.db, 'heartbeat_enabled') !== '1') return;
+    const raw = Number(getSetting(this.db, 'heartbeat_interval_ms'));
+    const interval = Number.isFinite(raw) && raw >= MIN_HEARTBEAT_SWEEP_MS ? raw : DEFAULT_HEARTBEAT_SWEEP_MS;
+    const timer = setInterval(() => {
+      try {
+        runHeartbeatTick(this.db, { emit: this.emit, now: this.now });
+      } catch (err) {
+        this.log(`heartbeat tick failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }, interval);
+    timer.unref?.();
+    this.heartbeatTimer = timer;
   }
 
   stop(): void {
     for (const t of this.timers.values()) clearTimeout(t);
     this.timers.clear();
+    if (this.heartbeatTimer) {
+      clearInterval(this.heartbeatTimer);
+      this.heartbeatTimer = undefined;
+    }
   }
 
   private arm(job: Job): void {

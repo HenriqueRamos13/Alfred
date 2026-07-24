@@ -1452,6 +1452,34 @@ body {
 .pm-waiting { margin-left: 7px; font-family: var(--font-mono); font-size: 8.5px; color: var(--amb);
   border: 1px solid color-mix(in oklab, var(--amb) 35%, transparent); border-radius: 4px; padding: 1px 5px; }
 
+/* ── Stage 4: heartbeat nudge indicator + Activity feed + live org status ──────── */
+/* Overdue pulse on a board card the heartbeat has poked. */
+.pm-nudge { margin-left: 6px; color: var(--amb); font-size: 11px; display: inline-block;
+  animation: pm-nudge-pulse 1.4s ease-in-out infinite; }
+@keyframes pm-nudge-pulse { 0%, 100% { opacity: 0.35; transform: rotate(0deg); } 50% { opacity: 1; transform: rotate(180deg); } }
+
+/* Activity feed — append-only governance audit, newest first. */
+.pm-activity { display: flex; flex-direction: column; gap: 5px; padding: 4px 2px; }
+.pm-act-row { display: flex; align-items: center; gap: 9px; padding: 7px 10px; border-radius: 6px;
+  background: color-mix(in oklab, var(--acc) 3%, transparent);
+  border: 1px solid color-mix(in oklab, var(--acc) 10%, transparent); font-size: 11px; }
+.pm-act-row.unseen { border-color: color-mix(in oklab, var(--acc) 30%, transparent);
+  background: color-mix(in oklab, var(--acc) 7%, transparent); }
+.pm-act-kind { flex: 0 0 auto; font-family: var(--font-mono); font-size: 8.5px; text-transform: uppercase;
+  letter-spacing: 0.06em; border: 1px solid; border-radius: 4px; padding: 1px 6px; }
+.pm-act-to { flex: 0 0 auto; font-family: var(--font-mono); font-size: 10px; color: var(--dim); }
+.pm-act-text { flex: 1 1 auto; color: var(--fg); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pm-act-card { flex: 0 0 auto; font-family: var(--font-mono); font-size: 9px; color: var(--dim); }
+.pm-act-ago { flex: 0 0 auto; font-family: var(--font-mono); font-size: 9px; color: var(--dim); opacity: 0.7; }
+
+/* Live per-agent state chip in the Org tree. */
+.pm-live { margin-left: 8px; font-family: var(--font-mono); font-size: 8px; text-transform: uppercase;
+  letter-spacing: 0.05em; border-radius: 4px; padding: 1px 5px; border: 1px solid currentColor; }
+.pm-live-idle { color: var(--dim); }
+.pm-live-working { color: var(--acc); }
+.pm-live-blocked { color: var(--red); }
+.pm-live-waiting-human { color: var(--amb); }
+
 /* ── Human inbox (Phase 7 stage 3) — .ib-* namespaced, async HITL ─────────────── */
 .ib-panel { width: min(1000px, 92vw); height: min(76vh, 680px); }
 .ib-panel-body { padding: 0; }

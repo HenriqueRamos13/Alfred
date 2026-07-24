@@ -22,12 +22,15 @@ import type {
   JobApproval,
   StreamEvent,
   TeamAgentInfo,
+  VoiceConfig,
   WakeStatus,
 } from './core/types.ts';
 import type { ProjectDetail } from './core/projects.ts';
 import type { KanbanCard } from './core/kanban-pure.ts';
 import type { InboxMessage } from './core/inbox-pure.ts';
 import type { InboxFilter, InboxResult } from './core/inbox.ts';
+import type { AgentNotification } from './core/notify-pure.ts';
+import type { NotificationFilter } from './core/notify.ts';
 import type { BrainInfo } from './core/providers.ts';
 import type { FactoryResetInfo } from './core/orchestrator.ts';
 import type { Graph } from './core/graph.ts';
@@ -110,6 +113,9 @@ export interface Orchestrator {
   /** ElevenLabs cloud voice toggle (which voice, not whether to speak): read/set, persisted. */
   getElevenlabs(): boolean | Promise<boolean>;
   setElevenlabs(on: boolean): boolean | Promise<boolean>;
+  /** TTS voice knobs (engine/voice/rate/eleven voice id): read/set, persisted, hot-applied. */
+  getVoiceConfig(): VoiceConfig | Promise<VoiceConfig>;
+  setVoiceConfig(patch: VoiceConfig): VoiceConfig | Promise<VoiceConfig>;
   /** Auto-send toggle (submit dictation on stt.final): read/set, persisted. */
   getAutosend(): boolean | Promise<boolean>;
   setAutosend(on: boolean): boolean | Promise<boolean>;
@@ -167,6 +173,14 @@ export interface Orchestrator {
   answerInbox(id: string, action: string, text?: string): InboxResult | Promise<InboxResult>;
   /** Mark a message read (drops the unread badge). */
   markInboxRead(id: string): InboxMessage | undefined | Promise<InboxMessage | undefined>;
+  // ── Notifications + heartbeat (Phase 7 stage 4). ──
+  /** Notifications for the Activity feed, optionally filtered (newest first). */
+  listNotifications(filter?: NotificationFilter): AgentNotification[] | Promise<AgentNotification[]>;
+  /** Mark one notification seen. */
+  markNotificationSeen(id: string): AgentNotification | undefined | Promise<AgentNotification | undefined>;
+  /** Heartbeat toggle + sweep interval (read/set). */
+  getHeartbeat(): { enabled: boolean; intervalMs: number } | Promise<{ enabled: boolean; intervalMs: number }>;
+  setHeartbeat(patch: { enabled?: boolean; intervalMs?: number }): { enabled: boolean; intervalMs: number } | Promise<{ enabled: boolean; intervalMs: number }>;
 }
 
 /** Trust boundary: keep only well-formed numeric/boolean fields from the renderer. */
@@ -290,6 +304,17 @@ export function registerIpc(core: Orchestrator, emit: (e: StreamEvent) => void):
     } catch (err) {
       fail('set elevenlabs', err);
       return false;
+    }
+  });
+
+  ipcMain.handle('alfred:getVoiceConfig', guard('get voice config', () => core.getVoiceConfig(), {} as VoiceConfig));
+  ipcMain.handle('alfred:setVoiceConfig', async (_e, patch: unknown) => {
+    try {
+      // Trust boundary: pass only a plain object; the core re-parses/sanitises it.
+      return await core.setVoiceConfig(patch && typeof patch === 'object' ? (patch as VoiceConfig) : {});
+    } catch (err) {
+      fail('set voice config', err);
+      return {} as VoiceConfig;
     }
   });
 
@@ -588,6 +613,43 @@ export function registerIpc(core: Orchestrator, emit: (e: StreamEvent) => void):
     } catch (err) {
       fail('mark inbox read', err);
       return null;
+    }
+  });
+
+  // ── Notifications + heartbeat (Phase 7 stage 4). ──
+  ipcMain.handle('alfred:listNotifications', async (_e, rawFilter: unknown): Promise<AgentNotification[]> => {
+    const src = (rawFilter ?? {}) as Record<string, unknown>;
+    const filter: NotificationFilter = {};
+    if (typeof src.toAgentId === 'string' && src.toAgentId) filter.toAgentId = src.toAgentId;
+    if (typeof src.projectSlug === 'string' && src.projectSlug) filter.projectSlug = src.projectSlug;
+    if (src.unseenOnly === true) filter.unseenOnly = true;
+    try {
+      return await core.listNotifications(filter);
+    } catch (err) {
+      fail('list notifications', err);
+      return [];
+    }
+  });
+  ipcMain.handle('alfred:markNotificationSeen', async (_e, id: unknown): Promise<AgentNotification | null> => {
+    if (typeof id !== 'string' || !id) return null;
+    try {
+      return (await core.markNotificationSeen(id)) ?? null;
+    } catch (err) {
+      fail('mark notification seen', err);
+      return null;
+    }
+  });
+  ipcMain.handle('alfred:getHeartbeat', guard('get heartbeat', () => core.getHeartbeat(), { enabled: false, intervalMs: 60_000 }));
+  ipcMain.handle('alfred:setHeartbeat', async (_e, patch: unknown): Promise<{ enabled: boolean; intervalMs: number }> => {
+    const src = (patch ?? {}) as Record<string, unknown>;
+    const clean: { enabled?: boolean; intervalMs?: number } = {};
+    if (typeof src.enabled === 'boolean') clean.enabled = src.enabled;
+    if (typeof src.intervalMs === 'number' && Number.isFinite(src.intervalMs)) clean.intervalMs = src.intervalMs;
+    try {
+      return await core.setHeartbeat(clean);
+    } catch (err) {
+      fail('set heartbeat', err);
+      return { enabled: false, intervalMs: 60_000 };
     }
   });
 

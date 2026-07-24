@@ -245,6 +245,26 @@ CREATE TABLE IF NOT EXISTS inbox_messages (
 );
 CREATE INDEX IF NOT EXISTS idx_inbox_status ON inbox_messages(status, created_ts);
 CREATE INDEX IF NOT EXISTS idx_inbox_project ON inbox_messages(project_slug, created_ts);
+
+-- Agent notifications (Phase 7 stage 4): the self-orchestration wake feed. A card
+-- lifecycle event (assigned/review_requested/done), a dependency clearing
+-- (dep_ready), an inbox answer (reply), a heartbeat poke (nudge) or its self-limited
+-- escalation writes a TARGETED row here (one recipient — never a broadcast). Writing
+-- a row is a safe internal write, so the heartbeat runs fail-closed-safe unattended.
+-- The Activity feed reads it as the project's append-only audit; agents read their
+-- own unseen rows to know they were woken. Indexed by recipient + unseen.
+CREATE TABLE IF NOT EXISTS agent_notifications (
+  id            TEXT PRIMARY KEY,
+  to_agent_id   TEXT NOT NULL,                  -- recipient agentId or 'user'
+  project_slug  TEXT,
+  card_id       TEXT,
+  kind          TEXT NOT NULL,                  -- assigned|review_requested|done|dep_ready|reply|nudge|escalation
+  text          TEXT NOT NULL DEFAULT '',
+  created_ts    INTEGER NOT NULL,
+  seen_ts       INTEGER                         -- null = unseen (badge)
+);
+CREATE INDEX IF NOT EXISTS idx_notify_to ON agent_notifications(to_agent_id, seen_ts);
+CREATE INDEX IF NOT EXISTS idx_notify_project ON agent_notifications(project_slug, created_ts);
 `;
 
 export function openDb(dbPath: string): AlfredDb {

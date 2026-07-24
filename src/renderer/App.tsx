@@ -18,6 +18,7 @@ import { ProjectList } from './components/ProjectList.tsx';
 import { ProjectModal } from './components/ProjectModal.tsx';
 import { InboxOverlay } from './components/Inbox.tsx';
 import { unreadCount, type InboxAction, type InboxMessage } from '../main/core/inbox-pure.ts';
+import type { AgentNotification } from '../main/core/notify-pure.ts';
 import { ApprovalPrompt } from './components/ApprovalPrompt.tsx';
 import { DraggableCard } from './components/DraggableCard.tsx';
 import { ReferenceChat } from './components/ReferenceChat.tsx';
@@ -33,6 +34,7 @@ import { shouldHoldSend, SEND_DELAY_DEFAULT_MS } from '../main/core/send-delay-p
 import { PendingSendBubble, type PendingSend } from './components/PendingSend.tsx';
 import { confirmMatches } from '../main/core/reset-pure.ts';
 import { ACCENT_NAMES, resolveAccent, type AccentName } from '../main/core/accent-pure.ts';
+import { parseVoiceConfig } from '../main/core/settings-pure.ts';
 import type { FactoryResetInfo } from '../main/core/orchestrator.ts';
 import type {
   AgentStatus,
@@ -50,6 +52,7 @@ import type {
   StreamEvent,
   TeamAgentInfo,
   UiNode,
+  VoiceConfig,
   WakeStatus,
 } from '../main/core/types.ts';
 import type { KanbanCard } from '../main/core/kanban-pure.ts';
@@ -123,6 +126,10 @@ export default function App() {
   // is unreadCount(inbox). Re-fetched on mount and every inbox.changed event.
   const [inbox, setInbox] = useState<InboxMessage[]>([]);
   const [inboxOpen, setInboxOpen] = useState(false);
+  // Notifications for the open project's Activity feed + board nudge indicator
+  // (Phase 7 stage 4). Re-fetched on open + every notification.changed / kanban.changed.
+  const [notifications, setNotifications] = useState<AgentNotification[]>([]);
+  const [heartbeat, setHeartbeat] = useState(false); // heartbeat sweep toggle (default OFF)
   const openProjectRef = useRef<string | null>(null);
   const [accounts, setAccounts] = useState<AccountRecord[]>([]);
   const [connectingGmail, setConnectingGmail] = useState(false);
@@ -133,6 +140,7 @@ export default function App() {
   const [activeBrain, setActiveBrain] = useState<string | null>(null);
   const [agentCfg, setAgentCfg] = useState<AgentConfigMap | null>(null);
   const [catalog, setCatalog] = useState<Record<ProviderId, CatalogModel[]> | null>(null);
+  const [voiceCfg, setVoiceCfg] = useState<VoiceConfig>({});
   const [cards, setCards] = useState<CardLayout[]>([]);
   // Scheduled jobs — drives the "Scheduled Tasks" card meta + the per-job data
   // widgets. Widget cards are first-class layout rows (`widget:<jobId>`) in the
@@ -214,6 +222,9 @@ export default function App() {
 
   const logRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLDivElement>(null);
+  // True while a voice-config text field holds an unsaved draft (typed, not yet
+  // blurred). Guards the cross-window voice_config broadcast from stomping it.
+  const editingVoiceRef = useRef(false);
   const stripRef = useRef<HTMLDivElement>(null);
   const cardsMenuRef = useRef<HTMLDivElement>(null);
   const commandInputRef = useRef<HTMLTextAreaElement>(null);
@@ -434,13 +445,19 @@ export default function App() {
   const refreshCards = (slug: string) => {
     alfred.listCards(slug).then(setKanbanCards).catch(() => {});
   };
+  // Activity feed + board nudge indicator (Phase 7 stage 4) — this project's notifications.
+  const refreshNotifications = (slug: string) => {
+    alfred.listNotifications({ projectSlug: slug }).then(setNotifications).catch(() => {});
+  };
   const openProject = (slug: string) => {
     openProjectRef.current = slug;
     setOpenProjectSlug(slug);
     setKanbanCards([]);
     setProjectDetail(null);
+    setNotifications([]);
     alfred.getProject(slug).then(setProjectDetail).catch(() => {});
     refreshCards(slug);
+    refreshNotifications(slug);
     alfred.listTeamAgents().then(setTeamAgents).catch(() => {}); // Org tab hierarchy
   };
   const closeProject = () => {
@@ -448,6 +465,7 @@ export default function App() {
     setOpenProjectSlug(null);
     setProjectDetail(null);
     setKanbanCards([]);
+    setNotifications([]);
   };
   // The user's direct board op (drag/edit/delete). Optimistic refresh happens via
   // the kanban.changed event that the main process emits on success.
@@ -515,6 +533,8 @@ export default function App() {
     alfred.getDangerousMode().then(setDangerous).catch(() => {});
     // Reflect the persisted SPAWN kill-switch (default off).
     alfred.getSpawnPaused().then(setSpawnPaused).catch(() => {});
+    // Reflect the persisted heartbeat toggle (default off).
+    alfred.getHeartbeat().then((h) => setHeartbeat(h.enabled)).catch(() => {});
     // Reflect the persisted GRILL-ME toggle (default on).
     alfred.getGrillMe().then(setGrill).catch(() => {});
     // Reflect the persisted voice-output toggle.
@@ -527,6 +547,8 @@ export default function App() {
     }).catch(() => {});
     // Reflect the persisted ElevenLabs voice toggle (default off).
     alfred.getElevenlabs().then(setElevenlabs).catch(() => {});
+    // Reflect the persisted TTS voice knobs (engine/voice/rate/eleven voice id).
+    alfred.getVoiceConfig().then(setVoiceCfg).catch(() => {});
     // Reflect the persisted auto-send toggle (default off).
     alfred.getAutosend().then(setAutosend).catch(() => {});
     // Reflect the persisted send-delay / edit window (default 2000ms).
@@ -653,6 +675,11 @@ export default function App() {
             alfred.listCards(e.projectSlug).then(setKanbanCards).catch(() => {});
           }
           break;
+        case 'notification.changed':
+          // A wake fired (lifecycle event, dependency, inbox reply, heartbeat) —
+          // refresh the open project's Activity feed + board nudge indicator.
+          if (openProjectRef.current) alfred.listNotifications({ projectSlug: openProjectRef.current }).then(setNotifications).catch(() => {});
+          break;
         case 'team.changed':
           // Roster / hierarchy changed (create/delete/set_manager) — refresh the Org tab.
           alfred.listTeamAgents().then(setTeamAgents).catch(() => {});
@@ -705,6 +732,9 @@ export default function App() {
             case 'autosend_enabled': setAutosend(!!e.value); break;
             case 'send_delay_ms': setSendDelayMs(Number(e.value) || 0); break;
             case 'elevenlabs_enabled': setElevenlabs(!!e.value); break;
+            // Skip while a local field is mid-edit so a sibling window's change
+            // doesn't wipe the unsaved draft; the pending blur will persist + win.
+            case 'voice_config': if (!editingVoiceRef.current) setVoiceCfg(parseVoiceConfig(String(e.value))); break;
             case 'widget_scripts_enabled': setWidgetScripts(!!e.value); break;
             case 'grill_me_enabled': setGrill(!!e.value); break;
             case 'dangerous_mode': setDangerous(!!e.value); break;
@@ -889,6 +919,17 @@ export default function App() {
     });
   };
 
+  const toggleHeartbeat = () => {
+    const next = !heartbeat;
+    setHeartbeat(next); // optimistic
+    alfred.setHeartbeat({ enabled: next }).then((h) => setHeartbeat(h.enabled)).catch(() => setHeartbeat(!next));
+    pushLog({
+      tag: 'KERNEL',
+      tone: next ? 'lime' : 'amber',
+      msg: next ? '♥ HEARTBEAT ON — idle cards nudge their assignee, then escalate up the chain' : 'heartbeat off — no auto-nudges',
+    });
+  };
+
   const toggleGrill = () => {
     const next = !grill;
     setGrill(next); // optimistic
@@ -983,6 +1024,18 @@ export default function App() {
       tone: next ? 'lime' : 'dim',
       msg: next ? 'auto-send on — terminas a frase e envia' : 'auto-send off — diz “Alfred enviar”',
     });
+  };
+
+  const setVoicePref = (patch: VoiceConfig) => {
+    editingVoiceRef.current = false; // draft committed — remote broadcasts may apply again
+    setVoiceCfg((c) => ({ ...c, ...patch })); // optimistic
+    // On failure re-sync from the store rather than swallow: the optimistic value
+    // isn't persisted, so pull the authoritative config back instead of leaving it.
+    alfred.setVoiceConfig(patch).then(setVoiceCfg).catch(() => {
+      alfred.getVoiceConfig().then(setVoiceCfg).catch(() => {});
+    });
+    const [k, val] = Object.entries(patch)[0] ?? ['voice', ''];
+    pushLog({ tag: 'VOICE', tone: val ? 'lime' : 'dim', msg: val ? `${k} → ${val}` : `${k} → default (.env)` });
   };
 
   const setSendDelayPref = (ms: number) => {
@@ -1276,8 +1329,15 @@ export default function App() {
               onPickAccent={pickAccent}
               autosend={autosend}
               elevenlabs={elevenlabs}
+              voiceCfg={voiceCfg}
+              onDraftVoice={(patch) => {
+                editingVoiceRef.current = true; // unsaved keystroke — shield from remote overwrite
+                setVoiceCfg((c) => ({ ...c, ...patch }));
+              }}
+              onSetVoice={setVoicePref}
               grill={grill}
               spawnPaused={spawnPaused}
+              heartbeat={heartbeat}
               widgetScripts={widgetScripts}
               dangerous={dangerous}
               sendDelayMs={sendDelayMs}
@@ -1287,6 +1347,7 @@ export default function App() {
               onToggleElevenlabs={toggleElevenlabs}
               onToggleGrill={toggleGrill}
               onToggleSpawnPaused={toggleSpawnPaused}
+              onToggleHeartbeat={toggleHeartbeat}
               onToggleWidgetScripts={toggleWidgetScripts}
               onToggleDangerous={toggleDangerous}
               onResetApprovals={resetApprovals}
@@ -1609,6 +1670,7 @@ export default function App() {
           cards={kanbanCards}
           agents={teamAgents}
           inbox={inbox}
+          notifications={notifications}
           onKanban={doKanban}
           onAnswerInbox={answerInbox}
           onSpeak={alfred.speakText}
@@ -1801,8 +1863,10 @@ function Toggle({
  * SETTINGS card body: the behaviour/preference toggles moved out of the top strip,
  * grouped Voz / Comportamento / Orçamento. Each switch is bound to the SAME get/set
  * IPC as before (handlers passed from App) — this only changes where they render.
- * Read-only prefs surface real values from the cost snapshot; the ones with no
- * writable IPC (STT locale, TTS voice/engine, .env budgets) are shown as notes.
+ * Read-only prefs surface real values from the cost snapshot. The TTS voice knobs
+ * (engine/voice/rate/eleven voice id) are writable here and hot-applied; the .env
+ * value stays the default when a field is left blank. STT locale + budgets remain
+ * .env-only (they need a helper respawn / app restart) and are shown as notes.
  */
 function SettingsCard({
   tts,
@@ -1810,8 +1874,12 @@ function SettingsCard({
   onPickAccent,
   autosend,
   elevenlabs,
+  voiceCfg,
+  onDraftVoice,
+  onSetVoice,
   grill,
   spawnPaused,
+  heartbeat,
   widgetScripts,
   dangerous,
   sendDelayMs,
@@ -1821,6 +1889,7 @@ function SettingsCard({
   onToggleElevenlabs,
   onToggleGrill,
   onToggleSpawnPaused,
+  onToggleHeartbeat,
   onToggleWidgetScripts,
   onToggleDangerous,
   onResetApprovals,
@@ -1830,8 +1899,12 @@ function SettingsCard({
   onPickAccent: (name: AccentName) => void;
   autosend: boolean;
   elevenlabs: boolean;
+  voiceCfg: VoiceConfig;
+  onDraftVoice: (patch: VoiceConfig) => void;
+  onSetVoice: (patch: VoiceConfig) => void;
   grill: boolean;
   spawnPaused: boolean;
+  heartbeat: boolean;
   widgetScripts: boolean;
   dangerous: boolean;
   sendDelayMs: number;
@@ -1841,6 +1914,7 @@ function SettingsCard({
   onToggleElevenlabs: () => void;
   onToggleGrill: () => void;
   onToggleSpawnPaused: () => void;
+  onToggleHeartbeat: () => void;
   onToggleWidgetScripts: () => void;
   onToggleDangerous: () => void;
   onResetApprovals: () => void;
@@ -1883,8 +1957,65 @@ function SettingsCard({
           <span className="settings-pref-k">Saída de voz (VOICE)</span>
           <span className="settings-pref-v">{tts ? 'ON' : 'OFF'} · no cabeçalho</span>
         </div>
+
+        <label className="settings-num" title="Motor TTS base. say (macOS, tem pt-BR) ou kokoro (offline, só inglês). ElevenLabs é o toggle acima. Vazio = usa o .env (ALFRED_TTS_ENGINE).">
+          <span className="settings-num-k">Motor TTS</span>
+          <span className="settings-num-field">
+            <select
+              className="settings-num-input no-drag"
+              value={voiceCfg.engine ?? ''}
+              onChange={(e) => onSetVoice({ engine: e.target.value })}
+            >
+              <option value="">.env / default</option>
+              <option value="say">say (macOS · pt-BR)</option>
+              <option value="kokoro">kokoro (offline · EN)</option>
+            </select>
+          </span>
+        </label>
+        <label className="settings-num" title="Nome da voz (say, ex.: “Felipe (Enhanced)”) ou id da voz (kokoro, ex.: af_heart). Vazio = default do motor / .env (ALFRED_TTS_VOICE).">
+          <span className="settings-num-k">Voz</span>
+          <span className="settings-num-field">
+            <input
+              className="settings-num-input no-drag"
+              type="text"
+              placeholder=".env / default"
+              value={voiceCfg.voice ?? ''}
+              onChange={(e) => onDraftVoice({ voice: e.target.value })}
+              onBlur={(e) => onSetVoice({ voice: e.target.value })}
+            />
+          </span>
+        </label>
+        <label className="settings-num" title="Ritmo de fala do say em palavras/min (só say). Vazio = default. (ALFRED_TTS_RATE)">
+          <span className="settings-num-k">Ritmo (say)</span>
+          <span className="settings-num-field">
+            <input
+              className="settings-num-input no-drag"
+              type="number"
+              min={80}
+              step={10}
+              placeholder="—"
+              value={voiceCfg.rate ?? ''}
+              onChange={(e) => onDraftVoice({ rate: e.target.value })}
+              onBlur={(e) => onSetVoice({ rate: e.target.value })}
+            />
+            <span className="settings-num-unit">wpm</span>
+          </span>
+        </label>
+        <label className="settings-num" title="Id da voz ElevenLabs (identificador público, não é segredo). A chave ELEVENLABS_API_KEY fica no .env. Vazio = default.">
+          <span className="settings-num-k">Voz ElevenLabs (id)</span>
+          <span className="settings-num-field">
+            <input
+              className="settings-num-input no-drag"
+              type="text"
+              placeholder=".env / default"
+              value={voiceCfg.elevenVoiceId ?? ''}
+              onChange={(e) => onDraftVoice({ elevenVoiceId: e.target.value })}
+              onBlur={(e) => onSetVoice({ elevenVoiceId: e.target.value })}
+            />
+          </span>
+        </label>
         <div className="settings-note">
-          Locale STT, voz e engine TTS: definidos no .env (ALFRED_STT_LOCALE, ELEVENLABS_VOICE_ID, ALFRED_TTS_ENGINE).
+          Vazio = usa o default do .env. Locale STT (ALFRED_STT_LOCALE) e a chave ElevenLabs continuam no .env.
         </div>
       </div>
 
@@ -1919,6 +2050,12 @@ function SettingsCard({
           onClick={onToggleSpawnPaused}
           label="Pausar spawn — congelar nova delegação"
           title="Kill-switch: freeze NEW fan-out (delegate_to_agent, delegate_to_claude_code, scheduled studies). Running children finish."
+        />
+        <Toggle
+          on={heartbeat}
+          onClick={onToggleHeartbeat}
+          label="Heartbeat — cutucar cards parados, escalar acima"
+          title="Self-limiting heartbeat: an idle open card nudges its assignee, and after a few nudges (or a hard timeout) escalates up the parent chain. Writes notifications only — safe unattended."
         />
         <Toggle
           on={widgetScripts}
