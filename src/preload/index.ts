@@ -128,6 +128,9 @@ const api = {
   /** Auto-send (submit dictation on stt.final) toggle — persisted; read on mount. */
   getAutosend: (): Promise<boolean> => ipcRenderer.invoke('alfred:getAutosend'),
   setAutosend: (on: boolean): Promise<boolean> => ipcRenderer.invoke('alfred:setAutosend', on),
+  /** Send-delay / edit window in ms (hold before a message reaches the AI) — persisted; read on mount. Default 2000, 0 = off. */
+  getSendDelay: (): Promise<number> => ipcRenderer.invoke('alfred:getSendDelay'),
+  setSendDelay: (ms: number): Promise<number> => ipcRenderer.invoke('alfred:setSendDelay', ms),
   /** Widget JS toggle (run tier-2 widget scripts via the sandboxed alfred-widget:// protocol) — persisted; read on mount. Default OFF. */
   getWidgetScripts: (): Promise<boolean> => ipcRenderer.invoke('alfred:getWidgetScripts'),
   setWidgetScripts: (on: boolean): Promise<boolean> => ipcRenderer.invoke('alfred:setWidgetScripts', on),

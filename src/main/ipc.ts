@@ -109,6 +109,9 @@ export interface Orchestrator {
   /** Auto-send toggle (submit dictation on stt.final): read/set, persisted. */
   getAutosend(): boolean | Promise<boolean>;
   setAutosend(on: boolean): boolean | Promise<boolean>;
+  /** Send-delay / edit window (ms): hold a submitted message before it reaches the AI. Read/set, persisted, default 2000, 0 = off. */
+  getSendDelay(): number | Promise<number>;
+  setSendDelay(ms: number): number | Promise<number>;
   /** Widget JS toggle (run tier-2 widget scripts via the alfred-widget:// protocol): read/set, persisted, default OFF. */
   getWidgetScripts(): boolean | Promise<boolean>;
   setWidgetScripts(on: boolean): boolean | Promise<boolean>;
@@ -275,6 +278,16 @@ export function registerIpc(core: Orchestrator, emit: (e: StreamEvent) => void):
     } catch (err) {
       fail('set autosend', err);
       return false;
+    }
+  });
+
+  ipcMain.handle('alfred:getSendDelay', guard('get send delay', () => core.getSendDelay(), 2000));
+  ipcMain.handle('alfred:setSendDelay', async (_e, ms: unknown) => {
+    try {
+      return await core.setSendDelay(typeof ms === 'number' ? ms : 0);
+    } catch (err) {
+      fail('set send delay', err);
+      return 0;
     }
   });
 

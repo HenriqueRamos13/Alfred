@@ -26,6 +26,8 @@ import { HtmlWidgetCard } from './components/HtmlWidgetCard.tsx';
 import type { ReferenceTarget } from '../main/core/reference.ts';
 import { clampBox, tileLayout, cardOnDisplay, nextDisplayId, panelCards, TOP_INSET, type Bounds } from '../main/core/layout.ts';
 import { initialDictation, dictationReduce, shouldAutoSend } from '../main/core/dictation.ts';
+import { shouldHoldSend, SEND_DELAY_DEFAULT_MS } from '../main/core/send-delay-pure.ts';
+import { PendingSendBubble, type PendingSend } from './components/PendingSend.tsx';
 import { confirmMatches } from '../main/core/reset-pure.ts';
 import { ACCENT_NAMES, resolveAccent, type AccentName } from '../main/core/accent-pure.ts';
 import type { FactoryResetInfo } from '../main/core/orchestrator.ts';
@@ -138,6 +140,15 @@ export default function App() {
   // live toggle + submit fn via refs (below).
   const [autosend, setAutosend] = useState(false);
   const autosendRef = useRef(false);
+  // Send-delay / edit window: a submitted message (typed OR voice/auto-send, which
+  // route through the same onSubmit) is held as an editable PENDING bubble for
+  // sendDelayMs before it reaches the AI, so a transcription slip can be caught.
+  // 0 = off (send immediately). Only ONE pending at a time: a new submit while one
+  // is pending FLUSHES the existing one (sends it now — never silently dropped),
+  // then arms the new one.
+  const [sendDelayMs, setSendDelayMs] = useState(SEND_DELAY_DEFAULT_MS);
+  const [pending, setPending] = useState<PendingSend | null>(null);
+  const pendingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Latest onSubmit for the mount-once stream closure (avoids stale `killed`).
   const onSubmitRef = useRef<(text: string) => void>(() => {});
   // Live `armed` for the mount-once closure so AUTO-SEND honours the SAME guard as
@@ -464,6 +475,8 @@ export default function App() {
     alfred.getElevenlabs().then(setElevenlabs).catch(() => {});
     // Reflect the persisted auto-send toggle (default off).
     alfred.getAutosend().then(setAutosend).catch(() => {});
+    // Reflect the persisted send-delay / edit window (default 2000ms).
+    alfred.getSendDelay().then(setSendDelayMs).catch(() => {});
     // Reflect the persisted wake-word toggle (default on when the STT binary exists).
     alfred.getWakeword().then(setWake).catch(() => {});
     // Reflect the persisted widget-JS toggle (default off).
@@ -618,6 +631,7 @@ export default function App() {
             case 'tts_enabled': setTts(!!e.value); break;
             case 'wakeword_enabled': setWake(!!e.value); break;
             case 'autosend_enabled': setAutosend(!!e.value); break;
+            case 'send_delay_ms': setSendDelayMs(Number(e.value) || 0); break;
             case 'elevenlabs_enabled': setElevenlabs(!!e.value); break;
             case 'widget_scripts_enabled': setWidgetScripts(!!e.value); break;
             case 'grill_me_enabled': setGrill(!!e.value); break;
@@ -668,9 +682,11 @@ export default function App() {
     logRef.current?.scrollTo({ top: logRef.current.scrollHeight });
   }, [logs]);
 
-  const onSubmit = (text: string) => {
+  // The real send: optimistic user bubble + fire the turn downstream (coalesce/
+  // queue lives past alfred.send). This is what the edit window guards.
+  const doSend = (text: string) => {
     const trimmed = text.trim();
-    if (!trimmed || killed) return;
+    if (!trimmed) return;
     const msg: ChatMessage = {
       id: `u-${Date.now()}`,
       sessionId: 'local',
@@ -680,10 +696,70 @@ export default function App() {
     };
     setMessages((m) => [...m, msg]);
     alfred.send(trimmed).catch((err) => {
-      const msg = err instanceof Error ? err.message : String(err);
-      pushLog({ tag: 'ERROR', tone: 'red', msg });
-      pushAlert(msg);
+      const m = err instanceof Error ? err.message : String(err);
+      pushLog({ tag: 'ERROR', tone: 'red', msg: m });
+      pushAlert(m);
     });
+  };
+
+  const clearPendingTimer = () => {
+    if (pendingTimerRef.current) {
+      clearTimeout(pendingTimerRef.current);
+      pendingTimerRef.current = null;
+    }
+  };
+
+  // Discard the pending message + its timer (kill/cancel/×). Never sends.
+  const clearPending = () => {
+    clearPendingTimer();
+    setPending(null);
+  };
+
+  // Arm the edit window for `text`, or send immediately when the window is off.
+  const armOrSend = (text: string) => {
+    const trimmed = text.trim();
+    if (!trimmed || killed) return;
+    if (!shouldHoldSend(sendDelayMs, trimmed)) {
+      doSend(trimmed);
+      return;
+    }
+    clearPendingTimer();
+    const p: PendingSend = { id: `p-${Date.now()}`, text: trimmed, deadline: Date.now() + sendDelayMs };
+    setPending(p);
+    pendingTimerRef.current = setTimeout(() => {
+      pendingTimerRef.current = null;
+      setPending(null);
+      doSend(p.text);
+    }, sendDelayMs);
+  };
+
+  // The submit entry point (typed AND voice/auto-send route through here).
+  const onSubmit = (text: string) => {
+    const trimmed = text.trim();
+    if (!trimmed || killed) return;
+    // Only one pending at a time: flush the existing one immediately (send it —
+    // never silently dropped) before arming the new one.
+    if (pending && shouldHoldSend(sendDelayMs, trimmed)) {
+      clearPendingTimer();
+      const flushed = pending.text;
+      setPending(null);
+      doSend(flushed);
+    }
+    armOrSend(trimmed);
+  };
+
+  // Pending-bubble actions.
+  const pendingSendNow = () => {
+    if (!pending) return;
+    clearPendingTimer();
+    const t = pending.text;
+    setPending(null);
+    doSend(t);
+  };
+  // Re-arm a fresh window with the edited text (the bubble already froze the timer).
+  const pendingReSubmit = (text: string) => {
+    clearPending();
+    armOrSend(text);
   };
   // Keep the refs the mount-once stream closure reads pointing at the live values.
   onSubmitRef.current = onSubmit;
@@ -695,6 +771,7 @@ export default function App() {
     setKilled(true);
     setApproval(null);
     setStatus('idle');
+    clearPending(); // a queued edit-window message must not fire after a kill
     pushLog({ tag: 'KERNEL', tone: 'red', msg: '!! kill switch engaged' });
   };
 
@@ -703,6 +780,7 @@ export default function App() {
   // agent.status idle → the primary button flips back to Send on its own.
   const onCancel = () => {
     alfred.cancel();
+    clearPending(); // drop any queued edit-window message too
     pushLog({ tag: 'KERNEL', tone: 'amber', msg: 'cancelado — turno interrompido' });
   };
 
@@ -835,6 +913,17 @@ export default function App() {
     });
   };
 
+  const setSendDelayPref = (ms: number) => {
+    const v = Number.isFinite(ms) && ms > 0 ? Math.floor(ms) : 0;
+    setSendDelayMs(v); // optimistic
+    alfred.setSendDelay(v).then(setSendDelayMs).catch(() => {});
+    pushLog({
+      tag: 'BEHAVIOUR',
+      tone: v ? 'lime' : 'dim',
+      msg: v ? `edit window → ${(v / 1000).toFixed(1)}s before send` : 'edit window off — send immediately',
+    });
+  };
+
   const toggleWake = () => {
     const next = !wake;
     setWake(next); // optimistic
@@ -939,7 +1028,21 @@ export default function App() {
               ⟲ RESET
             </button>
           ),
-          body: <ChatLog messages={messages} streaming={streaming} />,
+          body: (
+            <>
+              <ChatLog messages={messages} streaming={streaming} />
+              {pending && (
+                <PendingSendBubble
+                  pending={pending}
+                  delayMs={sendDelayMs}
+                  onSendNow={pendingSendNow}
+                  onCancel={clearPending}
+                  onEdit={pendingReSubmit}
+                  onEditStart={clearPendingTimer}
+                />
+              )}
+            </>
+          ),
         };
       case 'surface':
         return {
@@ -1105,7 +1208,9 @@ export default function App() {
               spawnPaused={spawnPaused}
               widgetScripts={widgetScripts}
               dangerous={dangerous}
+              sendDelayMs={sendDelayMs}
               cost={cost}
+              onSetSendDelay={setSendDelayPref}
               onToggleAutosend={toggleAutosend}
               onToggleElevenlabs={toggleElevenlabs}
               onToggleGrill={toggleGrill}
@@ -1604,7 +1709,9 @@ function SettingsCard({
   spawnPaused,
   widgetScripts,
   dangerous,
+  sendDelayMs,
   cost,
+  onSetSendDelay,
   onToggleAutosend,
   onToggleElevenlabs,
   onToggleGrill,
@@ -1622,7 +1729,9 @@ function SettingsCard({
   spawnPaused: boolean;
   widgetScripts: boolean;
   dangerous: boolean;
+  sendDelayMs: number;
   cost: CostSnapshot | null;
+  onSetSendDelay: (ms: number) => void;
   onToggleAutosend: () => void;
   onToggleElevenlabs: () => void;
   onToggleGrill: () => void;
@@ -1676,6 +1785,24 @@ function SettingsCard({
 
       <div className="settings-group">
         <div className="settings-group-head">COMPORTAMENTO</div>
+        <label className="settings-num" title="Janela de edição: segura a mensagem submetida (escrita OU voz) por N segundos antes de ir à IA, para apanhar erros de transcrição. 0 = desligado (envia já).">
+          <span className="settings-num-k">Janela de edição antes de enviar</span>
+          <span className="settings-num-field">
+            <input
+              className="settings-num-input no-drag"
+              type="number"
+              min={0}
+              step={0.5}
+              value={sendDelayMs / 1000}
+              onChange={(e) => {
+                const s = Number(e.target.value);
+                onSetSendDelay(Number.isFinite(s) && s > 0 ? Math.round(s * 1000) : 0);
+              }}
+            />
+            <span className="settings-num-unit">s</span>
+          </span>
+        </label>
+        <div className="settings-note">0 = desligado — envia imediatamente.</div>
         <Toggle
           on={grill}
           onClick={onToggleGrill}

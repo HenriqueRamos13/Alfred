@@ -90,6 +90,7 @@ import type { TeamAgent } from './team-pure.ts';
 import { agentTokensToday } from './budget.ts';
 import { parseTopicsFromIndex } from './team-format-pure.ts';
 import { grillMeEnabled } from './settings-pure.ts';
+import { parseSendDelay } from './send-delay-pure.ts';
 import { isAccent, DEFAULT_ACCENT, type AccentName } from './accent-pure.ts';
 import { enqueueTurn, coalesceTurns } from './turn-queue-pure.ts';
 import { dayKey } from './budget.ts';
@@ -712,6 +713,13 @@ export interface OrchestratorHandle {
   /** Auto-send (submit dictation on stt.final, no "Alfred enviar"): read/toggle, persisted, default OFF. */
   getAutosend(): boolean;
   setAutosend(on: boolean): boolean;
+  /**
+   * Send-delay / edit window (ms): a submitted message is held as an editable
+   * pending bubble for this long before it reaches the AI, so a transcription
+   * slip can be caught. Read/set, persisted, default 2000; 0 = off (send now).
+   */
+  getSendDelay(): number;
+  setSendDelay(ms: number): number;
   /**
    * Widget JS (run tier-2 widgets' own JavaScript via the alfred-widget:// custom
    * protocol, sandboxed + no network): read/toggle, persisted, default OFF. OFF =
@@ -1532,6 +1540,16 @@ export function createOrchestrator(opts: CreateOrchestratorOpts): OrchestratorHa
       setSetting(db, 'autosend_enabled', on ? '1' : '0');
       emit({ kind: 'settings.changed', key: 'autosend_enabled', value: on });
       return on;
+    },
+    getSendDelay() {
+      return parseSendDelay(getSetting(db, 'send_delay_ms'));
+    },
+    setSendDelay(ms) {
+      // Trust boundary: clamp to a sane non-negative integer (0 = off) before persisting.
+      const v = Number.isFinite(ms) && ms > 0 ? Math.floor(ms) : 0;
+      setSetting(db, 'send_delay_ms', String(v));
+      emit({ kind: 'settings.changed', key: 'send_delay_ms', value: v });
+      return v;
     },
     getWidgetScripts() {
       return getSetting(db, 'widget_scripts_enabled') === '1';

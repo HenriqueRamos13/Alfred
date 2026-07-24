@@ -1197,3 +1197,100 @@ body {
   backdrop-filter: blur(6px);
   -webkit-backdrop-filter: blur(6px);
 }
+
+/* ── Pending send (edit-window) bubble ───────────────────────────────────── */
+@keyframes pending-drain { from { transform: scaleX(1); } to { transform: scaleX(0); } }
+.pending-send {
+  margin-top: 10px;
+  border: 1px dashed color-mix(in oklab, var(--amb) 55%, transparent);
+  border-radius: 4px;
+  background: color-mix(in oklab, var(--amb) 6%, transparent);
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  opacity: 0.85;
+}
+.pending-send-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.pending-send-tag {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--amb);
+}
+.pending-send-actions { display: flex; gap: 6px; }
+.pending-send-btn {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 700;
+  border-radius: 5px;
+  padding: 3px 8px;
+  cursor: pointer;
+  border: 1px solid var(--panel-border);
+  background: transparent;
+  color: var(--dim);
+}
+.pending-send-btn.go { border-color: var(--acc); color: var(--acc); }
+.pending-send-btn.x { border-color: var(--red); color: var(--red); padding: 3px 7px; }
+.pending-send-text {
+  text-align: left;
+  font-size: 13px;
+  color: var(--text);
+  background: transparent;
+  border: none;
+  cursor: text;
+  font: inherit;
+  white-space: pre-wrap;
+  word-break: break-word;
+  padding: 0;
+}
+.pending-send-edit {
+  width: 100%;
+  box-sizing: border-box;
+  resize: vertical;
+  background: var(--panel-2, #131b2b);
+  border: 1px solid color-mix(in oklab, var(--amb) 45%, transparent);
+  border-radius: 6px;
+  padding: 6px 8px;
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 13px;
+  outline: none;
+}
+.pending-send-bar { height: 3px; border-radius: 2px; background: rgba(255,255,255,0.08); overflow: hidden; }
+.pending-send-fill {
+  height: 100%;
+  transform-origin: left center;
+  background: var(--amb);
+  animation-name: pending-drain;
+  animation-timing-function: linear;
+  animation-fill-mode: forwards;
+}
+
+/* ── SETTINGS numeric field (send-delay etc.) ────────────────────────────── */
+.settings-num {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  padding: 2px 2px;
+}
+.settings-num-k { color: var(--dim); }
+.settings-num-field { display: inline-flex; align-items: center; gap: 4px; }
+.settings-num-input {
+  width: 56px;
+  background: var(--panel-2, #131b2b);
+  border: 1px solid var(--panel-border);
+  border-radius: 6px;
+  padding: 3px 6px;
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  text-align: right;
+  outline: none;
+}
+.settings-num-input:focus { border-color: var(--acc); }
+.settings-num-unit { color: var(--dim); }

@@ -36,6 +36,7 @@ import {
 } from '../src/main/core/wakeword.ts';
 import { watchdogAction, resolveEngine, elevenlabsConfigured } from '../src/main/core/tts.ts';
 import { initialDictation, dictationReduce, shouldAutoSend } from '../src/main/core/dictation.ts';
+import { parseSendDelay, shouldHoldSend, SEND_DELAY_DEFAULT_MS } from '../src/main/core/send-delay-pure.ts';
 import { shell } from '../src/main/tools/shell.ts';
 import { filesystem } from '../src/main/tools/filesystem.ts';
 import { browser } from '../src/main/tools/browser.ts';
@@ -3625,4 +3626,34 @@ test('isAccent — guards the setAccent validation boundary', () => {
   assert.ok(!isAccent('hasOwnProperty'));
   assert.ok(!isAccent(undefined));
   assert.equal(ACCENT_NAMES.length, 6);
+});
+
+// ── send-delay (edit-window) pure logic ──────────────────────────────────────
+
+test('parseSendDelay — absent uses the 2s default', () => {
+  assert.equal(parseSendDelay(undefined), 2000);
+  assert.equal(SEND_DELAY_DEFAULT_MS, 2000);
+});
+
+test('parseSendDelay — 0 is honoured (off), not the default', () => {
+  assert.equal(parseSendDelay('0'), 0);
+});
+
+test('parseSendDelay — finite values floor to an integer of ms', () => {
+  assert.equal(parseSendDelay('1500'), 1500);
+  assert.equal(parseSendDelay('2999.9'), 2999);
+});
+
+test('parseSendDelay — negative / non-numeric fall back to the default', () => {
+  assert.equal(parseSendDelay('-1'), 2000);
+  assert.equal(parseSendDelay('abc'), 2000);
+  assert.equal(parseSendDelay(''), 2000);
+});
+
+test('shouldHoldSend — holds only with a positive delay AND real text', () => {
+  assert.ok(shouldHoldSend(2000, 'hello'));
+  assert.ok(!shouldHoldSend(0, 'hello')); // delay off → send immediately
+  assert.ok(!shouldHoldSend(2000, '   ')); // whitespace-only → never holds
+  assert.ok(!shouldHoldSend(2000, '')); // empty → never holds
+  assert.ok(!shouldHoldSend(-5, 'hello')); // guard: non-positive never holds
 });

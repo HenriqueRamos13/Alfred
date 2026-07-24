@@ -421,7 +421,7 @@ export type StreamEvent =
   // ALL windows so multi-monitor overlays stay in sync: the receiver updates its
   // local state + re-applies the effect WITHOUT re-invoking the setter (idempotent
   // → no loop). `value` is the new value (accent name, or a boolean for toggles).
-  | { kind: 'settings.changed'; key: SettingKey; value: string | boolean }
+  | { kind: 'settings.changed'; key: SettingKey; value: string | number | boolean }
   // The main conversation was reset: the UI clears the chat (every window).
   | { kind: 'conversation.reset'; sessionId: string }
   // A factory reset completed: the UI reloads to a blank factory state.
@@ -440,7 +440,8 @@ export type SettingKey =
   | 'widget_scripts_enabled'
   | 'grill_me_enabled'
   | 'dangerous_mode'
-  | 'spawn_paused';
+  | 'spawn_paused'
+  | 'send_delay_ms';
 
 /** Explicit wake-listener state, surfaced to the UI (see the wake.status event). */
 export type WakeStatus = 'listening' | 'suppressed' | 'failed' | 'stopped' | 'disabled';
