@@ -93,7 +93,7 @@ import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { confirmMatches, factoryResetPaths, factoryResetTables } from '../src/main/core/reset.ts';
-import { grillMeEnabled, resolveConfigValue, parseVoiceConfig } from '../src/main/core/settings-pure.ts';
+import { grillMeEnabled, lowCpuEnabled, shouldDrawFrame, resolveConfigValue, parseVoiceConfig } from '../src/main/core/settings-pure.ts';
 import {
   isLanguage,
   resolveLanguage,
@@ -377,6 +377,24 @@ test('grillMeEnabled — default ON, only explicit "0" disables', () => {
   assert.equal(grillMeEnabled('1'), true);
   assert.equal(grillMeEnabled(''), true); // anything not "0" → ON
   assert.equal(grillMeEnabled('0'), false);
+});
+
+// ── low-cpu mode: default OFF, only explicit "1" enables + frame gate ────────
+
+test('lowCpuEnabled — default OFF, only explicit "1" enables', () => {
+  assert.equal(lowCpuEnabled(undefined), false); // fresh DB → OFF
+  assert.equal(lowCpuEnabled(''), false);
+  assert.equal(lowCpuEnabled('0'), false);
+  assert.equal(lowCpuEnabled('junk'), false);
+  assert.equal(lowCpuEnabled('1'), true);
+});
+
+test('shouldDrawFrame — low-cpu throttles to the interval, normal mode never skips', () => {
+  assert.equal(shouldDrawFrame(0, 16, false), true);   // normal: every frame
+  assert.equal(shouldDrawFrame(0, 16, true), false);   // low-cpu: 16ms < 100ms
+  assert.equal(shouldDrawFrame(0, 100, true), true);   // interval reached
+  assert.equal(shouldDrawFrame(500, 601, true), true);
+  assert.equal(shouldDrawFrame(500, 599, true), false);
 });
 
 // ── voice config: setting > env > default resolution + safe JSON parse ──────────
@@ -1044,7 +1062,7 @@ test('system.risk — reads T0, reversible controls T1, destructive T2', () => {
   for (const op of ['battery', 'volume_get', 'brightness_get', 'displays', 'wifi', 'apps_running', 'app_frontmost', 'clipboard_read'])
     assert.equal(risk(op), 'T0', `${op} should be T0`);
   // reversible controls → T1
-  for (const op of ['volume_set', 'brightness_set', 'app_open', 'notify', 'clipboard_write', 'caffeinate', 'screenshot', 'grill_me_on', 'grill_me_off', 'grill_me_toggle'])
+  for (const op of ['volume_set', 'brightness_set', 'app_open', 'notify', 'clipboard_write', 'caffeinate', 'screenshot', 'grill_me_on', 'grill_me_off', 'grill_me_toggle', 'low_cpu_on', 'low_cpu_off', 'low_cpu_toggle'])
     assert.equal(risk(op), 'T1', `${op} should be T1`);
   // destructive / disruptive → T2
   for (const op of ['app_quit', 'lock', 'sleep']) assert.equal(risk(op), 'T2', `${op} should be T2`);

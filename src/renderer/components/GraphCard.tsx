@@ -32,6 +32,7 @@ import {
 } from '../../main/core/graph-pure.ts';
 import type { StreamEvent } from '../../main/core/types.ts';
 import type { ReferenceTarget } from '../../main/core/reference.ts';
+import { shouldDrawFrame } from '../../main/core/settings-pure.ts';
 
 type NodeType = GraphNode['type'] | 'file' | 'url';
 interface SimNode {
@@ -91,6 +92,8 @@ export function GraphCard({ onReference }: { onReference: (target: ReferenceTarg
   const view = useRef({ scale: 1, tx: 0, ty: 0, inited: false });
   const alphaRef = useRef(1);
   const sizeRef = useRef({ w: 0, h: 0 });
+  // Timestamp of the last frame actually stepped+drawn — the low-cpu frame gate.
+  const lastDrawRef = useRef(0);
 
   graphRef.current = graph;
   selectedRef.current = selected;
@@ -212,6 +215,17 @@ export function GraphCard({ onReference }: { onReference: (target: ReferenceTarg
     if (!canvas || !ctx) return;
 
     const tick = (): void => {
+      // LOW-CPU mode: skip the whole frame (physics + draw) unless the throttle
+      // interval has elapsed (~10 fps). App.tsx mirrors the setting onto <body>,
+      // so this works per-window with no props. Normal mode never skips.
+      const nowTs = Date.now();
+      const lowCpu = document.body.classList.contains('low-cpu');
+      if (!shouldDrawFrame(lastDrawRef.current, nowTs, lowCpu)) {
+        raf = requestAnimationFrame(tick);
+        return;
+      }
+      lastDrawRef.current = nowTs;
+
       const nodes = allNodes();
       const pos = posRef.current;
       for (const n of nodes) if (!pos.has(n.id)) seed(n.id);
@@ -289,11 +303,11 @@ export function GraphCard({ onReference }: { onReference: (target: ReferenceTarg
         }
       }
 
-      draw(ctx);
+      draw(ctx, lowCpu);
       raf = requestAnimationFrame(tick);
     };
 
-    const draw = (c: CanvasRenderingContext2D): void => {
+    const draw = (c: CanvasRenderingContext2D, lowCpu: boolean): void => {
       const { w, h } = sizeRef.current;
       const { scale, tx, ty } = view.current;
       c.clearRect(0, 0, w, h);
@@ -349,10 +363,11 @@ export function GraphCard({ onReference }: { onReference: (target: ReferenceTarg
           c.lineWidth = 2 / scale;
           c.stroke();
           c.shadowColor = sc;
-          c.shadowBlur = 18 * inten;
+          // shadowBlur is by far the most expensive canvas op — drop the glow in low-cpu.
+          c.shadowBlur = lowCpu ? 0 : 18 * inten;
         } else {
           c.shadowColor = base;
-          c.shadowBlur = n.id === sel ? 16 : 7;
+          c.shadowBlur = lowCpu ? 0 : n.id === sel ? 16 : 7;
         }
 
         c.beginPath();

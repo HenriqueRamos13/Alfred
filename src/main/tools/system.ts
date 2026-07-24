@@ -2,7 +2,7 @@ import { execFile, spawn, type ChildProcess } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import type { Tool } from './types.ts';
-import { grillMeEnabled } from '../core/settings-pure.ts';
+import { grillMeEnabled, lowCpuEnabled } from '../core/settings-pure.ts';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Pure parsers (no spawn, strip-types safe → tested in test/logic.test.ts)
@@ -143,7 +143,10 @@ type Op =
   | 'window_toggle'
   | 'grill_me_on'
   | 'grill_me_off'
-  | 'grill_me_toggle';
+  | 'grill_me_toggle'
+  | 'low_cpu_on'
+  | 'low_cpu_off'
+  | 'low_cpu_toggle';
 
 interface Args {
   op: Op;
@@ -218,7 +221,10 @@ export const system: Tool<Args> = {
     'Also hide/show/toggle ' +
     "Alfred's own overlay windows (window_hide/window_show/window_toggle), and toggle the " +
     'GRILL-ME plan-clarity interview when the user asks ("ativa/desativa o grill me": ' +
-    'grill_me_on/grill_me_off/grill_me_toggle). One `op` per call. ' +
+    'grill_me_on/grill_me_off/grill_me_toggle), and toggle LOW-CPU mode when the user asks ' +
+    '("liga/desliga o modo low-cpu": low_cpu_on/low_cpu_off/low_cpu_toggle) — it kills the HUD\'s ' +
+    'decorative animations and throttles the knowledge-graph canvas to cut GPU load. ' +
+    'One `op` per call. ' +
     'macOS privacy (TCC) permissions some ops may prompt for: ' +
     'app_quit/app_frontmost/apps_running(fallback)/sleep use AppleScript → Automation permission; ' +
     'screenshot uses screencapture → Screen Recording permission. ' +
@@ -254,6 +260,9 @@ export const system: Tool<Args> = {
           'grill_me_on',
           'grill_me_off',
           'grill_me_toggle',
+          'low_cpu_on',
+          'low_cpu_off',
+          'low_cpu_toggle',
         ],
         description: 'Which capability to invoke.',
       },
@@ -290,6 +299,9 @@ export const system: Tool<Args> = {
       case 'grill_me_on':
       case 'grill_me_off':
       case 'grill_me_toggle':
+      case 'low_cpu_on':
+      case 'low_cpu_off':
+      case 'low_cpu_toggle':
         return 'T1';
       default:
         return 'T0';
@@ -524,6 +536,20 @@ export const system: Tool<Args> = {
           const next = a.op === 'grill_me_on' ? true : a.op === 'grill_me_off' ? false : !current;
           setSetting(ctx.db, 'grill_me_enabled', next ? '1' : '0');
           return { ok: true, result: { grillMe: next } };
+        }
+
+        // LOW-CPU toggle — "liga/desliga o modo low-cpu". Persists low_cpu_enabled
+        // and broadcasts settings.changed so every open window's React state (and
+        // therefore body.low-cpu / the graph throttle) updates immediately.
+        case 'low_cpu_on':
+        case 'low_cpu_off':
+        case 'low_cpu_toggle': {
+          const { getSetting, setSetting } = await import('../core/db.ts');
+          const current = lowCpuEnabled(getSetting(ctx.db, 'low_cpu_enabled'));
+          const next = a.op === 'low_cpu_on' ? true : a.op === 'low_cpu_off' ? false : !current;
+          setSetting(ctx.db, 'low_cpu_enabled', next ? '1' : '0');
+          ctx.emit({ kind: 'settings.changed', key: 'low_cpu_enabled', value: next });
+          return { ok: true, result: { lowCpu: next } };
         }
 
         default:

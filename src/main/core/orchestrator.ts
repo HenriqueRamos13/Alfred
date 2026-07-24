@@ -134,7 +134,7 @@ import {
 } from './agent-augment-pure.ts';
 import { agentTokensToday } from './budget.ts';
 import { parseTopicsFromIndex } from './team-format-pure.ts';
-import { grillMeEnabled, parseVoiceConfig } from './settings-pure.ts';
+import { grillMeEnabled, lowCpuEnabled, parseVoiceConfig } from './settings-pure.ts';
 import { parseSendDelay } from './send-delay-pure.ts';
 import { isAccent, DEFAULT_ACCENT, type AccentName } from './accent-pure.ts';
 import {
@@ -726,6 +726,12 @@ export interface OrchestratorHandle {
   /** GRILL-ME (interview to lock the plan before acting): read/toggle, persisted, default ON. */
   getGrillMe(): boolean;
   setGrillMe(on: boolean): boolean;
+  /**
+   * LOW-CPU mode (kills decorative CSS animations, throttles the graph canvas to
+   * ~10 fps): read/toggle, persisted, default OFF.
+   */
+  getLowCpu(): boolean;
+  setLowCpu(on: boolean): boolean;
   /** Clear all persisted auto-approve rules ("ask again next time"). */
   resetApprovals(): void;
   /**
@@ -1490,6 +1496,15 @@ export function createOrchestrator(opts: CreateOrchestratorOpts): OrchestratorHa
       setSetting(db, 'grill_me_enabled', on ? '1' : '0');
       const v = grillMeEnabled(getSetting(db, 'grill_me_enabled'));
       emit({ kind: 'settings.changed', key: 'grill_me_enabled', value: v });
+      return v;
+    },
+    getLowCpu() {
+      return lowCpuEnabled(getSetting(db, 'low_cpu_enabled'));
+    },
+    setLowCpu(on) {
+      setSetting(db, 'low_cpu_enabled', on ? '1' : '0');
+      const v = lowCpuEnabled(getSetting(db, 'low_cpu_enabled'));
+      emit({ kind: 'settings.changed', key: 'low_cpu_enabled', value: v });
       return v;
     },
     resetApprovals() {

@@ -163,6 +163,7 @@ export default function App() {
   const [dangerous, setDangerous] = useState(false);
   const [spawnPaused, setSpawnPaused] = useState(false); // SPAWN kill-switch (freeze new fan-out)
   const [grill, setGrill] = useState(true); // GRILL-ME defaults ON
+  const [lowCpu, setLowCpuState] = useState(false); // LOW-CPU mode defaults OFF
   // Factory-reset modal: null = closed; the info object = open, listing what will be erased.
   const [factoryInfo, setFactoryInfo] = useState<FactoryResetInfo | null>(null);
   const [factoryConfirm, setFactoryConfirm] = useState('');
@@ -368,6 +369,13 @@ export default function App() {
     const t = setInterval(() => setClock(now()), 1000);
     return () => clearInterval(t);
   }, []);
+
+  // LOW-CPU mode propagation channel: mirror the state onto <body> so the CSS
+  // kill-switch (`body.low-cpu`) and GraphCard's frame gate (which reads the
+  // class inside its rAF tick) both see it, per-window, with no prop drilling.
+  useEffect(() => {
+    document.body.classList.toggle('low-cpu', lowCpu);
+  }, [lowCpu]);
 
   // Corner-HUD battery — Chromium Battery Status API (not in lib.dom, typed
   // inline). Event-driven, no polling. `getBattery()` resolves even on a
@@ -603,6 +611,8 @@ export default function App() {
     alfred.getHeartbeat().then((h) => setHeartbeat(h.enabled)).catch(() => {});
     // Reflect the persisted GRILL-ME toggle (default on).
     alfred.getGrillMe().then(setGrill).catch(() => {});
+    // Reflect the persisted LOW-CPU toggle (default off).
+    alfred.getLowCpu().then(setLowCpuState).catch(() => {});
     // Reflect the persisted voice-output toggle.
     alfred.getTts().then(setTts).catch(() => {});
     // Reflect + apply the persisted UI accent (recolours --acc at the root).
@@ -773,6 +783,8 @@ export default function App() {
             refreshPending();
             // The agent may have flipped GRILL-ME via the system tool — reflect it.
             alfred.getGrillMe().then(setGrill).catch(() => {});
+            // Same for LOW-CPU (system tool op low_cpu_on/off/toggle).
+            alfred.getLowCpu().then(setLowCpuState).catch(() => {});
           }
           break;
         case 'job.data':
@@ -811,6 +823,7 @@ export default function App() {
             case 'voice_config': if (!editingVoiceRef.current) setVoiceCfg(parseVoiceConfig(String(e.value))); break;
             case 'widget_scripts_enabled': setWidgetScripts(!!e.value); break;
             case 'grill_me_enabled': setGrill(!!e.value); break;
+            case 'low_cpu_enabled': setLowCpuState(!!e.value); break;
             case 'dangerous_mode': setDangerous(!!e.value); break;
             case 'spawn_paused': setSpawnPaused(!!e.value); break;
           }
@@ -1012,6 +1025,17 @@ export default function App() {
       tag: 'KERNEL',
       tone: next ? 'lime' : 'dim',
       msg: next ? 'grill-me on — interview to lock the plan first' : 'grill-me off — act directly',
+    });
+  };
+
+  const toggleLowCpu = () => {
+    const next = !lowCpu;
+    setLowCpuState(next); // optimistic
+    alfred.setLowCpu(next).then(setLowCpuState).catch(() => setLowCpuState(!next));
+    pushLog({
+      tag: 'KERNEL',
+      tone: next ? 'lime' : 'dim',
+      msg: next ? 'low-cpu on — animations off, graph throttled' : 'low-cpu off — full HUD fidelity',
     });
   };
 
@@ -1421,6 +1445,7 @@ export default function App() {
               }}
               onSetVoice={setVoicePref}
               grill={grill}
+              lowCpu={lowCpu}
               spawnPaused={spawnPaused}
               heartbeat={heartbeat}
               widgetScripts={widgetScripts}
@@ -1431,6 +1456,7 @@ export default function App() {
               onToggleAutosend={toggleAutosend}
               onToggleElevenlabs={toggleElevenlabs}
               onToggleGrill={toggleGrill}
+              onToggleLowCpu={toggleLowCpu}
               onToggleSpawnPaused={toggleSpawnPaused}
               onToggleHeartbeat={toggleHeartbeat}
               onToggleWidgetScripts={toggleWidgetScripts}
@@ -1984,6 +2010,7 @@ function SettingsCard({
   onDraftVoice,
   onSetVoice,
   grill,
+  lowCpu,
   spawnPaused,
   heartbeat,
   widgetScripts,
@@ -1994,6 +2021,7 @@ function SettingsCard({
   onToggleAutosend,
   onToggleElevenlabs,
   onToggleGrill,
+  onToggleLowCpu,
   onToggleSpawnPaused,
   onToggleHeartbeat,
   onToggleWidgetScripts,
@@ -2011,6 +2039,7 @@ function SettingsCard({
   onDraftVoice: (patch: VoiceConfig) => void;
   onSetVoice: (patch: VoiceConfig) => void;
   grill: boolean;
+  lowCpu: boolean;
   spawnPaused: boolean;
   heartbeat: boolean;
   widgetScripts: boolean;
@@ -2021,6 +2050,7 @@ function SettingsCard({
   onToggleAutosend: () => void;
   onToggleElevenlabs: () => void;
   onToggleGrill: () => void;
+  onToggleLowCpu: () => void;
   onToggleSpawnPaused: () => void;
   onToggleHeartbeat: () => void;
   onToggleWidgetScripts: () => void;
@@ -2145,6 +2175,19 @@ function SettingsCard({
         </label>
         <div className="settings-note">
           Vazio = usa o default do .env. Locale STT (ALFRED_STT_LOCALE) e a chave ElevenLabs continuam no .env.
+        </div>
+      </div>
+
+      <div className="settings-group">
+        <div className="settings-group-head">DESEMPENHO</div>
+        <Toggle
+          on={lowCpu}
+          onClick={onToggleLowCpu}
+          label="Low-CPU — desliga animações e pulsares"
+          title="Low-CPU on — kills every decorative CSS animation/transition, hides the scanline, and throttles the knowledge-graph canvas to ~10 fps without glow. Cuts the GPU-helper / WindowServer load on an idle HUD."
+        />
+        <div className="settings-note">
+          Reduz o consumo do processo gráfico. A barra de contagem do envio fica parada — o envio continua a disparar.
         </div>
       </div>
 

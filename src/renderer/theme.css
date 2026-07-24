@@ -124,6 +124,15 @@ body {
   *, *::before, *::after { animation: none !important; transition: none !important; }
 }
 
+/* Low-CPU mode (settings toggle): same kill-switch, user-controlled. `!important`
+   also beats the inline `style={{ animation: ... }}` pulses, so no component edits. */
+body.low-cpu *, body.low-cpu *::before, body.low-cpu *::after {
+  animation: none !important;
+  transition: none !important;
+}
+/* A frozen scanline mid-screen reads as a rendering artifact — remove it. */
+body.low-cpu .scanline { display: none; }
+
 /* ── app shell ─────────────────────────────────────────────────────── */
 .app {
   position: relative;

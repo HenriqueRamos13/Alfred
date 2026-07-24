@@ -463,6 +463,7 @@ export type SettingKey =
   | 'elevenlabs_enabled'
   | 'widget_scripts_enabled'
   | 'grill_me_enabled'
+  | 'low_cpu_enabled'
   | 'dangerous_mode'
   | 'spawn_paused'
   | 'send_delay_ms'

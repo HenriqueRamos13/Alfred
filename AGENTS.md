@@ -121,6 +121,7 @@ Details: [docs/governance/risk-tiers.md](docs/governance/risk-tiers.md) ·
 | Deploy / release | skills/deploy-runbook/SKILL.md |
 | Web research / scraping | `browser`, then `memory` op:note for findings |
 | Mac status / control | `system` |
+| Cut the HUD's GPU load ("liga/desliga o modo low-cpu") | `system` op `low_cpu_on` / `low_cpu_off` / `low_cpu_toggle` |
 | Email triage | `gmail` |
 | Remember / recall the past (curated vault) | `memory` |
 | Find what we literally said in an old session | `recall_sessions` (FTS5 transcript search) |

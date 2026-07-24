@@ -13,6 +13,28 @@ export function grillMeEnabled(raw: string | undefined): boolean {
 }
 
 /**
+ * LOW-CPU toggle: defaults to OFF (inverse polarity of grill-me). The setting is
+ * absent on a fresh DB, so only an explicit "1" enables it — anything else
+ * (undefined, blank, "0", garbage) leaves the HUD at full fidelity.
+ */
+export function lowCpuEnabled(raw: string | undefined): boolean {
+  return raw === '1';
+}
+
+/**
+ * Frame gate for canvas loops: in low-cpu mode draw at most every intervalMs
+ * (~10 fps by default), otherwise never skip a frame. Pure.
+ */
+export function shouldDrawFrame(
+  lastTs: number,
+  nowTs: number,
+  lowCpu: boolean,
+  intervalMs = 100,
+): boolean {
+  return !lowCpu || nowTs - lastTs >= intervalMs;
+}
+
+/**
  * Resolve a string config with precedence: a persisted setting wins, else the env
  * value, else the fallback. Blank/whitespace at any level falls through. Lets the
  * settings card override TTS voice/engine/rate/eleven-voice-id at runtime while

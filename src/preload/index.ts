@@ -82,6 +82,9 @@ const api = {
   /** GRILL-ME (interview to lock the plan before acting) — persisted; read on mount. Default ON. */
   getGrillMe: (): Promise<boolean> => ipcRenderer.invoke('alfred:getGrillMe'),
   setGrillMe: (on: boolean): Promise<boolean> => ipcRenderer.invoke('alfred:setGrillMe', on),
+  /** LOW-CPU mode (animations off, graph throttled) — persisted; read on mount. Default OFF. */
+  getLowCpu: (): Promise<boolean> => ipcRenderer.invoke('alfred:getLowCpu'),
+  setLowCpu: (on: boolean): Promise<boolean> => ipcRenderer.invoke('alfred:setLowCpu', on),
   /** Clear all persisted auto-approve rules. */
   resetApprovals: (): void => ipcRenderer.send('alfred:resetApprovals'),
   /** Reset ONLY the main conversation (chat + claude-code session); keeps memory/projects. */

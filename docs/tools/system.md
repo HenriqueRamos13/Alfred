@@ -30,6 +30,9 @@ ops over synthetic mouse/keyboard events. Source: `src/main/tools/system.ts`.
 | `grill_me_on` | — | `{ grillMe: true }` | T1 |
 | `grill_me_off` | — | `{ grillMe: false }` | T1 |
 | `grill_me_toggle` | — | `{ grillMe }` (new state) | T1 |
+| `low_cpu_on` | — | `{ lowCpu: true }` | T1 |
+| `low_cpu_off` | — | `{ lowCpu: false }` | T1 |
+| `low_cpu_toggle` | — | `{ lowCpu }` (new state) | T1 |
 
 `window_*` hide/show/toggle **all** of Alfred's overlay windows at once (same
 path as the `⌘⇧A` shortcut and the "Alfred, esconder/mostrar" voice commands).
@@ -38,6 +41,15 @@ path as the `⌘⇧A` shortcut and the "Alfred, esconder/mostrar" voice commands
 call these when the user asks to turn the plan-clarity interview on/off ("ativa/
 desativa o grill me"). Behaviour is documented in
 [../governance/grill-me.md](../governance/grill-me.md).
+
+`low_cpu_*` set/toggle the persisted `low_cpu_enabled` setting (**default off**)
+— call these when the user asks for the low-CPU / low-power HUD ("liga/desliga o
+modo low-cpu"). ON kills every decorative CSS animation and transition, hides the
+scanline, and throttles the knowledge-graph canvas to ~10 fps with no glow, which
+cuts the GPU-helper / WindowServer load on an idle HUD. It is purely cosmetic —
+no governance, no behaviour change. The same toggle lives in the SETTINGS card
+under **DESEMPENHO**; the op broadcasts `settings.changed` so every open window
+updates immediately.
 
 `value` is clamped: volume 0-100, brightness 0-1. `caffeinate` holds **one**
 keep-awake at a time (module-global); `stop:true` releases it.

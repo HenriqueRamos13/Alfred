@@ -67,6 +67,9 @@ export interface Orchestrator {
   /** GRILL-ME (plan-clarity interview): read/toggle, persisted, default ON. */
   getGrillMe(): boolean | Promise<boolean>;
   setGrillMe(on: boolean): boolean | Promise<boolean>;
+  /** LOW-CPU mode (animations off, graph throttled): read/toggle, persisted, default OFF. */
+  getLowCpu(): boolean | Promise<boolean>;
+  setLowCpu(on: boolean): boolean | Promise<boolean>;
   /** Clear all persisted auto-approve rules. */
   resetApprovals(): void;
   /** Reset ONLY the main conversation (chat + claude-code session); keeps memory/projects. */
@@ -434,6 +437,15 @@ export function registerIpc(core: Orchestrator, emit: (e: StreamEvent) => void):
     } catch (err) {
       fail('set grill me', err);
       return true;
+    }
+  });
+  ipcMain.handle('alfred:getLowCpu', guard('get low cpu', () => core.getLowCpu(), false));
+  ipcMain.handle('alfred:setLowCpu', async (_e, on: unknown) => {
+    try {
+      return await core.setLowCpu(on === true);
+    } catch (err) {
+      fail('set low cpu', err);
+      return false;
     }
   });
   ipcMain.on('alfred:resetApprovals', () => {
