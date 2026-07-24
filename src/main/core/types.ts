@@ -356,6 +356,10 @@ export interface TeamAgentInfo {
   tokensToday: number;
   /** Specialties/topics learned, parsed from the shared who-knows-what index. */
   topics: string[];
+  /** Manager this agent reports to (org hierarchy, Phase 7 stage 2); null = top of the org. */
+  parentId: string | null;
+  /** Raw inbox-power flag as stored. The UI resolves the effective power via canMessageUserResolved. */
+  canMessageUser: boolean;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -425,6 +429,7 @@ export type StreamEvent =
   // A kanban card in `projectSlug`'s board was created/updated/moved/deleted
   // (Phase 7). The open project modal listens and re-fetches that board's cards.
   | { kind: 'kanban.changed'; projectSlug: string }
+  | { kind: 'team.changed' }
   // The main conversation was reset: the UI clears the chat (every window).
   | { kind: 'conversation.reset'; sessionId: string }
   // A factory reset completed: the UI reloads to a blank factory state.

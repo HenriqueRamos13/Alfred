@@ -46,6 +46,7 @@ import type {
   Job,
   ProjectRecord,
   StreamEvent,
+  TeamAgentInfo,
   UiNode,
   WakeStatus,
 } from '../main/core/types.ts';
@@ -115,6 +116,7 @@ export default function App() {
   const [openProjectSlug, setOpenProjectSlug] = useState<string | null>(null);
   const [projectDetail, setProjectDetail] = useState<ProjectDetail | null>(null);
   const [kanbanCards, setKanbanCards] = useState<KanbanCard[]>([]);
+  const [teamAgents, setTeamAgents] = useState<TeamAgentInfo[]>([]);
   const openProjectRef = useRef<string | null>(null);
   const [accounts, setAccounts] = useState<AccountRecord[]>([]);
   const [connectingGmail, setConnectingGmail] = useState(false);
@@ -433,6 +435,7 @@ export default function App() {
     setProjectDetail(null);
     alfred.getProject(slug).then(setProjectDetail).catch(() => {});
     refreshCards(slug);
+    alfred.listTeamAgents().then(setTeamAgents).catch(() => {}); // Org tab hierarchy
   };
   const closeProject = () => {
     openProjectRef.current = null;
@@ -631,6 +634,10 @@ export default function App() {
           if (openProjectRef.current && e.projectSlug === openProjectRef.current) {
             alfred.listCards(e.projectSlug).then(setKanbanCards).catch(() => {});
           }
+          break;
+        case 'team.changed':
+          // Roster / hierarchy changed (create/delete/set_manager) — refresh the Org tab.
+          alfred.listTeamAgents().then(setTeamAgents).catch(() => {});
           break;
         case 'agent.status':
           setStatus(e.status);
@@ -1564,7 +1571,7 @@ export default function App() {
       </div>
 
       {openProjectSlug && (
-        <ProjectModal detail={projectDetail} cards={kanbanCards} onKanban={doKanban} onClose={closeProject} />
+        <ProjectModal detail={projectDetail} cards={kanbanCards} agents={teamAgents} onKanban={doKanban} onClose={closeProject} />
       )}
 
       {approval && (

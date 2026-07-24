@@ -21,7 +21,9 @@ import {
   type KanbanCard,
   type Priority,
 } from '../../main/core/kanban-pure.ts';
+import { buildOrgTree, canMessageUserResolved, type OrgNode } from '../../main/core/team-format-pure.ts';
 import type { ProjectDetail } from '../../main/core/projects.ts';
+import type { TeamAgentInfo } from '../../main/core/types.ts';
 
 /** Result shape of alfred.kanban(op, args). */
 type KanbanResult = { ok: boolean; error?: string; reasons?: string[] };
@@ -29,6 +31,8 @@ type KanbanResult = { ok: boolean; error?: string; reasons?: string[] };
 export interface ProjectModalProps {
   detail: ProjectDetail | null;
   cards: KanbanCard[];
+  /** The full roster (Org tab renders its hierarchy; card counts are per this project). */
+  agents: TeamAgentInfo[];
   onKanban: (op: string, args: Record<string, unknown>) => Promise<KanbanResult>;
   onClose: () => void;
 }
@@ -50,7 +54,7 @@ function initials(id: string | null): string {
   return id.replace(/[^a-z0-9]/gi, '').slice(0, 2).toUpperCase() || '·';
 }
 
-export function ProjectModal({ detail, cards, onKanban, onClose }: ProjectModalProps) {
+export function ProjectModal({ detail, cards, agents, onKanban, onClose }: ProjectModalProps) {
   const [tab, setTab] = useState<Tab>('board');
   const [selected, setSelected] = useState<string | null>(null);
   const [dragId, setDragId] = useState<string | null>(null);
@@ -180,7 +184,23 @@ export function ProjectModal({ detail, cards, onKanban, onClose }: ProjectModalP
             </div>
           )}
 
-          {(tab === 'org' || tab === 'team' || tab === 'activity') && (
+          {tab === 'org' && (
+            <div className="pm-org">
+              <p className="pm-org-intro">
+                Hierarquia do projeto — quem reporta a quem. Um <b>leaf</b> reporta ao superior; um{' '}
+                <b>orchestrator</b> pode delegar abaixo. Badge = cards abertos atribuídos. ✉ = pode falar com o utilizador.
+              </p>
+              {agents.length === 0 ? (
+                <div className="empty">NO TEAM AGENTS</div>
+              ) : (
+                <div className="pm-tree">
+                  <OrgTree nodes={buildOrgTree(agents)} cards={cards} />
+                </div>
+              )}
+            </div>
+          )}
+
+          {(tab === 'team' || tab === 'activity') && (
             <div className="empty pm-soon">{tab.toUpperCase()} — em breve</div>
           )}
         </div>
@@ -204,6 +224,41 @@ function Stat({ n, label }: { n: number; label: string }) {
       <b>{n}</b>
       <small>{label}</small>
     </div>
+  );
+}
+
+// ── Org chart (Phase 7 stage 2) ──────────────────────────────────────────────
+// Renders the pure buildOrgTree forest as a nested <ul>. Renderer-safe: the only
+// team import is team-format-pure (no node:*). Card count = OPEN cards (not Done)
+// assigned to that agent on THIS project's board.
+
+function OrgTree({ nodes, cards }: { nodes: OrgNode<TeamAgentInfo>[]; cards: KanbanCard[] }) {
+  return (
+    <ul>
+      {nodes.map((n) => {
+        const a = n.agent;
+        const orch = a.delegationRole === 'orchestrator';
+        const openCards = cards.filter((c) => c.assigneeId === a.id && c.column !== 'done').length;
+        return (
+          <li key={a.id}>
+            <div className={`pm-node${orch ? ' orchestrator' : ''}`}>
+              <div className="pm-node-nm">
+                <span className="pm-av">{initials(a.id)}</span>
+                {a.name}
+                {canMessageUserResolved(a) && <span className="pm-node-msg" title="pode falar com o utilizador">✉</span>}
+              </div>
+              <div className="pm-node-rl">{orch ? 'orchestrator' : 'leaf'}</div>
+              <div className="pm-node-st">
+                {a.provider}:{a.model}
+                {a.tokensToday > 0 ? ` · ${a.tokensToday.toLocaleString()} tok` : ''}
+              </div>
+              {openCards > 0 && <span className="pm-node-badge" title="cards abertos">{openCards}</span>}
+            </div>
+            {n.children.length > 0 && <OrgTree nodes={n.children} cards={cards} />}
+          </li>
+        );
+      })}
+    </ul>
   );
 }
 

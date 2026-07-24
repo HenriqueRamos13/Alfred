@@ -13,12 +13,13 @@ This tool **persists + scaffolds** an agent; you **run** one with
 ## Ops, args, output
 | op | args | output | risk |
 |----|------|--------|------|
-| `create` | `name`, `provider`, `model`, `role?`, `grant?`, `delegationRole?`, `dailyTokenBudget?` | `{ agent }` | **T2** |
-| `list` | — | `{ agents: [...] }` | T0 |
+| `create` | `name`, `provider`, `model`, `role?`, `grant?`, `delegationRole?`, `dailyTokenBudget?`, `parentId?`, `canMessageUser?` | `{ agent }` | **T2** |
+| `list` | — | `{ agents: [...] }` (each includes `parentId` + `canMessageUser`) | T0 |
 | `delete` | `id` | `{ deleted }` | **T2** |
+| `set_manager` | `agentId`, `parentId` | `{ agentId, parentId }` | **T2** |
 
-`create`/`delete` are **T2** — they establish or remove a capability. `list` is
-T0.
+`create`/`delete`/`set_manager` are **T2** — they establish, remove, or
+restructure a capability. `list` is T0.
 
 ## create
 - **`name`** (required) — display name (e.g. `Coder`). The agent **id** is a
@@ -40,6 +41,17 @@ T0.
   [Delegation roles + spawn bounds](#delegation-roles--spawn-bounds-phase-6-stage-2)
   below. Omitted / a row written before this column existed → `"leaf"`
   (default-deny; tolerant read).
+- **`parentId`** (optional) — the **manager** this agent reports to in the org
+  hierarchy (Phase 7 stage 2), an agent id or `null`/omitted for **top of the
+  org**. A row written before this column existed loads as `null` (tolerant read).
+  A `parentId` pointing at a missing agent renders as a **root** (fail-safe — a
+  node is never dropped). Use `set_manager` to reparent an existing agent (it runs
+  the cycle + depth checks; `create` does not).
+- **`canMessageUser`** (optional) — **inbox power**: may the agent message the
+  **user** directly? Default `false` (**fail-closed**). The effective power is
+  `canMessageUserResolved`: an **orchestrator** can always message the user; a
+  **leaf** can only if this flag is set. Rows written before this column existed
+  load as `false`.
 - **`dailyTokenBudget`** (optional) — a **per-agent daily token cap** for
   autonomous runs (`delegate_to_agent` + `agent_study` + scheduled `study`). A
   positive number; omitted → **unlimited** beyond the global kill-switch. Usage
@@ -52,7 +64,7 @@ T0.
   cap can't bite, same as the global kill-switch.)*
 
 On create it:
-1. persists a row in `team_agents` `{ id, name, role, provider, model, grant_json, delegation_role, daily_token_budget, created_ts }`;
+1. persists a row in `team_agents` `{ id, name, role, provider, model, grant_json, delegation_role, daily_token_budget, parent_id, can_message_user, created_ts }`;
 2. scaffolds `<workspace>/agents/<id>/knowledge/` with a seed `role.md`;
 3. rebuilds the shared **who-knows-what** index `<workspace>/agents/index.md`
    (one line per agent, name → specialty), so Alfred can route a task to the right
@@ -65,6 +77,34 @@ sharing goes through Alfred / the index, not by reading each other's folders.
 Removes the `team_agents` row and rebuilds the index (so no orphan entry
 survives). The agent's `agents/<id>/` folder is **left on disk** — its knowledge
 may be worth keeping, and recursive removal is riskier than it's worth.
+
+## set_manager (org hierarchy, Phase 7 stage 2)
+`set_manager {agentId, parentId}` reparents an agent — sets who it **reports to**
+(`parentId` = a manager's agent id, or `null` to move it to the **top**). **T2**.
+
+It is **refused with an explicit error** (never a silent no-op) when:
+- `agentId` or a non-null `parentId` is an **unknown** agent id;
+- the edge would create a **management cycle** (`wouldCycle` — a self-parent
+  `A→A`, or setting a manager that is already below the agent);
+- it would push the agent past the **depth cap** (`orgDepth(newParent) + 1 >
+  DEFAULT_MAX_SPAWN_DEPTH`, reusing the delegation depth ceiling, default 2).
+
+The cycle + depth logic is **pure and unit-tested** (`wouldCycle` / `orgDepth` in
+`team-pure.ts`); `setAgentManager` in `core/team.ts` adds the existence check and
+the single-column write. On success the orchestrator emits **`team.changed`** so
+the TEAM card and a project's **Org** tab refresh live. The tool exposes this so
+Alfred can build the company chart ("CTO → PM → devs/QA"); a `leaf`/`orchestrator`
+roster agent **cannot** call `team` (it stays with the top-level agent).
+
+> **Hierarchy vs. delegation.** `parentId` is the **reporting** structure shown in
+> the Org tab (who reports to whom); it is **display + governance metadata**, not
+> the runtime spawn tree. Actual spawning is still bounded by `delegationRole` +
+> `canSpawn` (see below). `canMessageUser` (inbox power) is enforced fail-closed
+> via `canMessageUserResolved`.
+
+```json
+{ "op": "set_manager", "agentId": "dev-back", "parentId": "pm" }
+```
 
 ```json
 { "op": "create", "name": "Coder", "provider": "claude-cli", "model": "claude-opus-4-8", "role": "TypeScript/Node refactors", "grant": ["read", "write", "shell"] }
@@ -232,9 +272,14 @@ management surface, mirroring the Scheduled Tasks card. It is **data-only** over
 IPC — the renderer never touches the DB or disk:
 
 - `listTeamAgents()` → per agent `{ id, name, delegationRole, provider, model,
-  tokenBudgetDaily, tokensToday, topics }`. `tokensToday` comes from
-  `agentTokensToday` (budget.ts), `topics` from `parseTopicsFromIndex` over the
-  shared `agents/index.md`.
+  tokenBudgetDaily, tokensToday, topics, parentId, canMessageUser }`. `tokensToday`
+  comes from `agentTokensToday` (budget.ts), `topics` from `parseTopicsFromIndex`
+  over the shared `agents/index.md`. `parentId` + `canMessageUser` drive the
+  card's "reporta a: …" line + ✉ inbox badge and the project **Org** tab's
+  org-chart (`buildOrgTree` + `canMessageUserResolved`, both renderer-safe in
+  `team-format-pure.ts`).
+- `setManager(agentId, parentId)` — reparent an agent (the IPC twin of the tool's
+  `set_manager`); same cycle/depth refusals, emits `team.changed`.
 - `deleteTeamAgent(id)` — drops the row + index entry (folder left on disk),
   behind a double confirm in the card.
 - Pending approvals are read with the existing `listPendingApprovals` and shown

@@ -147,6 +147,8 @@ export interface Orchestrator {
   listTeamAgents(): TeamAgentInfo[] | Promise<TeamAgentInfo[]>;
   /** Delete a roster agent (row + index entry). Resolves to whether a row was removed. */
   deleteTeamAgent(id: string): Promise<boolean>;
+  /** Reparent an agent in the org hierarchy (parentId null = top). Refuses cycles / over-depth explicitly. */
+  setManager(agentId: string, parentId: string | null): { ok: boolean; error?: string };
   // ── Projects + Kanban (Phase 7) ──
   /** One project's manifest + file tree by slug (the missing IPC bridge; core exists). */
   getProject(slug: string): ProjectDetail | null | Promise<ProjectDetail | null>;
@@ -480,6 +482,19 @@ export function registerIpc(core: Orchestrator, emit: (e: StreamEvent) => void):
     } catch (err) {
       fail('delete team agent', err);
       return false;
+    }
+  });
+  // Reparent an agent in the org hierarchy. Trust boundary: agentId must be a
+  // non-empty string; parentId is a non-empty string or null (top). Core re-checks
+  // existence + refuses cycles / over-depth.
+  ipcMain.handle('alfred:setManager', (_e, agentId: unknown, parentId: unknown): { ok: boolean; error?: string } => {
+    if (typeof agentId !== 'string' || !agentId) return { ok: false, error: 'agentId is required' };
+    const pid = typeof parentId === 'string' && parentId ? parentId : null;
+    try {
+      return core.setManager(agentId, pid);
+    } catch (err) {
+      fail('set manager', err);
+      return { ok: false, error: 'set manager failed' };
     }
   });
 

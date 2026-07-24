@@ -179,6 +179,8 @@ CREATE TABLE IF NOT EXISTS team_agents (
   grant_json  TEXT,                              -- per-agent autonomy allowlist; null → default read+notify
   delegation_role TEXT NOT NULL DEFAULT 'leaf',  -- PRIVILEGE role: 'leaf' (default-deny) | 'orchestrator' (may spawn, bounded)
   daily_token_budget INTEGER,                    -- per-agent daily token cap; null → unlimited (global kill-switch only)
+  parent_id   TEXT,                              -- manager this agent reports to (Phase 7); null → top of the org
+  can_message_user INTEGER NOT NULL DEFAULT 0,   -- inbox power (Phase 7); 0 → fail-closed (no direct user messaging)
   created_ts  INTEGER NOT NULL
 );
 
@@ -251,6 +253,12 @@ export function openDb(dbPath: string): AlfredDb {
     (c) => c.name === 'delegation_role',
   );
   if (!hasDelegationRole) db.exec("ALTER TABLE team_agents ADD COLUMN delegation_role TEXT NOT NULL DEFAULT 'leaf'");
+  // Idempotent migration: `team_agents.parent_id` + `can_message_user` (org hierarchy, Phase 7 stage 2).
+  // Rows written before they existed → parent_id NULL (top of the org) + can_message_user 0 (fail-closed);
+  // rowToAgent tolerates both. Guarded by an existence check so re-running on every boot is a no-op.
+  const teamCols = (db.prepare('PRAGMA table_info(team_agents)').all() as { name: string }[]).map((c) => c.name);
+  if (!teamCols.includes('parent_id')) db.exec('ALTER TABLE team_agents ADD COLUMN parent_id TEXT');
+  if (!teamCols.includes('can_message_user')) db.exec('ALTER TABLE team_agents ADD COLUMN can_message_user INTEGER NOT NULL DEFAULT 0');
   // Idempotent migration: `scheduled_jobs.study` (study-job params, Phase 5 stage 4).
   const hasStudy = (db.prepare('PRAGMA table_info(scheduled_jobs)').all() as { name: string }[]).some(
     (c) => c.name === 'study',

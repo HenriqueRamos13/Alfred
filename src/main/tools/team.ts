@@ -11,9 +11,9 @@
  */
 import type { Tool } from './types.ts';
 import { validateAgentSpec } from '../core/team-pure.ts';
-import { createAgent, listAgents, deleteAgent } from '../core/team.ts';
+import { createAgent, listAgents, deleteAgent, setAgentManager } from '../core/team.ts';
 
-type Op = 'create' | 'list' | 'delete';
+type Op = 'create' | 'list' | 'delete' | 'set_manager';
 interface Args {
   op: Op;
   name?: string;
@@ -26,8 +26,14 @@ interface Args {
   delegationRole?: string;
   /** Optional per-agent daily token cap for autonomous runs (default unlimited beyond the global kill-switch). */
   dailyTokenBudget?: number;
+  /** op=create (optional): manager this agent reports to (agent id), or null/omitted for top-level. */
+  parentId?: string | null;
+  /** op=create (optional): inbox power — may the agent message the user directly (default false, fail-closed). */
+  canMessageUser?: boolean;
   /** delete target agent id. */
   id?: string;
+  /** op=set_manager: the agent to reparent. */
+  agentId?: string;
 }
 
 export const team: Tool<Args> = {
@@ -42,12 +48,16 @@ export const team: Tool<Args> = {
     'cannot spawn/schedule/manage-roster/write-vault/message-user) or "orchestrator" (may spawn children, bounded). ' +
     'dailyTokenBudget is an optional per-agent daily token cap ' +
     'for autonomous runs (delegate/study); omitted → unlimited beyond the global kill-switch. ' +
-    'list — enumerate the roster. delete {id} — remove the agent (its folder is left on disk; the index drops it). ' +
-    'This tool creates/persists agents; RUN one with delegate_to_agent. create/delete are T2; list is T0.',
+    'parentId sets the MANAGER this agent reports to in the org hierarchy (omitted/null → top); canMessageUser grants ' +
+    'inbox power to message the user directly (default false, fail-closed — leaves normally report only to their manager). ' +
+    'list — enumerate the roster (each entry includes parentId + canMessageUser). delete {id} — remove the agent (its folder ' +
+    'is left on disk; the index drops it). set_manager {agentId, parentId} — reparent an agent in the hierarchy; refused ' +
+    'with an explicit error if it would create a management cycle or exceed the depth cap; parentId null = move to top. ' +
+    'This tool creates/persists agents; RUN one with delegate_to_agent. create/delete/set_manager are T2; list is T0.',
   inputSchema: {
     type: 'object',
     properties: {
-      op: { type: 'string', enum: ['create', 'list', 'delete'] },
+      op: { type: 'string', enum: ['create', 'list', 'delete', 'set_manager'] },
       name: { type: 'string', description: 'op=create: the agent display name (e.g. "Coder").' },
       role: { type: 'string', description: 'op=create: the specialty / system-prompt role (optional).' },
       provider: { type: 'string', description: 'op=create: provider id — one of claude-api, claude-cli, openai, deepseek.' },
@@ -69,7 +79,16 @@ export const team: Tool<Args> = {
         type: 'number',
         description: 'op=create (optional): per-agent daily token cap for autonomous runs (delegate/study). Positive number; omitted → unlimited beyond the global kill-switch.',
       },
+      parentId: {
+        type: 'string',
+        description: 'op=create/set_manager: the manager (agent id) this agent reports to; null or omitted → top of the org.',
+      },
+      canMessageUser: {
+        type: 'boolean',
+        description: 'op=create (optional): grant inbox power to message the user directly. Default false (fail-closed) — an orchestrator can always message the user; a leaf needs this flag.',
+      },
       id: { type: 'string', description: 'op=delete: the agent id to remove.' },
+      agentId: { type: 'string', description: 'op=set_manager: the agent to reparent.' },
     },
     required: ['op'],
   },
@@ -92,6 +111,13 @@ export const team: Tool<Args> = {
           const deleted = await deleteAgent(ctx.db, ctx.workspace, a.id);
           if (!deleted) return { ok: false, error: `no agent with id ${a.id}` };
           return { ok: true, result: { deleted: a.id } };
+        }
+        case 'set_manager': {
+          if (!a.agentId) return { ok: false, error: 'agentId is required for set_manager' };
+          const parentId = a.parentId == null ? null : String(a.parentId);
+          const res = setAgentManager(ctx.db, a.agentId, parentId);
+          if (!res.ok) return { ok: false, error: res.error };
+          return { ok: true, result: { agentId: a.agentId, parentId } };
         }
         default:
           return { ok: false, error: `Unknown op: ${(a as Args).op}` };

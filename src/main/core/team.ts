@@ -13,7 +13,7 @@
 
 import { mkdir, writeFile, readFile, readdir } from 'node:fs/promises';
 import { join } from 'node:path';
-import { agentIdFromName, buildAgentsIndex, buildAgentContext, parseGrant, composeStudyNote, studyNoteSlug, addTopicToIndex, DELEGATION_ROLES, DEFAULT_DELEGATION_ROLE, type AgentNote, type AgentSpec, type DelegationRole, type TeamAgent } from './team-pure.ts';
+import { agentIdFromName, buildAgentsIndex, buildAgentContext, parseGrant, composeStudyNote, studyNoteSlug, addTopicToIndex, wouldCycle, orgDepth, DELEGATION_ROLES, DEFAULT_DELEGATION_ROLE, DEFAULT_MAX_SPAWN_DEPTH, type AgentNote, type AgentSpec, type DelegationRole, type TeamAgent } from './team-pure.ts';
 import { dayKey } from './jobs-pure.ts';
 
 type DB = import('better-sqlite3').Database;
@@ -27,6 +27,8 @@ interface Row {
   grant_json: string | null;
   delegation_role: string | null;
   daily_token_budget: number | null;
+  parent_id: string | null;
+  can_message_user: number | null;
   created_ts: number;
 }
 
@@ -44,6 +46,9 @@ function rowToAgent(r: Row): TeamAgent {
       ? (r.delegation_role as DelegationRole)
       : DEFAULT_DELEGATION_ROLE,
     dailyTokenBudget: r.daily_token_budget ?? undefined,
+    // Tolerant of rows written before the Phase 7 columns existed (null → top / fail-closed).
+    parentId: r.parent_id ?? null,
+    canMessageUser: r.can_message_user === 1,
     createdTs: r.created_ts,
   };
 }
@@ -72,8 +77,14 @@ export async function createAgent(db: DB, workspace: string, spec: AgentSpec, no
   const id = agentIdFromName(spec.name, listAgents(db).map((a) => a.id));
   const agent: TeamAgent = { id, ...spec, createdTs: now.getTime() };
   db.prepare(
-    'INSERT INTO team_agents (id, name, role, provider, model, grant_json, delegation_role, daily_token_budget, created_ts) VALUES (@id, @name, @role, @provider, @model, @grant, @delegationRole, @dailyTokenBudget, @createdTs)',
-  ).run({ ...agent, grant: JSON.stringify(agent.grant), dailyTokenBudget: agent.dailyTokenBudget ?? null });
+    'INSERT INTO team_agents (id, name, role, provider, model, grant_json, delegation_role, daily_token_budget, parent_id, can_message_user, created_ts) VALUES (@id, @name, @role, @provider, @model, @grant, @delegationRole, @dailyTokenBudget, @parentId, @canMessageUser, @createdTs)',
+  ).run({
+    ...agent,
+    grant: JSON.stringify(agent.grant),
+    dailyTokenBudget: agent.dailyTokenBudget ?? null,
+    parentId: agent.parentId ?? null,
+    canMessageUser: agent.canMessageUser ? 1 : 0,
+  });
 
   const knowledgeDir = join(workspace, 'agents', id, 'knowledge');
   await mkdir(knowledgeDir, { recursive: true });
@@ -88,6 +99,29 @@ export async function deleteAgent(db: DB, workspace: string, id: string): Promis
   const deleted = db.prepare('DELETE FROM team_agents WHERE id = ?').run(id).changes > 0;
   if (deleted) await rebuildIndex(db, workspace);
   return deleted;
+}
+
+/**
+ * Set (or clear, parentId=null) an agent's manager — the governed reparent path
+ * (T2). REFUSES explicitly (never silently) when the agent or the target manager
+ * is unknown, when the edge would create a management cycle (`wouldCycle`), or when
+ * it would push the agent past the depth cap (reusing DEFAULT_MAX_SPAWN_DEPTH). The
+ * cycle/depth logic is pure + tested; this thin fn adds only existence + the write.
+ * ponytail: depth check bounds the reparented agent's own chain, not its subtree —
+ * a deep subtree could still exceed the cap after a move; tighten (max over subtree)
+ * only if the org grows tall enough to matter.
+ */
+export function setAgentManager(db: DB, agentId: string, parentId: string | null): { ok: true } | { ok: false; error: string } {
+  const agents = listAgents(db);
+  if (!agents.some((a) => a.id === agentId)) return { ok: false, error: `no agent with id "${agentId}"` };
+  if (parentId != null && !agents.some((a) => a.id === parentId)) return { ok: false, error: `no manager with id "${parentId}"` };
+  if (wouldCycle(agents, agentId, parentId)) return { ok: false, error: 'refused: would create a management cycle' };
+  const depth = parentId == null ? 0 : orgDepth(agents, parentId) + 1;
+  if (depth > DEFAULT_MAX_SPAWN_DEPTH) {
+    return { ok: false, error: `refused: hierarchy too deep (max depth ${DEFAULT_MAX_SPAWN_DEPTH})` };
+  }
+  db.prepare('UPDATE team_agents SET parent_id = ? WHERE id = ?').run(parentId, agentId);
+  return { ok: true };
 }
 
 /**

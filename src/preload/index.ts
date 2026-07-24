@@ -171,6 +171,9 @@ const api = {
   listTeamAgents: (): Promise<TeamAgentInfo[]> => ipcRenderer.invoke('alfred:listTeamAgents'),
   /** Delete a roster agent (row + index entry). Resolves true when a row was removed. */
   deleteTeamAgent: (id: string): Promise<boolean> => ipcRenderer.invoke('alfred:deleteTeamAgent', id),
+  /** Reparent an agent in the org hierarchy (parentId null = top). Refuses cycles / over-depth. */
+  setManager: (agentId: string, parentId: string | null): Promise<{ ok: boolean; error?: string }> =>
+    ipcRenderer.invoke('alfred:setManager', agentId, parentId),
   /** Overlay window controls (frameless HUD). */
   hideWindow: (): void => ipcRenderer.send('window:hide'),
   quitWindow: (): void => ipcRenderer.send('window:quit'),

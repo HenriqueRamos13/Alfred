@@ -1629,10 +1629,18 @@ import {
   blockedToolsForRole,
   restrictGrantForRole,
   canSpawn,
+  wouldCycle,
+  orgDepth,
   DEFAULT_MAX_SPAWN_DEPTH,
   DEFAULT_MAX_CONCURRENT_CHILDREN,
 } from '../src/main/core/team-pure.ts';
-import { humanizeRole, formatAgentBudget, parseTopicsFromIndex } from '../src/main/core/team-format-pure.ts';
+import {
+  humanizeRole,
+  formatAgentBudget,
+  parseTopicsFromIndex,
+  buildOrgTree,
+  canMessageUserResolved,
+} from '../src/main/core/team-format-pure.ts';
 
 test('catalog — listModels/findModel/priceOf, Anthropic shared by both Claude providers', () => {
   assert.ok(listModels('deepseek').length === 2);
@@ -2826,6 +2834,8 @@ test('validateAgentSpec — ok, defaults role, rejects bad provider/model/name',
     grant: ['read', 'notify'],
     delegationRole: 'leaf', // omitted → leaf (default-deny privilege role, Phase 6 stage 2)
     dailyTokenBudget: undefined, // omitted → unlimited (global kill-switch only)
+    parentId: null, // omitted → top of the org (Phase 7 stage 2)
+    canMessageUser: false, // omitted → fail-closed (no inbox power)
   });
   // a per-agent daily budget passes through; a non-positive value is rejected
   assert.equal(
@@ -2852,6 +2862,81 @@ test('validateAgentSpec — ok, defaults role, rejects bad provider/model/name',
   // model not in that provider's catalog
   assert.equal(validateAgentSpec({ name: 'X', provider: 'openai', model: 'claude-opus-4-8' }).ok, false);
   assert.equal(validateAgentSpec({ name: 'X', provider: 'claude-cli', model: 'ghost-9' }).ok, false);
+});
+
+test('validateAgentSpec — parentId + canMessageUser (Phase 7 stage 2)', () => {
+  // both pass through
+  const ok = validateAgentSpec({ name: 'Dev', provider: 'deepseek', model: 'deepseek-v4-flash', parentId: 'pm', canMessageUser: true });
+  assert.ok(ok.ok && ok.spec.parentId === 'pm' && ok.spec.canMessageUser === true);
+  // parentId is trimmed; empty-string parentId is rejected (use null for top)
+  assert.equal(validateAgentSpec({ name: 'X', provider: 'deepseek', model: 'deepseek-v4-flash', parentId: '   ' }).ok, false);
+  assert.equal(validateAgentSpec({ name: 'X', provider: 'deepseek', model: 'deepseek-v4-flash', parentId: 42 }).ok, false);
+  // explicit null → top-level
+  const top = validateAgentSpec({ name: 'Boss', provider: 'deepseek', model: 'deepseek-v4-flash', parentId: null });
+  assert.ok(top.ok && top.spec.parentId === null);
+  // canMessageUser must be boolean
+  assert.equal(validateAgentSpec({ name: 'X', provider: 'deepseek', model: 'deepseek-v4-flash', canMessageUser: 'yes' }).ok, false);
+});
+
+test('buildOrgTree — roots by null parent, children by parentId, orphan→root, cycle-safe', () => {
+  const agents = [
+    { id: 'cto', parentId: null },
+    { id: 'pm', parentId: 'cto' },
+    { id: 'fe', parentId: 'pm' },
+    { id: 'be', parentId: 'pm' },
+    { id: 'ghost', parentId: 'missing' }, // orphan → treated as a root
+  ];
+  const tree = buildOrgTree(agents);
+  assert.equal(tree.length, 2); // cto + ghost
+  const cto = tree.find((n) => n.agent.id === 'cto')!;
+  assert.equal(cto.children.length, 1);
+  assert.equal(cto.children[0].agent.id, 'pm');
+  assert.equal(cto.children[0].children.length, 2);
+  // self-parent → root, not its own child
+  const selfp = buildOrgTree([{ id: 'a', parentId: 'a' }]);
+  assert.equal(selfp.length, 1);
+  assert.equal(selfp[0].children.length, 0);
+  // a pure 2-cycle (a↔b, no root) does not infinite-loop; returns an array
+  const cyc = buildOrgTree([{ id: 'a', parentId: 'b' }, { id: 'b', parentId: 'a' }]);
+  assert.ok(Array.isArray(cyc));
+  // empty
+  assert.deepEqual(buildOrgTree([]), []);
+});
+
+test('wouldCycle — self-parent, back-edge, null-safe', () => {
+  const agents = [
+    { id: 'cto', parentId: null },
+    { id: 'pm', parentId: 'cto' },
+    { id: 'dev', parentId: 'pm' },
+  ];
+  assert.equal(wouldCycle(agents, 'cto', 'cto'), true); // self-parent
+  assert.equal(wouldCycle(agents, 'cto', 'dev'), true); // dev is below cto → cycle
+  assert.equal(wouldCycle(agents, 'cto', 'pm'), true); // pm is below cto → cycle
+  assert.equal(wouldCycle(agents, 'dev', 'cto'), false); // moving dev under cto is fine
+  assert.equal(wouldCycle(agents, 'dev', null), false); // → top, never a cycle
+  assert.equal(wouldCycle(agents, 'pm', 'dev'), true); // pm under its own report dev
+});
+
+test('orgDepth — root 0, chain increments, cycle-safe', () => {
+  const agents = [
+    { id: 'cto', parentId: null },
+    { id: 'pm', parentId: 'cto' },
+    { id: 'dev', parentId: 'pm' },
+  ];
+  assert.equal(orgDepth(agents, 'cto'), 0);
+  assert.equal(orgDepth(agents, 'pm'), 1);
+  assert.equal(orgDepth(agents, 'dev'), 2);
+  // corrupt cycle does not hang
+  const cyc = [{ id: 'a', parentId: 'b' }, { id: 'b', parentId: 'a' }];
+  assert.ok(Number.isFinite(orgDepth(cyc, 'a')));
+});
+
+test('canMessageUserResolved — orchestrator OR explicit flag; leaf fail-closed', () => {
+  assert.equal(canMessageUserResolved({ delegationRole: 'orchestrator' }), true);
+  assert.equal(canMessageUserResolved({ delegationRole: 'orchestrator', canMessageUser: false }), true);
+  assert.equal(canMessageUserResolved({ delegationRole: 'leaf', canMessageUser: true }), true);
+  assert.equal(canMessageUserResolved({ delegationRole: 'leaf' }), false); // fail-closed
+  assert.equal(canMessageUserResolved({ delegationRole: 'leaf', canMessageUser: false }), false);
 });
 
 test('buildAgentsIndex — one line per agent, sorted, empty-safe', () => {

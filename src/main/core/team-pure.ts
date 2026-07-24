@@ -40,6 +40,10 @@ export interface TeamAgent {
   delegationRole: DelegationRole;
   /** Per-agent daily token cap for autonomous runs. undefined → unlimited (only the global kill-switch applies). */
   dailyTokenBudget?: number;
+  /** Manager this agent reports to (Phase 7 stage 2). null/undefined = top of the org. */
+  parentId?: string | null;
+  /** Inbox power: may this agent message the USER directly? undefined/false → fail-closed (see canMessageUserResolved). */
+  canMessageUser?: boolean;
   createdTs: number;
 }
 
@@ -52,6 +56,8 @@ export interface AgentSpecInput {
   grant?: unknown;
   delegationRole?: unknown;
   dailyTokenBudget?: unknown;
+  parentId?: unknown;
+  canMessageUser?: unknown;
 }
 
 /** Validated create spec (id is assigned by createAgent, not here). */
@@ -63,6 +69,10 @@ export interface AgentSpec {
   grant: Capability[];
   delegationRole: DelegationRole;
   dailyTokenBudget?: number;
+  /** Manager to report to, or null for top-level (Phase 7 stage 2). */
+  parentId: string | null;
+  /** Inbox power (fail-closed default false). */
+  canMessageUser: boolean;
 }
 
 /**
@@ -139,7 +149,26 @@ export function validateAgentSpec(spec: AgentSpecInput): { ok: true; spec: Agent
     }
     delegationRole = spec.delegationRole as DelegationRole;
   }
-  return { ok: true, spec: { name, role: (spec.role ?? '').trim(), provider: spec.provider, model, grant, delegationRole, dailyTokenBudget } };
+  // Optional manager link. Absent / null → top-level (null). An explicit value must be a non-empty id string.
+  let parentId: string | null = null;
+  if (spec.parentId !== undefined && spec.parentId !== null) {
+    if (typeof spec.parentId !== 'string' || !spec.parentId.trim()) {
+      return { ok: false, error: 'parentId must be a non-empty agent id or null' };
+    }
+    parentId = spec.parentId.trim();
+  }
+  // Optional inbox power. Absent → false (fail-closed). An explicit value must be a boolean.
+  let canMessageUser = false;
+  if (spec.canMessageUser !== undefined) {
+    if (typeof spec.canMessageUser !== 'boolean') {
+      return { ok: false, error: 'canMessageUser must be a boolean' };
+    }
+    canMessageUser = spec.canMessageUser;
+  }
+  return {
+    ok: true,
+    spec: { name, role: (spec.role ?? '').trim(), provider: spec.provider, model, grant, delegationRole, dailyTokenBudget, parentId, canMessageUser },
+  };
 }
 
 // ── privilege role → tool blocklist + capability floor (Phase 6 stage 2) ─────
@@ -208,6 +237,51 @@ export function canSpawn(depth: number, activeChildren: number, limits: SpawnLim
     return { ok: false, reason: `limite de filhos concorrentes atingido (max ${limits.maxConcurrentChildren})` };
   }
   return { ok: true };
+}
+
+// ── org hierarchy (Phase 7, stage 2) ─────────────────────────────────────────
+
+/** Minimal shape the hierarchy helpers need — a flat roster of id → parent. */
+type OrgLink = { id: string; parentId?: string | null };
+
+/**
+ * Depth of `id` in the management chain (a root reports to nobody → 0; a direct
+ * report → 1; …). Cycle-safe: a `seen` set bounds the walk to the roster size, so
+ * corrupt data can never hang. An unknown id → 0. Pure.
+ */
+export function orgDepth(agents: readonly OrgLink[], id: string): number {
+  const byId = new Map(agents.map((a) => [a.id, a] as const));
+  const seen = new Set<string>([id]);
+  let depth = 0;
+  let cur = byId.get(id)?.parentId ?? null;
+  while (cur != null && byId.has(cur) && !seen.has(cur)) {
+    seen.add(cur);
+    depth++;
+    cur = byId.get(cur)!.parentId ?? null;
+  }
+  return depth;
+}
+
+/**
+ * Would setting `agentId`'s manager to `newParentId` create a cycle (A→B→A) or a
+ * self-parent (A→A)? True = the caller must REFUSE. A null newParentId (→ top)
+ * never cycles. Walks UP from the prospective parent using the CURRENT links: if
+ * that walk reaches `agentId`, the new edge would close a loop. Cycle-safe against
+ * pre-existing corrupt loops above the parent (they don't involve agentId). Pure.
+ */
+export function wouldCycle(agents: readonly OrgLink[], agentId: string, newParentId: string | null | undefined): boolean {
+  if (newParentId == null) return false;
+  if (newParentId === agentId) return true;
+  const byId = new Map(agents.map((a) => [a.id, a] as const));
+  const seen = new Set<string>();
+  let cur: string | null | undefined = newParentId;
+  while (cur != null && byId.has(cur)) {
+    if (cur === agentId) return true;
+    if (seen.has(cur)) break; // pre-existing loop above the parent — not caused by this edge
+    seen.add(cur);
+    cur = byId.get(cur)!.parentId ?? null;
+  }
+  return false;
 }
 
 // ── per-agent daily budget (Phase 5, stage 4) ────────────────────────────────

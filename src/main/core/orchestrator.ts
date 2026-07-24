@@ -99,7 +99,7 @@ import {
   updateJob as updateJobDb,
   deleteJob as deleteJobDb,
 } from './jobs.ts';
-import { listAgents, getAgent, deleteAgent } from './team.ts';
+import { listAgents, getAgent, deleteAgent, setAgentManager } from './team.ts';
 import type { TeamAgent } from './team-pure.ts';
 import { agentTokensToday } from './budget.ts';
 import { parseTopicsFromIndex } from './team-format-pure.ts';
@@ -777,6 +777,11 @@ export interface OrchestratorHandle {
   getTeamAgent(id: string): TeamAgent | undefined;
   /** Delete a roster agent (row + index entry; folder left on disk). false if unknown. */
   deleteTeamAgent(id: string): Promise<boolean>;
+  /**
+   * Reparent an agent in the org hierarchy (parentId null = move to top). Emits
+   * team.changed on success. Refuses explicitly (cycle / depth cap / unknown id).
+   */
+  setManager(agentId: string, parentId: string | null): { ok: true } | { ok: false; error: string };
   // ── Projects + Kanban (Phase 7) ──
   /** One project's manifest + file tree (the IPC bridge; core already existed). */
   getProject(slug: string): Promise<ProjectDetail | null>;
@@ -1681,13 +1686,22 @@ export function createOrchestrator(opts: CreateOrchestratorOpts): OrchestratorHa
         tokenBudgetDaily: a.dailyTokenBudget,
         tokensToday: agentTokensToday(db, a.id, today),
         topics: parseTopicsFromIndex(index, a.id),
+        parentId: a.parentId ?? null,
+        canMessageUser: a.canMessageUser ?? false,
       }));
     },
     getTeamAgent(id) {
       return getAgent(db, id);
     },
-    deleteTeamAgent(id) {
-      return deleteAgent(db, config.workspace, id);
+    async deleteTeamAgent(id) {
+      const ok = await deleteAgent(db, config.workspace, id);
+      if (ok) emit({ kind: 'team.changed' });
+      return ok;
+    },
+    setManager(agentId, parentId) {
+      const res = setAgentManager(db, agentId, parentId);
+      if (res.ok) emit({ kind: 'team.changed' });
+      return res;
     },
     getProject(slug) {
       return getProject(db, config.workspace, slug);

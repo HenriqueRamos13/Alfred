@@ -916,6 +916,7 @@ body {
 }
 .team-role.orchestrator { color: var(--mag); }
 .team-role.leaf { color: var(--acc); }
+.team-role.msg { color: var(--grn); }
 .team-meta {
   display: flex;
   flex-wrap: wrap;
@@ -1338,6 +1339,34 @@ body {
 
 .pm-body { flex: 1; overflow: auto; padding: 16px; }
 .pm-soon { padding: 60px 0; }
+
+/* Org chart (Phase 7 stage 2) — nested <ul> connector tree, adapted from the mockup. */
+.pm-org-intro { font-size: 12px; color: var(--dim); line-height: 1.5; margin: 0 0 14px; }
+.pm-org-intro b { color: var(--text); }
+.pm-tree { padding: 12px 0; overflow-x: auto; }
+.pm-tree ul { padding-top: 22px; position: relative; display: flex; justify-content: center; gap: 22px; margin: 0; list-style: none; }
+.pm-tree li { position: relative; padding-top: 22px; text-align: center; }
+.pm-tree li::before, .pm-tree li::after { content: ""; position: absolute; top: 0; height: 22px;
+  border-top: 2px solid var(--panel-border); }
+.pm-tree li::before { left: 0; width: 50%; border-left: 2px solid var(--panel-border); }
+.pm-tree li::after { right: 0; width: 50%; }
+.pm-tree li:only-child::before, .pm-tree li:only-child::after { display: none; }
+.pm-tree li:first-child::before, .pm-tree li:last-child::after { border: 0; }
+.pm-tree li:last-child::before { border-left: 2px solid var(--panel-border); }
+.pm-tree ul ul::before { content: ""; position: absolute; top: 0; left: 50%; height: 22px;
+  border-left: 2px solid var(--panel-border); }
+.pm-tree > ul { padding-top: 0; }
+.pm-node { display: inline-block; position: relative; border: 1px solid var(--panel-border); border-radius: 10px;
+  padding: 9px 12px; min-width: 132px; background: color-mix(in oklab, var(--acc) 5%, transparent); }
+.pm-node.orchestrator { border-color: color-mix(in oklab, var(--mag) 40%, transparent);
+  background: color-mix(in oklab, var(--mag) 7%, transparent); }
+.pm-node-nm { font-weight: 700; font-size: 14px; display: flex; align-items: center; gap: 6px; justify-content: center; color: var(--text); }
+.pm-node-msg { color: var(--grn); font-size: 12px; }
+.pm-node-rl { font-family: var(--font-mono); font-size: 9.5px; color: var(--acc); letter-spacing: 0.1em; text-transform: uppercase; margin-top: 3px; }
+.pm-node.orchestrator .pm-node-rl { color: var(--mag); }
+.pm-node-st { font-family: var(--font-mono); font-size: 9.5px; color: var(--dim); margin-top: 4px; }
+.pm-node-badge { position: absolute; top: -8px; right: -8px; background: var(--acc); color: #02141a;
+  font-family: var(--font-mono); font-size: 9px; font-weight: 700; border-radius: 10px; padding: 1px 6px; }
 
 /* Overview */
 .pm-stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-bottom: 16px; }

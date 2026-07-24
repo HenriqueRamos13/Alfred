@@ -15,7 +15,7 @@
  */
 import { useEffect, useState } from 'react';
 import { alfred } from '../lib/ipc.ts';
-import { humanizeRole, formatAgentBudget } from '../../main/core/team-format-pure.ts';
+import { humanizeRole, formatAgentBudget, canMessageUserResolved } from '../../main/core/team-format-pure.ts';
 import { relativeTime, describeApproval } from '../../main/core/jobs-format-pure.ts';
 import type { Job, JobApproval, TeamAgentInfo, StreamEvent } from '../../main/core/types.ts';
 
@@ -37,7 +37,7 @@ export function TeamCard() {
     refetch();
     const clock = setInterval(() => setNow(Date.now()), 30_000);
     const off = alfred.onStream((e: StreamEvent) => {
-      if (e.kind === 'job.approval' || e.kind === 'job.data') refetch();
+      if (e.kind === 'job.approval' || e.kind === 'job.data' || e.kind === 'team.changed') refetch();
       else if (e.kind === 'agent.status' && (e.status === 'done' || e.status === 'idle')) refetch();
     });
     return () => {
@@ -55,6 +55,10 @@ export function TeamCard() {
   const resolve = (id: string, approved: boolean): void => {
     alfred.resolveJobApproval(id, approved).then(refetch).catch(() => {});
   };
+
+  // id → name, so "reporta a: <manager>" shows the manager's display name.
+  const nameById: Record<string, string> = {};
+  for (const a of agents) nameById[a.id] = a.name;
 
   // Map an approval → the agent that raised it, via its scheduled STUDY job.
   const agentByJob: Record<string, string> = {};
@@ -101,10 +105,14 @@ export function TeamCard() {
                   <span className={`team-role${orch ? ' orchestrator' : ' leaf'}`}>
                     {humanizeRole(agent.delegationRole)}
                   </span>
+                  {canMessageUserResolved(agent) && (
+                    <span className="team-role msg" title="pode falar com o utilizador">✉</span>
+                  )}
                 </div>
                 <div className="team-meta">
                   <span>{agent.provider}:{agent.model}</span>
                   <span>tok <span className="v">{formatAgentBudget(agent.tokensToday, agent.tokenBudgetDaily)}</span></span>
+                  <span>reporta a: <span className="v">{agent.parentId ? (nameById[agent.parentId] ?? agent.parentId) : '—'}</span></span>
                 </div>
                 {agent.topics.length > 0 && (
                   <div className="team-topics">

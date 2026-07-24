@@ -37,3 +37,41 @@ export function parseTopicsFromIndex(indexText: string, agentId: string): string
   }
   return [];
 }
+
+// ── org hierarchy (Phase 7, stage 2) — renderer-safe so the Org tab can import ──
+
+/** One node in the org chart: an agent + its direct reports. */
+export interface OrgNode<T> {
+  agent: T;
+  children: OrgNode<T>[];
+}
+
+/**
+ * Build the management forest from a flat roster: roots are agents with no
+ * (valid) parent; every other agent hangs under its parentId. An agent whose
+ * parentId points at a missing agent — or at itself — becomes a root (fail-safe:
+ * a node is never dropped from view). Each node is placed at most once, so a stray
+ * cycle in corrupt data can't infinite-loop (the cycle simply isn't reachable from
+ * any root). Pure + renderer-safe; generic over anything carrying id + parentId.
+ */
+export function buildOrgTree<T extends { id: string; parentId?: string | null }>(agents: readonly T[]): OrgNode<T>[] {
+  const nodes = new Map<string, OrgNode<T>>();
+  for (const a of agents) nodes.set(a.id, { agent: a, children: [] });
+  const roots: OrgNode<T>[] = [];
+  for (const a of agents) {
+    const node = nodes.get(a.id)!;
+    const parent = a.parentId != null && a.parentId !== a.id ? nodes.get(a.parentId) : undefined;
+    if (parent) parent.children.push(node);
+    else roots.push(node);
+  }
+  return roots;
+}
+
+/**
+ * Whether an agent may message the USER directly (inbox power) — fail-closed:
+ * only an orchestrator, OR an agent with the explicit `canMessageUser` flag set.
+ * A leaf without the flag → false. Pure + renderer-safe.
+ */
+export function canMessageUserResolved(agent: { delegationRole: DelegationRole; canMessageUser?: boolean }): boolean {
+  return agent.delegationRole === 'orchestrator' || agent.canMessageUser === true;
+}
