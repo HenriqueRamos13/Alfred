@@ -194,11 +194,11 @@ const CARD_TITLES: Record<string, string> = {
   settings: 'SETTINGS',
   graph: 'KNOWLEDGE GRAPH',
   jobs: 'SCHEDULED TASKS',
-  team: 'TEAM',
+  agents: 'AGENTS',
 };
 
 /** Cards that start hidden (opened from the top-bar), not shown on first run. */
-const HIDDEN_DEFAULT = new Set<string>(['settings', 'graph', 'jobs', 'team']);
+const HIDDEN_DEFAULT = new Set<string>(['settings', 'graph', 'jobs', 'agents']);
 
 /** First-run positions (px from the canvas top-left). [id, x, y, w, h]. */
 const DEFAULTS: ReadonlyArray<readonly [string, number, number, number, number]> = [
@@ -212,7 +212,7 @@ const DEFAULTS: ReadonlyArray<readonly [string, number, number, number, number]>
   ['settings', 300, 150, 560, 560],
   ['graph', 340, 150, 760, 580],
   ['jobs', 360, 150, 560, 560],
-  ['team', 380, 150, 560, 560],
+  ['agents', 380, 150, 560, 620],
 ];
 
 const clampPos = (v: number): number => Math.max(0, Math.round(v));
@@ -276,6 +276,12 @@ function widgetTitles(db: AlfredDb): Record<string, string> {
  * orphans dropped) — sorted back-to-front by z.
  */
 export function getLayout(db: AlfredDb): CardLayout[] {
+  // Migrate a pre-1.12 saved layout: the old TEAM card is now the AGENTS card
+  // (embedded cores + roster). Rename in place so the user's saved geometry
+  // survives; OR IGNORE covers the (impossible-in-practice) both-exist case,
+  // where the stale 'team' row is then dropped by mergeLayout.
+  db.prepare("UPDATE OR IGNORE layout SET cardId='agents' WHERE cardId='team'").run();
+
   const insert = db.prepare(
     'INSERT OR IGNORE INTO layout(cardId, x, y, w, h, z, visible, displayId) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
   );

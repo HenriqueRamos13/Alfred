@@ -641,6 +641,7 @@ body {
   color: var(--acc);
   text-shadow: 0 0 12px color-mix(in oklab, var(--acc) 60%, transparent);
 }
+.topbar-ver { font-size: 10px; letter-spacing: 0.14em; color: var(--dim); font-weight: 400; }
 .topbar-spacer { flex: 1; }
 .topbar-btn {
   background: color-mix(in oklab, var(--acc) 6%, transparent);
@@ -1047,6 +1048,123 @@ body {
 }
 .reference-send:hover:not(:disabled) { background: color-mix(in oklab, var(--mag) 20%, transparent); }
 .reference-send:disabled { opacity: 0.4; cursor: default; }
+
+/* ── corner HUD (always-visible status frame; pointer-events:none) ───── */
+.hud {
+  position: fixed;
+  inset: 0;
+  z-index: 40; /* above the canvas/cards (0), below alerts (45) + top strip (49/50) */
+  pointer-events: none;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+}
+.hud-corner {
+  position: absolute;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 2px 6px;
+  color: var(--dim);
+  text-shadow: 0 0 8px rgba(0, 0, 0, 0.9);
+  opacity: 0.82;
+}
+.hud-corner.tl { top: 8px; left: 12px; }
+.hud-corner.tr { top: 8px; right: 14px; text-align: right; align-items: flex-end; }
+.hud-corner.bl { bottom: 8px; left: 12px; }
+.hud-corner.br { bottom: 8px; right: 14px; text-align: right; align-items: flex-end; }
+.hud-brand { color: var(--acc); font-weight: 700; letter-spacing: 0.22em; }
+.hud-ver { color: var(--dim); }
+.hud-clock { color: var(--acc); font-size: 12px; letter-spacing: 0.14em; }
+.hud-line { white-space: nowrap; }
+.hud-v { color: var(--text); }
+.hud-v.on { color: var(--grn); }
+.hud-v.danger { color: var(--red); }
+
+/* ── AGENTS card (embedded cores + specialist roster) ────────────────── */
+.agents-card { display: flex; flex-direction: column; gap: 16px; }
+.agents-section { display: flex; flex-direction: column; gap: 8px; }
+
+/* ── SETTINGS card (toggles + prefs), grouped ────────────────────────── */
+.settings-prefs { display: flex; flex-direction: column; gap: 16px; }
+.settings-group { display: flex; flex-direction: column; gap: 6px; }
+.settings-group-head {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.2em;
+  color: var(--acc);
+  padding-bottom: 4px;
+  border-bottom: 1px solid var(--panel-border);
+}
+.settings-pref {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  padding: 2px 2px;
+}
+.settings-pref-k { color: var(--dim); }
+.settings-pref-v { color: var(--text); }
+.settings-action {
+  align-self: flex-start;
+  margin-top: 2px;
+  padding: 5px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--panel-border);
+  background: transparent;
+  color: var(--dim);
+  font: inherit;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  cursor: pointer;
+}
+.settings-action:hover { color: var(--acc); border-color: var(--acc); }
+
+/* ── on/off switch (SETTINGS toggles) ────────────────────────────────── */
+.sw-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 6px 4px;
+  background: transparent;
+  border: none;
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+.sw-track {
+  flex-shrink: 0;
+  position: relative;
+  width: 34px;
+  height: 18px;
+  border-radius: 10px;
+  border: 1px solid var(--panel-border);
+  background: var(--panel-2);
+  transition: background 0.15s, border-color 0.15s;
+}
+.sw-thumb {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--dim);
+  transition: transform 0.15s, background 0.15s;
+}
+.sw-label { color: var(--muted); }
+.sw-row:hover .sw-label { color: var(--text); }
+.sw-row.on .sw-track { background: color-mix(in oklab, var(--grn) 35%, transparent); border-color: var(--grn); }
+.sw-row.on .sw-thumb { transform: translateX(16px); background: var(--grn); box-shadow: 0 0 8px var(--grn); }
+.sw-row.on .sw-label { color: var(--text); }
+.sw-row.danger.on .sw-track { background: color-mix(in oklab, var(--red) 38%, transparent); border-color: var(--red); }
+.sw-row.danger.on .sw-thumb { background: var(--red); box-shadow: 0 0 8px var(--red); }
 
 /* ── approval overlay ──────────────────────────────────────────────── */
 .overlay {

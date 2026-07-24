@@ -69,6 +69,9 @@ interface LogRow {
   msg: string;
 }
 
+/** Shipped version — shown in the corner HUD and the top-bar title. Bump on release. */
+const VERSION = '1.12.0';
+
 const MAX_LOG = 80;
 const MAX_ALERTS = 12;
 let logSeq = 0;
@@ -166,6 +169,11 @@ export default function App() {
 
   const [bounds, setBounds] = useState<Bounds | null>(null);
   const [displays, setDisplays] = useState<DisplayInfo[]>([]);
+  // Corner HUD: a ticking clock + the count of parked job approvals (an existing
+  // IPC, read here only to surface the pending total; the single live HITL prompt
+  // is tracked separately in `approval`).
+  const [clock, setClock] = useState(() => now());
+  const [pendingCount, setPendingCount] = useState(0);
 
   // This window's display identity (baked in at creation via --display-id).
   // Empty displayId = windowed / single-window fallback → no per-display filter.
@@ -294,6 +302,12 @@ export default function App() {
     return () => window.removeEventListener('focus', refresh);
   }, []);
 
+  // Corner-HUD clock — one interval, ticks the HH:MM:SS string every second.
+  useEffect(() => {
+    const t = setInterval(() => setClock(now()), 1000);
+    return () => clearInterval(t);
+  }, []);
+
   /** Send a card to the next physical display (cycles). displayId sentinels resolve to the primary. */
   const moveToNextDisplay = (card: CardLayout) => {
     const target = nextDisplayId(card.displayId, displays);
@@ -388,6 +402,12 @@ export default function App() {
     alfred.listJobs().then(setJobs).catch(() => {});
   };
 
+  // Parked job-approval total for the corner HUD (existing IPC; the AGENTS card
+  // resolves them). Cheap re-fetch on the same events that touch jobs/approvals.
+  const refreshPending = () => {
+    alfred.listPendingApprovals().then((a) => setPendingCount(a.length)).catch(() => {});
+  };
+
   const refreshAccounts = () => {
     alfred.listAccounts().then(setAccounts).catch(() => {});
   };
@@ -415,6 +435,7 @@ export default function App() {
     refreshBrains();
     refreshAccounts();
     refreshJobs();
+    refreshPending();
     // Reload the persisted conversation so history survives restarts.
     alfred.getHistory().then(setMessages).catch(() => {});
     alfred.getLayout().then(setCards).catch(() => {});
@@ -556,6 +577,7 @@ export default function App() {
             refreshProjects();
             refreshBrains();
             refreshJobs(); // a turn may have created/edited a job via the schedule tool
+            refreshPending();
             // The agent may have flipped GRILL-ME via the system tool — reflect it.
             alfred.getGrillMe().then(setGrill).catch(() => {});
           }
@@ -565,6 +587,7 @@ export default function App() {
           // A run refreshed / an approval changed → resync the jobs (card meta +
           // widget layer). WidgetCard patches its own live value from job.data too.
           refreshJobs();
+          refreshPending();
           break;
         case 'budget':
           setBudget(e.state);
@@ -1010,13 +1033,26 @@ export default function App() {
         };
       case 'settings':
         return {
-          meta: <span className="panel-meta">{AGENT_IDS.length} AGENTS</span>,
-          body:
-            agentCfg && catalog ? (
-              <AgentSettings config={agentCfg} catalog={catalog} onSave={saveAgent} />
-            ) : (
-              <div className="empty">LOADING…</div>
-            ),
+          meta: <span className="panel-meta">toggles + prefs</span>,
+          body: (
+            <SettingsCard
+              tts={tts}
+              autosend={autosend}
+              elevenlabs={elevenlabs}
+              grill={grill}
+              spawnPaused={spawnPaused}
+              widgetScripts={widgetScripts}
+              dangerous={dangerous}
+              cost={cost}
+              onToggleAutosend={toggleAutosend}
+              onToggleElevenlabs={toggleElevenlabs}
+              onToggleGrill={toggleGrill}
+              onToggleSpawnPaused={toggleSpawnPaused}
+              onToggleWidgetScripts={toggleWidgetScripts}
+              onToggleDangerous={toggleDangerous}
+              onResetApprovals={resetApprovals}
+            />
+          ),
         };
       case 'graph':
         return {
@@ -1028,10 +1064,25 @@ export default function App() {
           meta: <span className="panel-meta">{jobs.length} tasks · live</span>,
           body: <ScheduledTasksCard />,
         };
-      case 'team':
+      case 'agents':
         return {
-          meta: <span className="panel-meta">roster · live</span>,
-          body: <TeamCard />,
+          meta: <span className="panel-meta">core + equipa · live</span>,
+          body: (
+            <div className="agents-card">
+              <div className="agents-section">
+                <div className="team-section-head">◆ CORE · {AGENT_IDS.length} EMBUTIDOS</div>
+                {agentCfg && catalog ? (
+                  <AgentSettings config={agentCfg} catalog={catalog} onSave={saveAgent} />
+                ) : (
+                  <div className="empty">LOADING…</div>
+                )}
+              </div>
+              <div className="agents-section">
+                <div className="team-section-head">◇ EQUIPA · ESPECIALISTAS</div>
+                <TeamCard />
+              </div>
+            </div>
+          ),
         };
       case 'activity':
         return {
@@ -1079,10 +1130,59 @@ export default function App() {
     }
   })();
 
+  // ── Corner HUD (always-visible status; pure derivations from existing state) ──
+  const monTotal = displays.length || 1;
+  const monIdx =
+    (myDisplayId
+      ? displays.findIndex((d) => d.id === myDisplayId)
+      : displays.findIndex((d) => d.primary)) + 1 || 1;
+  const hudBrain = agentCfg?.main
+    ? `${agentCfg.main.provider}:${agentCfg.main.model}`
+    : cost
+      ? `${cost.activeBrain}:${cost.activeModel}`
+      : '—';
+  const hudBudget = cost
+    ? cost.external
+      ? `${cost.activeModel} · externo`
+      : `${cost.today.tokens.toLocaleString()} tok · ${usd(cost.today.usd)}`
+    : '—';
+  const activeJobs = jobs.filter((j) => j.enabled).length;
+
   return (
     <div className="app">
       <div className="scanline">
         <div />
+      </div>
+
+      {/* Corner HUD — always-visible status frame (pointer-events:none so it never
+          blocks the click-through overlay or the cards beneath it). Per display. */}
+      <div className="hud" aria-hidden>
+        <div className="hud-corner tl">
+          <span className="hud-brand">◆ ALFRED</span>
+          <span className="hud-ver">v{VERSION}</span>
+        </div>
+        <div className="hud-corner tr">
+          <span className="hud-line">MONITOR <span className="hud-v">{monIdx}/{monTotal}</span></span>
+          <span className="hud-line hud-clock">{clock}</span>
+        </div>
+        <div className="hud-corner bl">
+          <span className="hud-line">BRAIN <span className="hud-v">{hudBrain}</span></span>
+          <span className="hud-line">
+            <span className={tts ? 'hud-v on' : 'hud-v'}>{speaking ? 'SPEAKING' : tts ? 'VOICE ON' : 'VOICE OFF'}</span>
+            {' · '}
+            <span className={wake && wakeStatus.status === 'failed' ? 'hud-v danger' : wake ? 'hud-v on' : 'hud-v'}>
+              {wake ? (wakeStatus.status === 'failed' ? 'WAKE FAIL' : wakeStatus.status === 'suppressed' ? 'WAKE MUTED' : 'WAKE ON') : 'WAKE OFF'}
+            </span>
+          </span>
+        </div>
+        <div className="hud-corner br">
+          <span className="hud-line">{hudBudget}</span>
+          <span className="hud-line">
+            <span className={pendingCount > 0 ? 'hud-v danger' : 'hud-v'}>APR {pendingCount}</span>
+            {' · '}
+            <span className="hud-v">JOBS {activeJobs}</span>
+          </span>
+        </div>
       </div>
 
       {/* Always-visible hint that the strip lives at the top edge; fades out once revealed. */}
@@ -1095,7 +1195,7 @@ export default function App() {
         onMouseLeave={() => setHoverStrip(false)}
       >
         <div className="topbar">
-          <span className="topbar-title">◆ ALFRED</span>
+          <span className="topbar-title">◆ ALFRED <span className="topbar-ver">v{VERSION}</span></span>
           <div className="cards-menu no-drag" ref={cardsMenuRef}>
             <button
               type="button"
@@ -1146,83 +1246,11 @@ export default function App() {
           </button>
           <button
             type="button"
-            className={`topbar-btn no-drag${elevenlabs ? ' on' : ''}`}
-            onClick={toggleElevenlabs}
-            title={
-              elevenlabs
-                ? 'ElevenLabs cloud voice ON — click for the normal (say/kokoro) voice.'
-                : 'ElevenLabs cloud voice OFF — click to use ElevenLabs (needs ELEVENLABS_API_KEY + ELEVENLABS_VOICE_ID; falls back to the normal voice if missing).'
-            }
-          >
-            {elevenlabs ? '🗣 11LABS ON' : '🗣 11LABS'}
-          </button>
-          <button
-            type="button"
-            className={`topbar-btn no-drag${autosend ? ' on' : ''}`}
-            onClick={toggleAutosend}
-            title={
-              autosend
-                ? 'Auto-send on — finishing your sentence submits it automatically. Click to require “Alfred enviar”.'
-                : 'Auto-send off — dictation fills the box; say “Alfred enviar” or press Send. Click to submit automatically when you stop talking.'
-            }
-          >
-            {autosend ? '⏎ AUTO-SEND ON' : '⏎ AUTO-SEND'}
-          </button>
-          <button
-            type="button"
             className={`topbar-btn no-drag${wakeFace.tone}`}
             onClick={toggleWake}
             title={wakeFace.title}
           >
             {wakeFace.label}
-          </button>
-          <button
-            type="button"
-            className={`topbar-btn no-drag${widgetScripts ? ' on' : ''}`}
-            onClick={toggleWidgetScripts}
-            title={
-              widgetScripts
-                ? 'Widget JS ON — tier-2 widgets run their own JavaScript, sandboxed with NO network (data still arrives via postMessage). Click to return to declarative-only.'
-                : 'Widget JS OFF — tier-2 widgets are declarative (data-alfred bindings only; model <script> never runs). Click to let widget JS run (sandboxed, no network).'
-            }
-          >
-            {widgetScripts ? '</> WIDGET JS ON' : '</> WIDGET JS'}
-          </button>
-          <button
-            type="button"
-            className="topbar-btn no-drag"
-            onClick={resetApprovals}
-            title="Clear all saved auto-approve rules (start asking again)"
-          >
-            ⟲ RESET APPROVALS
-          </button>
-          <button
-            type="button"
-            className={`topbar-btn no-drag${grill ? ' on' : ''}`}
-            onClick={toggleGrill}
-            title={
-              grill
-                ? 'Grill-me on — Alfred interviews you to lock the plan before acting on ambiguous/high-stakes requests. Click to act directly.'
-                : 'Grill-me off — Alfred acts directly. Click to make it lock the plan first on ambiguous/high-stakes requests.'
-            }
-          >
-            {grill ? '◆ GRILL ON' : '◇ GRILL'}
-          </button>
-          <button
-            type="button"
-            className={`topbar-btn no-drag${spawnPaused ? ' on' : ''}`}
-            onClick={toggleSpawnPaused}
-            title="Kill-switch: freeze NEW fan-out (delegate_to_agent, delegate_to_claude_code, scheduled studies). Running children finish. Persisted."
-          >
-            {spawnPaused ? '‖ SPAWN PAUSED' : '⛛ PAUSE SPAWN'}
-          </button>
-          <button
-            type="button"
-            className={`topbar-btn no-drag${dangerous ? ' on' : ''}`}
-            onClick={toggleDangerous}
-            title="Bypass ALL approvals (T2/T3 auto-run). Persisted. Use with care."
-          >
-            {dangerous ? '● DANGEROUS ON' : '○ DANGEROUS'}
           </button>
           <button
             type="button"
@@ -1242,19 +1270,6 @@ export default function App() {
             title="Open the isolated Reference panel for a note (Phase 3: the graph opens this per node)"
           >
             ◈ REFERENCE
-          </button>
-          <button
-            type="button"
-            className={`topbar-btn no-drag${cards.find((c) => c.id === 'team')?.visible ? ' on' : ''}`}
-            onClick={() => {
-              const team = cardsRef.current.find((c) => c.id === 'team');
-              const show = !team?.visible;
-              patchCard('team', { visible: show });
-              if (show) focusCard('team');
-            }}
-            title="Show/hide the TEAM card — specialist roster, models, studied topics, token budgets and pending approvals"
-          >
-            👥 TEAM
           </button>
           <button
             type="button"
@@ -1478,9 +1493,172 @@ const AGENT_HINT: Record<AgentId, string> = {
   curator: 'curador da memória',
 };
 
+/** A single labelled on/off switch — wraps an existing toggle handler; no new logic. */
+function Toggle({
+  on,
+  onClick,
+  label,
+  danger,
+  title,
+}: {
+  on: boolean;
+  onClick: () => void;
+  label: string;
+  danger?: boolean;
+  title?: string;
+}) {
+  return (
+    <button
+      type="button"
+      className={`sw-row no-drag${on ? ' on' : ''}${danger ? ' danger' : ''}`}
+      role="switch"
+      aria-checked={on}
+      onClick={onClick}
+      title={title}
+    >
+      <span className="sw-track">
+        <span className="sw-thumb" />
+      </span>
+      <span className="sw-label">{label}</span>
+    </button>
+  );
+}
+
 /**
- * SETTINGS card body: per agent (main / reference / curator) an editable name, a
- * provider dropdown and a model dropdown (filtered by provider, with in/out price).
+ * SETTINGS card body: the behaviour/preference toggles moved out of the top strip,
+ * grouped Voz / Comportamento / Orçamento. Each switch is bound to the SAME get/set
+ * IPC as before (handlers passed from App) — this only changes where they render.
+ * Read-only prefs surface real values from the cost snapshot; the ones with no
+ * writable IPC (STT locale, TTS voice/engine, .env budgets) are shown as notes.
+ */
+function SettingsCard({
+  tts,
+  autosend,
+  elevenlabs,
+  grill,
+  spawnPaused,
+  widgetScripts,
+  dangerous,
+  cost,
+  onToggleAutosend,
+  onToggleElevenlabs,
+  onToggleGrill,
+  onToggleSpawnPaused,
+  onToggleWidgetScripts,
+  onToggleDangerous,
+  onResetApprovals,
+}: {
+  tts: boolean;
+  autosend: boolean;
+  elevenlabs: boolean;
+  grill: boolean;
+  spawnPaused: boolean;
+  widgetScripts: boolean;
+  dangerous: boolean;
+  cost: CostSnapshot | null;
+  onToggleAutosend: () => void;
+  onToggleElevenlabs: () => void;
+  onToggleGrill: () => void;
+  onToggleSpawnPaused: () => void;
+  onToggleWidgetScripts: () => void;
+  onToggleDangerous: () => void;
+  onResetApprovals: () => void;
+}) {
+  return (
+    <div className="settings-prefs">
+      <div className="settings-group">
+        <div className="settings-group-head">VOZ</div>
+        <Toggle
+          on={autosend}
+          onClick={onToggleAutosend}
+          label="Auto-send — enviar ao terminar a frase"
+          title="Auto-send on — finishing your sentence submits it automatically. Off — say “Alfred enviar” or press Send."
+        />
+        <Toggle
+          on={elevenlabs}
+          onClick={onToggleElevenlabs}
+          label="ElevenLabs — voz cloud"
+          title="ElevenLabs cloud voice (needs ELEVENLABS_API_KEY + ELEVENLABS_VOICE_ID; falls back to say/kokoro)."
+        />
+        <div className="settings-pref">
+          <span className="settings-pref-k">Saída de voz (VOICE)</span>
+          <span className="settings-pref-v">{tts ? 'ON' : 'OFF'} · no cabeçalho</span>
+        </div>
+        <div className="settings-note">
+          Locale STT, voz e engine TTS: definidos no .env (ALFRED_STT_LOCALE, ELEVENLABS_VOICE_ID, ALFRED_TTS_ENGINE).
+        </div>
+      </div>
+
+      <div className="settings-group">
+        <div className="settings-group-head">COMPORTAMENTO</div>
+        <Toggle
+          on={grill}
+          onClick={onToggleGrill}
+          label="Grill-me — trancar o plano antes de agir"
+          title="Grill-me on — Alfred interviews you to lock the plan before acting on ambiguous/high-stakes requests."
+        />
+        <Toggle
+          on={spawnPaused}
+          onClick={onToggleSpawnPaused}
+          label="Pausar spawn — congelar nova delegação"
+          title="Kill-switch: freeze NEW fan-out (delegate_to_agent, delegate_to_claude_code, scheduled studies). Running children finish."
+        />
+        <Toggle
+          on={widgetScripts}
+          onClick={onToggleWidgetScripts}
+          label="Widget JS — correr JS sandboxed (sem rede)"
+          title="Tier-2 widgets run their own JavaScript, sandboxed with NO network (data still arrives via postMessage)."
+        />
+        <Toggle
+          on={dangerous}
+          danger
+          onClick={onToggleDangerous}
+          label="Modo perigoso — ignorar TODAS as aprovações"
+          title="Bypass ALL approvals (T2/T3 auto-run). Persisted. Use with care."
+        />
+        <button
+          type="button"
+          className="settings-action no-drag"
+          onClick={onResetApprovals}
+          title="Clear all saved auto-approve rules (start asking again)"
+        >
+          ⟲ RESET APPROVALS
+        </button>
+      </div>
+
+      <div className="settings-group">
+        <div className="settings-group-head">ORÇAMENTO</div>
+        {cost ? (
+          <>
+            <div className="settings-pref">
+              <span className="settings-pref-k">Gasto hoje</span>
+              <span className="settings-pref-v">
+                {cost.today.tokens.toLocaleString()} tok{cost.external ? '' : ` · ${usd(cost.today.usd)}`}
+              </span>
+            </div>
+            <div className="settings-pref">
+              <span className="settings-pref-k">Kill-switch diário</span>
+              <span className="settings-pref-v">{cost.dailyTokenCap.toLocaleString()} tok</span>
+            </div>
+            <div className="settings-pref">
+              <span className="settings-pref-k">Orçamento US$ (soft)</span>
+              <span className="settings-pref-v">{cost.dailyUsdBudget ? usd(cost.dailyUsdBudget) : '—'}</span>
+            </div>
+          </>
+        ) : (
+          <div className="empty">SEM DADOS DE CUSTO</div>
+        )}
+        <div className="settings-note">
+          Kill-switch e orçamento: definidos no .env (ALFRED_DAILY_TOKEN_CAP, ALFRED_DAILY_USD_BUDGET).
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * AGENTS card · CORE section: per agent (main / reference / curator) an editable
+ * name, a provider dropdown and a model dropdown (filtered by provider, with in/out price).
  * Edits are held in a local draft; SAVE persists via IPC. Changing the provider
  * snaps the model to that provider's first entry so the pair is always valid.
  */
