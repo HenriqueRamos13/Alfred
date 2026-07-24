@@ -18,6 +18,7 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import type { StreamEvent } from './types.ts';
+import { resolveSttLocale } from './language-pure.ts';
 
 let proc: ChildProcess | null = null;
 
@@ -78,9 +79,10 @@ export function startListening(
     return;
   }
 
-  // ALFRED_STT_LOCALE is the explicit override; else the language-derived locale;
-  // else pt-BR (the historic default).
-  const locale = process.env.ALFRED_STT_LOCALE?.trim() || preferredLocale?.trim() || 'pt-BR';
+  // An explicit language pick (preferredLocale) wins; else ALFRED_STT_LOCALE; else
+  // pt-BR. So switching to English in Settings actually transcribes English even
+  // when the .env still pins ALFRED_STT_LOCALE=pt-BR.
+  const locale = resolveSttLocale(preferredLocale, process.env.ALFRED_STT_LOCALE);
   const args = ['--locale', locale];
   const child = spawn(bin, args, { stdio: ['pipe', 'pipe', 'pipe'] });
   proc = child;

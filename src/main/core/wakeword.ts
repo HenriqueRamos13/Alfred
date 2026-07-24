@@ -20,6 +20,7 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import type { StreamEvent, WakeStatus } from './types.ts';
 import { findSttBinary, readJsonLines } from './stt.ts';
+import { resolveSttLocale } from './language-pure.ts';
 
 let proc: ChildProcess | null = null;
 // A crash no longer LATCHES the listener off. Any unintentional exit schedules a
@@ -250,9 +251,9 @@ export function startWakeword(
     return;
   }
 
-  // ALFRED_STT_LOCALE is the explicit override; else the language-derived locale;
-  // else pt-BR (the historic default).
-  const locale = process.env.ALFRED_STT_LOCALE?.trim() || preferredLocale?.trim() || 'pt-BR';
+  // An explicit language pick (preferredLocale) wins; else ALFRED_STT_LOCALE; else
+  // pt-BR — so the Settings language choice is authoritative for the wake locale.
+  const locale = resolveSttLocale(preferredLocale, process.env.ALFRED_STT_LOCALE);
   // ALFRED_WAKEWORD is read from the environment by the helper itself.
   const child = spawn(bin, ['--wake', '--locale', locale], { stdio: ['pipe', 'pipe', 'pipe'] });
   proc = child;

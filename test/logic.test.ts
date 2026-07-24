@@ -98,6 +98,8 @@ import {
   resolveLanguage,
   localeForLanguage,
   languageDirective,
+  sttLocalePreference,
+  resolveSttLocale,
   DEFAULT_LANGUAGE,
 } from '../src/main/core/language-pure.ts';
 import { enqueueTurn, TURN_QUEUE_MAX, coalesceTurns } from '../src/main/core/turn-queue-pure.ts';
@@ -4356,4 +4358,25 @@ test('languageDirective — EN vs PT reply-language line', () => {
   // Each directive names its own tag, not the other's.
   assert.doesNotMatch(languageDirective('en-US'), /pt-BR/);
   assert.doesNotMatch(languageDirective('pt-BR'), /en-US/);
+});
+
+test('sttLocalePreference — only an explicit valid setting yields a locale', () => {
+  assert.equal(sttLocalePreference('en-US'), 'en-US');
+  assert.equal(sttLocalePreference('pt-BR'), 'pt-BR');
+  assert.equal(sttLocalePreference(undefined), undefined); // never chosen → env can win
+  assert.equal(sttLocalePreference(''), undefined);
+  assert.equal(sttLocalePreference('garbage'), undefined);
+});
+
+test('resolveSttLocale — explicit pick beats env, env beats default', () => {
+  // The bug this fixes: picking English in Settings must win over ALFRED_STT_LOCALE=pt-BR.
+  assert.equal(resolveSttLocale('en-US', 'pt-BR'), 'en-US');
+  // No explicit pick → the env override still applies (no regression).
+  assert.equal(resolveSttLocale(undefined, 'en-US'), 'en-US');
+  // Neither → pt-BR default.
+  assert.equal(resolveSttLocale(undefined, undefined), 'pt-BR');
+  assert.equal(resolveSttLocale('', ''), 'pt-BR');
+  // Whitespace is trimmed at both levels.
+  assert.equal(resolveSttLocale('  en-US  ', 'pt-BR'), 'en-US');
+  assert.equal(resolveSttLocale(undefined, '  en-US '), 'en-US');
 });

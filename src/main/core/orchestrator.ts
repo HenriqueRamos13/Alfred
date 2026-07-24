@@ -139,8 +139,8 @@ import { parseSendDelay } from './send-delay-pure.ts';
 import { isAccent, DEFAULT_ACCENT, type AccentName } from './accent-pure.ts';
 import {
   resolveLanguage,
-  localeForLanguage,
   languageDirective,
+  sttLocalePreference,
   type Language,
 } from './language-pure.ts';
 import { enqueueTurn, coalesceTurns } from './turn-queue-pure.ts';
@@ -995,10 +995,10 @@ export function createOrchestrator(opts: CreateOrchestratorOpts): OrchestratorHa
     if (raw === undefined) return wakeword.isWakeAvailable();
     return raw === '1';
   };
-  // STT/wake locale derived from the language setting (env override applies inside
-  // stt/wakeword themselves; this is the setting-based preference they fall to).
-  const sttLocale = (): string =>
-    localeForLanguage(resolveLanguage(getSetting(db, 'language'), process.env.ALFRED_LANGUAGE));
+  // The EXPLICIT language pick (persisted setting) the STT/wake locale prefers, or
+  // undefined when never chosen — so ALFRED_STT_LOCALE can still win for a user who
+  // set it without touching the picker. stt/wakeword resolve the final precedence.
+  const sttLocale = (): string | undefined => sttLocalePreference(getSetting(db, 'language'));
   const startWake = (): void => {
     if (wakeSuppressed || !wakeEnabled()) return;
     wakeword.startWakeword(wakeEmit, sessionId, sttLocale());

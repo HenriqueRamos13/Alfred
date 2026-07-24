@@ -38,6 +38,30 @@ export function localeForLanguage(lang: Language): string {
   return lang;
 }
 
+/**
+ * The STT/wake locale a persisted language setting prefers, or undefined when the
+ * language was never explicitly chosen — so the ALFRED_STT_LOCALE env default can
+ * still win for a user who set it without ever touching the picker. Pure.
+ */
+export function sttLocalePreference(languageSetting: unknown): string | undefined {
+  return isLanguage(languageSetting) ? localeForLanguage(languageSetting) : undefined;
+}
+
+/**
+ * Effective STT/wake locale. Precedence: an EXPLICIT language pick (`pref`) wins,
+ * else the ALFRED_STT_LOCALE env override, else pt-BR. This makes the Settings
+ * choice authoritative (a user who switches to English gets English transcription
+ * even if their .env still pins ALFRED_STT_LOCALE=pt-BR) while preserving the env
+ * for anyone who never touched the picker. Pure.
+ */
+export function resolveSttLocale(pref: string | undefined, envLocale: unknown): string {
+  const p = typeof pref === 'string' ? pref.trim() : '';
+  if (p) return p;
+  const e = typeof envLocale === 'string' ? envLocale.trim() : '';
+  if (e) return e;
+  return localeForLanguage(DEFAULT_LANGUAGE);
+}
+
 /** System-prompt directive steering the agent's default reply language. */
 export function languageDirective(lang: Language): string {
   return lang === 'en-US'
