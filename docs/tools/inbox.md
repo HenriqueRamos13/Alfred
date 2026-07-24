@@ -34,6 +34,15 @@ Alfred turn (no delegated caller) is the primary orchestrator and may always ask
 The rule is the same `canMessageUserResolved` used by the `team` tool and the Org
 chart, enforced **in code** (see `core/team-format-pure.ts`).
 
+**Scope of enforcement.** The gate is enforced in code on the **in-process
+(API-brain) delegate path** — `delegate_to_agent` threads the child's identity
+into `ctx.caller`, so a leaf without the flag is refused. A **`claude-cli`**
+delegated agent reaches tools via the shared MCP bridge, which runs under the
+top-level (caller-less) context, so it is NOT gated here — the same advisory-only
+limitation that already applies to per-agent grants on the claude-cli path (see
+the ponytail note in `tools/delegate-to-agent.ts`). This is low-risk: `ask_user`
+never acts autonomously — it only surfaces a message to the owner.
+
 ## The message (fields)
 - **`kind`** (required) — the interaction type, one of:
   - `ask_user_questions` — open question(s) needing an answer.
