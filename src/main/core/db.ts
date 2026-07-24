@@ -214,11 +214,37 @@ CREATE TABLE IF NOT EXISTS kanban_cards (
   max_attempts   INTEGER NOT NULL DEFAULT 3,
   timeout_ms     INTEGER,
   stop_condition TEXT NOT NULL DEFAULT '',
+  -- Async-HITL checkpoint (Phase 7 stage 3): 1 while an inbox ask on this card is
+  -- pending (the agent wrote, checkpointed, and yielded). The user's answer clears it.
+  awaiting_human INTEGER NOT NULL DEFAULT 0,
   created_ts     INTEGER NOT NULL,
   updated_ts     INTEGER NOT NULL,
   done_ts        INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_kanban_project ON kanban_cards(project_slug, order_idx);
+
+-- Human INBOX (Phase 7 stage 3): async HITL — a background/delegated agent writes
+-- a message HERE and yields; the user answers later (the resume is stage 4). SEPARATE
+-- from the formal T0–T3 tool approvals (two-tier). Only an agent with resolved
+-- can_message_user power may write (gated in the tool). Indexed by status + project.
+CREATE TABLE IF NOT EXISTS inbox_messages (
+  id              TEXT PRIMARY KEY,
+  from_agent_id   TEXT NOT NULL,
+  project_slug    TEXT,
+  card_id         TEXT,
+  kind            TEXT NOT NULL,                 -- ask_user_questions|request_confirmation|suggest_tasks
+  subject         TEXT NOT NULL,
+  body            TEXT NOT NULL DEFAULT '',
+  idempotency_key TEXT,                          -- dedupe a retried ask (see dedupeByIdempotency)
+  status          TEXT NOT NULL DEFAULT 'pending', -- pending|answered|rejected|superseded
+  action          TEXT,                          -- accept|edit|respond|reject (null while pending)
+  answer          TEXT,                          -- user's answer / edited args / reject reason
+  created_ts      INTEGER NOT NULL,
+  read_ts         INTEGER,                       -- null = unread
+  answered_ts     INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_inbox_status ON inbox_messages(status, created_ts);
+CREATE INDEX IF NOT EXISTS idx_inbox_project ON inbox_messages(project_slug, created_ts);
 `;
 
 export function openDb(dbPath: string): AlfredDb {
@@ -259,6 +285,12 @@ export function openDb(dbPath: string): AlfredDb {
   const teamCols = (db.prepare('PRAGMA table_info(team_agents)').all() as { name: string }[]).map((c) => c.name);
   if (!teamCols.includes('parent_id')) db.exec('ALTER TABLE team_agents ADD COLUMN parent_id TEXT');
   if (!teamCols.includes('can_message_user')) db.exec('ALTER TABLE team_agents ADD COLUMN can_message_user INTEGER NOT NULL DEFAULT 0');
+  // Idempotent migration: `kanban_cards.awaiting_human` (async-HITL checkpoint, Phase 7 stage 3)
+  // for boards created before it existed. Guarded so re-running on every boot is a no-op.
+  const hasAwaiting = (db.prepare('PRAGMA table_info(kanban_cards)').all() as { name: string }[]).some(
+    (c) => c.name === 'awaiting_human',
+  );
+  if (!hasAwaiting) db.exec('ALTER TABLE kanban_cards ADD COLUMN awaiting_human INTEGER NOT NULL DEFAULT 0');
   // Idempotent migration: `scheduled_jobs.study` (study-job params, Phase 5 stage 4).
   const hasStudy = (db.prepare('PRAGMA table_info(scheduled_jobs)').all() as { name: string }[]).some(
     (c) => c.name === 'study',

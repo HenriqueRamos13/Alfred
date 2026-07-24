@@ -22,6 +22,8 @@ import {
   type Priority,
 } from '../../main/core/kanban-pure.ts';
 import { buildOrgTree, canMessageUserResolved, type OrgNode } from '../../main/core/team-format-pure.ts';
+import { InboxView } from './Inbox.tsx';
+import { unreadCount, type InboxAction, type InboxMessage } from '../../main/core/inbox-pure.ts';
 import type { ProjectDetail } from '../../main/core/projects.ts';
 import type { TeamAgentInfo } from '../../main/core/types.ts';
 
@@ -33,11 +35,16 @@ export interface ProjectModalProps {
   cards: KanbanCard[];
   /** The full roster (Org tab renders its hierarchy; card counts are per this project). */
   agents: TeamAgentInfo[];
+  /** All inbox messages (the Inbox tab filters to this project). */
+  inbox: InboxMessage[];
   onKanban: (op: string, args: Record<string, unknown>) => Promise<KanbanResult>;
+  onAnswerInbox: (id: string, action: InboxAction, text?: string) => Promise<{ ok: boolean; error?: string }>;
+  onSpeak: (text: string) => void;
+  onMarkInboxRead: (id: string) => void;
   onClose: () => void;
 }
 
-type Tab = 'overview' | 'board' | 'org' | 'team' | 'activity';
+type Tab = 'overview' | 'board' | 'inbox' | 'org' | 'team' | 'activity';
 
 const LANES: { key: CardColumn; label: string }[] = [
   { key: 'backlog', label: 'Backlog' },
@@ -54,7 +61,7 @@ function initials(id: string | null): string {
   return id.replace(/[^a-z0-9]/gi, '').slice(0, 2).toUpperCase() || '·';
 }
 
-export function ProjectModal({ detail, cards, agents, onKanban, onClose }: ProjectModalProps) {
+export function ProjectModal({ detail, cards, agents, inbox, onKanban, onAnswerInbox, onSpeak, onMarkInboxRead, onClose }: ProjectModalProps) {
   const [tab, setTab] = useState<Tab>('board');
   const [selected, setSelected] = useState<string | null>(null);
   const [dragId, setDragId] = useState<string | null>(null);
@@ -62,6 +69,7 @@ export function ProjectModal({ detail, cards, agents, onKanban, onClose }: Proje
 
   const m = detail?.manifest;
   const selectedCard = selected ? cards.find((c) => c.id === selected) ?? null : null;
+  const projectInbox = inbox.filter((x) => x.projectSlug === m?.slug);
 
   const run = async (op: string, args: Record<string, unknown>) => {
     setError('');
@@ -97,10 +105,11 @@ export function ProjectModal({ detail, cards, agents, onKanban, onClose }: Proje
         </div>
 
         <div className="pm-tabs">
-          {(['overview', 'board', 'org', 'team', 'activity'] as Tab[]).map((t) => (
+          {(['overview', 'board', 'inbox', 'org', 'team', 'activity'] as Tab[]).map((t) => (
             <button key={t} type="button" className={t === tab ? 'on' : ''} onClick={() => setTab(t)}>
               {t}
               {t === 'board' && <span className="pm-n"> {cards.length}</span>}
+              {t === 'inbox' && unreadCount(projectInbox) > 0 && <span className="pm-n"> {unreadCount(projectInbox)}</span>}
             </button>
           ))}
         </div>
@@ -161,7 +170,10 @@ export function ProjectModal({ detail, cards, agents, onKanban, onClose }: Proje
                           onClick={() => { setError(''); setSelected(c.id); }}
                           title="Open / edit"
                         >
-                          <div className="pm-kid">{c.id}</div>
+                          <div className="pm-kid">
+                            {c.id}
+                            {c.awaitingHuman && <span className="pm-waiting" title="waiting human — inbox ask pending">⏳ waiting human</span>}
+                          </div>
                           <div className="pm-kt">{c.title}</div>
                           <div className="pm-kmeta">
                             {c.assigneeId && (
@@ -197,6 +209,17 @@ export function ProjectModal({ detail, cards, agents, onKanban, onClose }: Proje
                   <OrgTree nodes={buildOrgTree(agents)} cards={cards} />
                 </div>
               )}
+            </div>
+          )}
+
+          {tab === 'inbox' && (
+            <div className="pm-inbox">
+              <InboxView
+                messages={projectInbox}
+                onAnswer={onAnswerInbox}
+                onSpeak={onSpeak}
+                onMarkRead={onMarkInboxRead}
+              />
             </div>
           )}
 

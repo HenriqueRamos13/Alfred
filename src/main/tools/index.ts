@@ -23,11 +23,12 @@ import { system } from './system.ts';
 import { schedule } from './schedule.ts';
 import { team } from './team.ts';
 import { kanban } from './kanban.ts';
+import { inbox } from './inbox.ts';
 import { recallSessions } from './recall-sessions.ts';
 
 export { createBrowserHandle } from './browser.ts';
 
-export const tools: Tool[] = [filesystem, shell, browser, project, gmail, renderUi, memory, delegate, delegateToAgent, agentStudy, uiLayout, system, schedule, team, kanban, recallSessions];
+export const tools: Tool[] = [filesystem, shell, browser, project, gmail, renderUi, memory, delegate, delegateToAgent, agentStudy, uiLayout, system, schedule, team, kanban, inbox, recallSessions];
 
 /** Lookup by tool name (for the orchestrator's tool-use dispatch). */
 export const toolsByName: Record<string, Tool> = Object.fromEntries(tools.map((t) => [t.name, t]));
@@ -35,7 +36,7 @@ export const toolsByName: Record<string, Tool> = Object.fromEntries(tools.map((t
 /**
  * CORE tools — the small always-loaded set that NEVER defers (progressive tool
  * disclosure, Phase 6 Stage 1). Everything else (browser, gmail, project,
- * render_ui, delegate*, agent_study, team, kanban, schedule, recall_sessions, + MCP tools) is
+ * render_ui, delegate*, agent_study, team, kanban, inbox, schedule, recall_sessions, + MCP tools) is
  * DEFERRABLE: hidden behind the tool_search/tool_describe/tool_call bridge once
  * the deferrable defs would blow the token budget. See tool-disclosure-pure.ts.
  */

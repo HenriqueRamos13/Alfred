@@ -429,6 +429,9 @@ export type StreamEvent =
   // A kanban card in `projectSlug`'s board was created/updated/moved/deleted
   // (Phase 7). The open project modal listens and re-fetches that board's cards.
   | { kind: 'kanban.changed'; projectSlug: string }
+  // An inbox message was raised (agent ask_user) or answered/read/superseded
+  // (Phase 7 stage 3). The UI re-fetches the inbox list + the unread badge.
+  | { kind: 'inbox.changed' }
   | { kind: 'team.changed' }
   // The main conversation was reset: the UI clears the chat (every window).
   | { kind: 'conversation.reset'; sessionId: string }
@@ -558,6 +561,14 @@ export interface ToolCtx {
    * (fail-closed) child, and to pass depth+1 down to its own child.
    */
   delegationDepth?: number;
+  /**
+   * The roster agent whose DELEGATED turn is running (Phase 7 stage 3), for tools
+   * that gate on agent identity — the `inbox` tool checks canMessageUserResolved
+   * against this. Set by the delegate runner from the agent's record; absent → the
+   * top-level Alfred turn (the primary orchestrator, which may always message the
+   * user). NEVER taken from model args (that would be spoofable) — this is trusted.
+   */
+  caller?: { agentId: string; delegationRole: 'leaf' | 'orchestrator'; canMessageUser: boolean };
 }
 
 export interface Tool<A = any> {

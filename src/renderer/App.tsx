@@ -16,6 +16,8 @@ import { CommandBar } from './components/CommandBar.tsx';
 import { ChatLog } from './components/ChatLog.tsx';
 import { ProjectList } from './components/ProjectList.tsx';
 import { ProjectModal } from './components/ProjectModal.tsx';
+import { InboxOverlay } from './components/Inbox.tsx';
+import { unreadCount, type InboxAction, type InboxMessage } from '../main/core/inbox-pure.ts';
 import { ApprovalPrompt } from './components/ApprovalPrompt.tsx';
 import { DraggableCard } from './components/DraggableCard.tsx';
 import { ReferenceChat } from './components/ReferenceChat.tsx';
@@ -77,7 +79,7 @@ interface LogRow {
 }
 
 /** Shipped version — shown in the corner HUD and the top-bar title. Bump on release. */
-const VERSION = '1.14.0';
+const VERSION = '1.16.0';
 
 const MAX_LOG = 80;
 const MAX_ALERTS = 12;
@@ -117,6 +119,10 @@ export default function App() {
   const [projectDetail, setProjectDetail] = useState<ProjectDetail | null>(null);
   const [kanbanCards, setKanbanCards] = useState<KanbanCard[]>([]);
   const [teamAgents, setTeamAgents] = useState<TeamAgentInfo[]>([]);
+  // Human inbox (Phase 7 stage 3): async HITL. Global list + open state; the badge
+  // is unreadCount(inbox). Re-fetched on mount and every inbox.changed event.
+  const [inbox, setInbox] = useState<InboxMessage[]>([]);
+  const [inboxOpen, setInboxOpen] = useState(false);
   const openProjectRef = useRef<string | null>(null);
   const [accounts, setAccounts] = useState<AccountRecord[]>([]);
   const [connectingGmail, setConnectingGmail] = useState(false);
@@ -447,6 +453,17 @@ export default function App() {
   // the kanban.changed event that the main process emits on success.
   const doKanban = (op: string, args: Record<string, unknown>) => alfred.kanban(op, args);
 
+  // Human inbox (Phase 7 stage 3). Refetch on mount + every inbox.changed; the
+  // answer/read paths emit inbox.changed from main, which drives the refetch.
+  const refreshInbox = () => {
+    alfred.listInbox().then(setInbox).catch(() => {});
+  };
+  const answerInbox = (id: string, action: InboxAction, text?: string) => alfred.answerInbox(id, action, text);
+  const openCardProject = (slug: string) => {
+    setInboxOpen(false);
+    openProject(slug);
+  };
+
   const refreshJobs = () => {
     alfred.listJobs().then(setJobs).catch(() => {});
   };
@@ -485,6 +502,7 @@ export default function App() {
     refreshAccounts();
     refreshJobs();
     refreshPending();
+    refreshInbox();
     // Reload the persisted conversation so history survives restarts.
     alfred.getHistory().then(setMessages).catch(() => {});
     alfred.getLayout().then(setCards).catch(() => {});
@@ -638,6 +656,13 @@ export default function App() {
         case 'team.changed':
           // Roster / hierarchy changed (create/delete/set_manager) — refresh the Org tab.
           alfred.listTeamAgents().then(setTeamAgents).catch(() => {});
+          break;
+        case 'inbox.changed':
+          // An ask was raised / answered / read / superseded — refresh the list + badge.
+          alfred.listInbox().then(setInbox).catch(() => {});
+          // An ask also flips a card's awaiting_human checkpoint, so refresh the open
+          // board too (keeps the ⏳ "waiting human" badge live without a kanban.changed).
+          if (openProjectRef.current) alfred.listCards(openProjectRef.current).then(setKanbanCards).catch(() => {});
           break;
         case 'agent.status':
           setStatus(e.status);
@@ -1446,6 +1471,14 @@ export default function App() {
           <span className="topbar-spacer" />
           <button
             type="button"
+            className={`topbar-btn no-drag${inboxOpen ? ' on' : ''}${unreadCount(inbox) > 0 ? ' danger' : ''}`}
+            onClick={() => setInboxOpen((v) => !v)}
+            title="Inbox — mensagens dos agentes (HITL assíncrono)"
+          >
+            ✉ INBOX{unreadCount(inbox) > 0 ? ` ${unreadCount(inbox)}` : ''}
+          </button>
+          <button
+            type="button"
             className={`topbar-btn no-drag${tts ? ' on' : ''}`}
             onClick={toggleTts}
             title={
@@ -1571,7 +1604,28 @@ export default function App() {
       </div>
 
       {openProjectSlug && (
-        <ProjectModal detail={projectDetail} cards={kanbanCards} agents={teamAgents} onKanban={doKanban} onClose={closeProject} />
+        <ProjectModal
+          detail={projectDetail}
+          cards={kanbanCards}
+          agents={teamAgents}
+          inbox={inbox}
+          onKanban={doKanban}
+          onAnswerInbox={answerInbox}
+          onSpeak={alfred.speakText}
+          onMarkInboxRead={alfred.markInboxRead}
+          onClose={closeProject}
+        />
+      )}
+
+      {inboxOpen && (
+        <InboxOverlay
+          messages={inbox}
+          onAnswer={answerInbox}
+          onSpeak={alfred.speakText}
+          onMarkRead={alfred.markInboxRead}
+          onOpenCard={openCardProject}
+          onClose={() => setInboxOpen(false)}
+        />
       )}
 
       {approval && (

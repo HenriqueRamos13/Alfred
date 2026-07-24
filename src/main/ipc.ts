@@ -26,6 +26,8 @@ import type {
 } from './core/types.ts';
 import type { ProjectDetail } from './core/projects.ts';
 import type { KanbanCard } from './core/kanban-pure.ts';
+import type { InboxMessage } from './core/inbox-pure.ts';
+import type { InboxFilter, InboxResult } from './core/inbox.ts';
 import type { BrainInfo } from './core/providers.ts';
 import type { FactoryResetInfo } from './core/orchestrator.ts';
 import type { Graph } from './core/graph.ts';
@@ -156,6 +158,15 @@ export interface Orchestrator {
   listCards(projectSlug: string): KanbanCard[] | Promise<KanbanCard[]>;
   /** The user's direct board op (drag/edit/delete) — see the orchestrator method. */
   kanban(op: string, args: Record<string, unknown>): { ok: boolean; error?: string } | Promise<{ ok: boolean; error?: string }>;
+  // ── Human inbox (Phase 7 stage 3). ──
+  /** Speak arbitrary text (the Inbox "▶ Ouvir" button). */
+  speakText(text: string): void;
+  /** Inbox messages, optionally filtered (newest first). */
+  listInbox(filter?: InboxFilter): InboxMessage[] | Promise<InboxMessage[]>;
+  /** Apply the user's typed answer (accept/edit/respond/reject; reject needs a reason). */
+  answerInbox(id: string, action: string, text?: string): InboxResult | Promise<InboxResult>;
+  /** Mark a message read (drops the unread badge). */
+  markInboxRead(id: string): InboxMessage | undefined | Promise<InboxMessage | undefined>;
 }
 
 /** Trust boundary: keep only well-formed numeric/boolean fields from the renderer. */
@@ -532,6 +543,51 @@ export function registerIpc(core: Orchestrator, emit: (e: StreamEvent) => void):
     } catch (err) {
       fail('kanban', err);
       return { ok: false, error: 'kanban failed' };
+    }
+  });
+
+  // ── Human inbox (Phase 7 stage 3) — async HITL. ──
+  // Speak arbitrary text (the "▶ Ouvir" button). Fire-and-forget like startListening.
+  ipcMain.on('alfred:speakText', (_e, text: unknown) => {
+    if (typeof text !== 'string' || !text.trim()) return;
+    try {
+      core.speakText(text);
+    } catch (err) {
+      fail('speak text', err);
+    }
+  });
+  ipcMain.handle('alfred:listInbox', async (_e, rawFilter: unknown): Promise<InboxMessage[]> => {
+    // Trust boundary: keep only well-formed string filter fields.
+    const src = (rawFilter ?? {}) as Record<string, unknown>;
+    const filter: InboxFilter = {};
+    if (typeof src.projectSlug === 'string' && src.projectSlug) filter.projectSlug = src.projectSlug;
+    if (typeof src.status === 'string' && src.status) filter.status = src.status;
+    if (typeof src.agentId === 'string' && src.agentId) filter.agentId = src.agentId;
+    try {
+      return await core.listInbox(filter);
+    } catch (err) {
+      fail('list inbox', err);
+      return [];
+    }
+  });
+  ipcMain.handle('alfred:answerInbox', async (_e, id: unknown, action: unknown, text: unknown): Promise<InboxResult> => {
+    if (typeof id !== 'string' || !id) return { ok: false, error: 'id is required' };
+    if (typeof action !== 'string') return { ok: false, error: 'action is required' };
+    const t = typeof text === 'string' ? text : undefined;
+    try {
+      return await core.answerInbox(id, action, t);
+    } catch (err) {
+      fail('answer inbox', err);
+      return { ok: false, error: 'answer inbox failed' };
+    }
+  });
+  ipcMain.handle('alfred:markInboxRead', async (_e, id: unknown): Promise<InboxMessage | null> => {
+    if (typeof id !== 'string' || !id) return null;
+    try {
+      return (await core.markInboxRead(id)) ?? null;
+    } catch (err) {
+      fail('mark inbox read', err);
+      return null;
     }
   });
 

@@ -47,6 +47,7 @@ interface Row {
   max_attempts: number;
   timeout_ms: number | null;
   stop_condition: string;
+  awaiting_human: number;
   created_ts: number;
   updated_ts: number;
   done_ts: number | null;
@@ -75,6 +76,7 @@ function rowToCard(r: Row): KanbanCard {
     maxAttempts: r.max_attempts ?? 3,
     timeoutMs: r.timeout_ms ?? null,
     stopCondition: r.stop_condition ?? '',
+    awaitingHuman: r.awaiting_human === 1,
     createdTs: r.created_ts,
     updatedTs: r.updated_ts,
     doneTs: r.done_ts ?? null,

@@ -22,6 +22,8 @@ import type { BrainInfo } from '../main/core/providers.ts';
 import type { FactoryResetInfo } from '../main/core/orchestrator.ts';
 import type { ProjectDetail } from '../main/core/projects.ts';
 import type { KanbanCard } from '../main/core/kanban-pure.ts';
+import type { InboxMessage } from '../main/core/inbox-pure.ts';
+import type { InboxFilter, InboxResult } from '../main/core/inbox.ts';
 import type { Graph } from '../main/core/graph.ts';
 import type { ReferenceRequest } from '../main/core/reference.ts';
 import type {
@@ -100,6 +102,16 @@ const api = {
   /** The user's direct board op (drag/edit/delete) — resolves {ok, error?} (+ card on success). */
   kanban: (op: string, args: Record<string, unknown>): Promise<{ ok: boolean; error?: string; card?: KanbanCard; reasons?: string[] }> =>
     ipcRenderer.invoke('alfred:kanban', op, args),
+  // ── Human inbox (Phase 7 stage 3) — async HITL. ──
+  /** Speak arbitrary text (the Inbox "▶ Ouvir" button) — fire-and-forget. */
+  speakText: (text: string): void => ipcRenderer.send('alfred:speakText', text),
+  /** Inbox messages, optionally filtered (newest first); re-fetched on inbox.changed. */
+  listInbox: (filter?: InboxFilter): Promise<InboxMessage[]> => ipcRenderer.invoke('alfred:listInbox', filter),
+  /** Apply the user's typed answer (accept/edit/respond/reject; reject needs a reason). */
+  answerInbox: (id: string, action: string, text?: string): Promise<InboxResult> =>
+    ipcRenderer.invoke('alfred:answerInbox', id, action, text),
+  /** Mark a message read (drops the unread badge). */
+  markInboxRead: (id: string): Promise<InboxMessage | null> => ipcRenderer.invoke('alfred:markInboxRead', id),
   listAccounts: (): Promise<AccountRecord[]> => ipcRenderer.invoke('alfred:listAccounts'),
   /** Brain availability (enabled/disabled) for the UI. */
   listBrains: (): Promise<BrainInfo[]> => ipcRenderer.invoke('alfred:listBrains'),

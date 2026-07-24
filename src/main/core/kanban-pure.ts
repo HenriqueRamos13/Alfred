@@ -64,6 +64,8 @@ export interface KanbanCard {
   maxAttempts: number;
   timeoutMs: number | null;
   stopCondition: string;
+  /** Async-HITL checkpoint: true while an inbox ask on this card is pending (Phase 7 stage 3). */
+  awaitingHuman: boolean;
   createdTs: number;
   updatedTs: number;
   doneTs: number | null;

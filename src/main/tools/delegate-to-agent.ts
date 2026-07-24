@@ -174,6 +174,7 @@ export const delegateToAgent: Tool<Args> = {
         model,
         grant: agent.grant,
         delegationRole: agent.delegationRole,
+        canMessageUser: agent.canMessageUser ?? false,
         delegationDepth: depth + 1,
         dailyTokenBudget: agent.dailyTokenBudget,
         system: context,
@@ -204,6 +205,8 @@ export interface AgentTurnSpec {
   grant: Capability[];
   /** PRIVILEGE role — bounds the model-visible toolset + the effective grant. Default 'leaf'. */
   delegationRole?: DelegationRole;
+  /** Inbox power: may this agent message the user directly? Threaded to ctx.caller for the inbox gate. */
+  canMessageUser?: boolean;
   /** This runner's delegation depth (child of a delegate call). Threaded to its own sub-tools. Default 0. */
   delegationDepth?: number;
   dailyTokenBudget?: number;
@@ -298,8 +301,13 @@ export async function runAgentTurn(ctx: ToolCtx, spec: AgentTurnSpec): Promise<A
   // execute-time sensitive sub-op is DENIED (mirrors the JobScheduler's job ctx).
   const runState: JobRunState = { readUntrusted: false };
   // Sub-tool execution ctx carries this runner's OWN depth, so a nested
-  // delegate_to_agent (orchestrator only) spawns its child at depth+1.
-  const baseCtx: ToolCtx = { ...ctx, delegationDepth };
+  // delegate_to_agent (orchestrator only) spawns its child at depth+1. It also
+  // carries the caller identity so the inbox tool can gate on canMessageUserResolved.
+  const baseCtx: ToolCtx = {
+    ...ctx,
+    delegationDepth,
+    caller: { agentId, delegationRole, canMessageUser: spec.canMessageUser ?? false },
+  };
   const unattendedCtx: ToolCtx = unattended
     ? {
         ...baseCtx,
@@ -335,6 +343,16 @@ export async function runAgentTurn(ctx: ToolCtx, spec: AgentTurnSpec): Promise<A
   const set: ToolSet = {};
   for (const t of subTools) {
     const runOne = async (args: unknown): Promise<unknown> => {
+        // `inbox` has its OWN dedicated authority — canMessageUserResolved via
+        // ctx.caller (orchestrator, or a leaf with can_message_user), finer than the
+        // coarse capability grant. Messaging the user to bring a human in is SAFE (it
+        // never acts autonomously — it surfaces to the owner), so it bypasses the
+        // grant/role capability test in BOTH paths and self-gates inside the tool.
+        // Without this, the default read+notify grant (inbox → 'write') would refuse
+        // it before the real gate ran — e.g. the flagged-leaf case the Org UI shows.
+        if (t.name === 'inbox') {
+          return runGovernedTool(t, args, unattended ? unattendedCtx : baseCtx);
+        }
         if (unattended) {
           // UNATTENDED: sensitive → queue/deny (pierces dangerous), in-grant benign → allow.
           let decision = jobActionDecision({ grant: effGrant, dangerous: unattended.dangerous, unattended: true }, t.name, args);

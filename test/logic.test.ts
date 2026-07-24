@@ -3936,3 +3936,82 @@ test('lifecycleRecipients — assign→assignee, review→reviewer, done→creat
   assert.deepEqual(lifecycleRecipients({ assigneeId: null, reviewerId: null, createdBy: 'pm', forWhom: 'pm' }, 'done'), ['pm']);
   assert.deepEqual(lifecycleRecipients({ assigneeId: null, reviewerId: null, createdBy: 'pm', forWhom: null }, 'assign'), []);
 });
+
+// ── inbox-pure (Phase 7, stage 3) ────────────────────────────────────────────
+import {
+  validateAsk,
+  answerTransition,
+  supersedeDecision,
+  dedupeByIdempotency,
+  unreadCount,
+  isInboxKind,
+} from '../src/main/core/inbox-pure.ts';
+
+test('validateAsk — kind must be one of the three, subject required', () => {
+  assert.equal((validateAsk({ subject: 'x' }) as { ok: false; error: string }).error.startsWith('kind must be'), true);
+  assert.equal((validateAsk({ kind: 'nope', subject: 'x' }) as { ok: false; error: string }).error.startsWith('kind must be'), true);
+  assert.equal((validateAsk({ kind: 'request_confirmation' }) as { ok: false; error: string }).error, 'subject is required');
+  assert.equal((validateAsk({ kind: 'request_confirmation', subject: '   ' }) as { ok: false; error: string }).error, 'subject is required');
+  assert.equal(isInboxKind('ask_user_questions'), true);
+  assert.equal(isInboxKind('other'), false);
+});
+
+test('validateAsk — normalises optional fields (empty → null, body defaults "")', () => {
+  const r = validateAsk({ kind: 'ask_user_questions', subject: '  Stripe keys?  ', projectSlug: 'nimbus', cardId: '  ', idempotencyKey: 'k1' });
+  assert.equal(r.ok, true);
+  if (r.ok) {
+    assert.deepEqual(r.spec, {
+      kind: 'ask_user_questions',
+      subject: 'Stripe keys?',
+      body: '',
+      projectSlug: 'nimbus',
+      cardId: null,
+      idempotencyKey: 'k1',
+    });
+  }
+});
+
+test('answerTransition — accept/edit/respond → answered; only pending is answerable', () => {
+  assert.deepEqual(answerTransition({ status: 'pending' }, 'accept', undefined), { ok: true, next: { status: 'answered', action: 'accept', answer: '' } });
+  assert.deepEqual(answerTransition({ status: 'pending' }, 'respond', ' use test keys '), { ok: true, next: { status: 'answered', action: 'respond', answer: 'use test keys' } });
+  // not pending → refused, never silently
+  assert.equal((answerTransition({ status: 'answered' }, 'accept', 'x') as { ok: false; error: string }).error, 'cannot answer a "answered" message (only pending)');
+  assert.equal((answerTransition({ status: 'superseded' }, 'respond', 'x') as { ok: false; error: string }).ok, false);
+  // unknown action refused
+  assert.equal((answerTransition({ status: 'pending' }, 'bogus', 'x') as { ok: false; error: string }).error.startsWith('action must be'), true);
+});
+
+test('answerTransition — reject requires a non-empty reason', () => {
+  assert.equal((answerTransition({ status: 'pending' }, 'reject', '') as { ok: false; error: string }).error, 'reject requires reason');
+  assert.equal((answerTransition({ status: 'pending' }, 'reject', '   ') as { ok: false; error: string }).error, 'reject requires reason');
+  assert.deepEqual(answerTransition({ status: 'pending' }, 'reject', 'not now'), { ok: true, next: { status: 'rejected', action: 'reject', answer: 'not now' } });
+});
+
+test('supersedeDecision — a later user comment supersedes a pending ask (anti-zombie)', () => {
+  assert.equal(supersedeDecision({ status: 'pending', createdTs: 100 }, 200), true);
+  // comment before/at the ask → not superseded
+  assert.equal(supersedeDecision({ status: 'pending', createdTs: 100 }, 100), false);
+  assert.equal(supersedeDecision({ status: 'pending', createdTs: 100 }, 50), false);
+  // already resolved → never superseded
+  assert.equal(supersedeDecision({ status: 'answered', createdTs: 100 }, 999), false);
+});
+
+test('dedupeByIdempotency — returns the existing match; blank key never dedupes', () => {
+  const existing = [{ idempotencyKey: 'a' }, { idempotencyKey: null }, { idempotencyKey: 'b' }];
+  assert.equal(dedupeByIdempotency(existing, 'b'), existing[2]);
+  assert.equal(dedupeByIdempotency(existing, ' a '), existing[0]);
+  assert.equal(dedupeByIdempotency(existing, 'zzz'), undefined);
+  assert.equal(dedupeByIdempotency(existing, ''), undefined);
+  assert.equal(dedupeByIdempotency(existing, null), undefined);
+});
+
+test('unreadCount — unopened + not superseded', () => {
+  const msgs = [
+    { readTs: null, status: 'pending' as const },
+    { readTs: null, status: 'answered' as const },
+    { readTs: 5, status: 'pending' as const },
+    { readTs: null, status: 'superseded' as const }, // zombie — excluded
+  ];
+  assert.equal(unreadCount(msgs), 2);
+  assert.equal(unreadCount([]), 0);
+});

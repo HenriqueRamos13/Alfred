@@ -43,6 +43,7 @@ Per-tool input/output/risk contracts. Registered tools live in `src/main/tools/`
 - [tool-disclosure.md](tools/tool-disclosure.md) — progressive disclosure + the `tool_search`/`tool_describe`/`tool_call` bridge, schema sanitizer, check_fn cache.
 - [recall-sessions.md](tools/recall-sessions.md) — zero-LLM FTS5 recall over the raw transcript (discovery / scroll / browse).
 - [kanban.md](tools/kanban.md) — the machine-writable project board (cards, gated column moves, Done-gate, atomic claim).
+- [inbox.md](tools/inbox.md) — async human-in-the-loop: ask the user (write → checkpoint → yield), typed answers, reject-requires-reason, idempotency + supersede, two-tier vs. approvals.
 
 ## Governance — [governance/](governance/)
 

@@ -69,6 +69,15 @@ import {
   type CardResult,
 } from './kanban.ts';
 import type { KanbanCard } from './kanban-pure.ts';
+import {
+  listInbox as listInboxMessages,
+  answerInbox as answerInboxMessage,
+  markInboxRead as markInboxReadMessage,
+  supersedeCardAsks,
+  type InboxFilter,
+  type InboxResult,
+} from './inbox.ts';
+import type { InboxMessage } from './inbox-pure.ts';
 import { getGraph as buildVaultGraph, getNote as readNotePreview, type Graph } from './graph.ts';
 import { factoryResetPaths, factoryResetTables } from './reset.ts';
 import { resolveProvider, listBrains, resolveActiveBrainId } from './providers.ts';
@@ -795,6 +804,19 @@ export interface OrchestratorHandle {
    * `kanban` TOOL the agent uses.
    */
   kanban(op: string, args: Record<string, unknown>): CardResult | { ok: boolean; error?: string };
+  // ── Human inbox (Phase 7 stage 3) — async HITL. ──
+  /** Speak arbitrary text (the Inbox "▶ Ouvir" button) — fire-and-forget, regardless of the auto-TTS toggle. */
+  speakText(text: string): void;
+  /** Inbox messages (optionally filtered by project/status/agent), newest first. */
+  listInbox(filter?: InboxFilter): InboxMessage[];
+  /**
+   * Apply the user's typed answer (accept/edit/respond/reject) via answerTransition
+   * (reject-requires-reason). Clears the card's awaiting_human and emits inbox.changed.
+   * Persisting the answer is this stage; the agent's automatic RESUME is Stage 4.
+   */
+  answerInbox(id: string, action: string, text?: string): InboxResult;
+  /** Mark a message read (drops the unread dot / badge). Emits inbox.changed. */
+  markInboxRead(id: string): InboxMessage | undefined;
 }
 
 export function createOrchestrator(opts: CreateOrchestratorOpts): OrchestratorHandle {
@@ -1724,8 +1746,14 @@ export function createOrchestrator(opts: CreateOrchestratorOpts): OrchestratorHa
           return changed(moveCard(db, id, args.column));
         case 'assign':
           return changed(assignCard(db, id, args));
-        case 'comment':
-          return changed(commentCard(db, id, String(args.text ?? ''), 'user'));
+        case 'comment': {
+          const res = changed(commentCard(db, id, String(args.text ?? ''), 'user'));
+          // Anti-zombie: a fresh user comment on this card supersedes any pending
+          // ask raised before it, so answering a stale question can't re-wake a
+          // question the human already moved past.
+          if (res.ok && supersedeCardAsks(db, id, Date.now()) > 0) emit({ kind: 'inbox.changed' });
+          return res;
+        }
         case 'claim':
           return changed(claimCard(db, id, String(args.agentId ?? 'user')));
         case 'complete':
@@ -1739,6 +1767,23 @@ export function createOrchestrator(opts: CreateOrchestratorOpts): OrchestratorHa
         default:
           return { ok: false, error: `unknown kanban op: ${op}` };
       }
+    },
+    speakText(text) {
+      const t = (text ?? '').trim();
+      if (t) tts.speak(t);
+    },
+    listInbox(filter) {
+      return listInboxMessages(db, filter);
+    },
+    answerInbox(id, action, text) {
+      const res = answerInboxMessage(db, id, action, text);
+      if (res.ok) emit({ kind: 'inbox.changed' });
+      return res;
+    },
+    markInboxRead(id) {
+      const msg = markInboxReadMessage(db, id);
+      if (msg) emit({ kind: 'inbox.changed' });
+      return msg;
     },
   };
 }
