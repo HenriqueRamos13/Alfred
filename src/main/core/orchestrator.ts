@@ -118,7 +118,7 @@ import {
   updateJob as updateJobDb,
   deleteJob as deleteJobDb,
 } from './jobs.ts';
-import { listAgents, getAgent, deleteAgent, setAgentManager, createAgent } from './team.ts';
+import { listAgents, getAgent, deleteAgent, setAgentManager, createAgent, updateAgent } from './team.ts';
 import type { TeamAgent } from './team-pure.ts';
 import { validateAgentSpec } from './team-pure.ts';
 import { pickCuratorSpec } from './curator.ts';
@@ -129,6 +129,7 @@ import {
   mergeAugmented,
   fillFormSpec,
   formSpecToCreate,
+  mergeRole,
   type AgentFormSpec,
   type AugmentFlags,
 } from './agent-augment-pure.ts';
@@ -867,6 +868,14 @@ export interface OrchestratorHandle {
    * team.changed. Distinct from the `team` tool's `create` op (agent-driven, T2).
    */
   createTeamAgent(spec: AgentFormSpec): Promise<{ ok: true; agent: TeamAgent } | { ok: false; error: string }>;
+  /**
+   * Edit a roster agent from a completed form spec (the modal's "editar" tab). FULL-FORM
+   * semantics — every form field is applied (a blank budget/parent CLEARS it), the id/slug
+   * stays immutable, and `grant`/`knowledgeSeed` are left alone (the form doesn't own them).
+   * Validates via updateAgent → validateAgentPatch and emits team.changed on success.
+   * Distinct from the `team` tool's `update` op, which is PARTIAL (agent-driven, T2).
+   */
+  updateTeamAgent(id: string, spec: AgentFormSpec): Promise<{ ok: true; agent: TeamAgent } | { ok: false; error: string }>;
   // ── Projects + Kanban (Phase 7) ──
   /** One project's manifest + file tree (the IPC bridge; core already existed). */
   getProject(slug: string): Promise<ProjectDetail | null>;
@@ -1930,6 +1939,24 @@ export function createOrchestrator(opts: CreateOrchestratorOpts): OrchestratorHa
       const agent = await createAgent(db, config.workspace, v.spec, new Date(), knowledgeSeed);
       emit({ kind: 'team.changed' });
       return { ok: true, agent };
+    },
+    async updateTeamAgent(id, spec) {
+      // FULL-FORM edit: every field the form owns is sent, so a cleared budget/parent
+      // becomes an explicit null (= remove the cap / move to top). grant + knowledgeSeed
+      // are NOT in the form and stay as they are.
+      const filled = fillFormSpec(spec);
+      const res = await updateAgent(db, config.workspace, id, {
+        name: filled.name,
+        role: mergeRole(filled),
+        provider: filled.provider,
+        model: filled.model,
+        delegationRole: filled.delegationRole,
+        dailyTokenBudget: filled.dailyTokenBudget ?? null,
+        parentId: filled.parentId ?? null,
+        canMessageUser: filled.canMessageUser,
+      });
+      if (res.ok) emit({ kind: 'team.changed' });
+      return res;
     },
     getProject(slug) {
       return getProject(db, config.workspace, slug);

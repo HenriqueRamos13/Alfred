@@ -29,6 +29,7 @@ export const DEFAULT_DELEGATION_ROLE: DelegationRole = 'leaf';
 
 export interface TeamAgent {
   id: string;
+  /** Display name. The `id` slug is IMMUTABLE — a rename only changes this field. */
   name: string;
   /** Specialty / system-prompt role. May be empty. */
   role: string;
@@ -45,6 +46,8 @@ export interface TeamAgent {
   /** Inbox power: may this agent message the USER directly? undefined/false → fail-closed (see canMessageUserResolved). */
   canMessageUser?: boolean;
   createdTs: number;
+  /** Last edit (updateAgent). undefined = never edited since it was created. */
+  updatedTs?: number;
 }
 
 /** Untrusted create input as it arrives from the tool. */
@@ -107,47 +110,83 @@ export function agentIdFromName(name: string, existing: readonly string[] = []):
   return `${base}-${n}`;
 }
 
+// ── shared field checks (ONE definition for create AND edit) ─────────────────
+
+/** A normalised field value, or the explicit refusal reason (never a silent drop). */
+type FieldResult<T> = { ok: true; value: T } | { ok: false; error: string };
+
+/** provider must be a known id AND model must live in THAT provider's catalog. */
+function checkProviderModel(provider: unknown, model: unknown): FieldResult<{ provider: ProviderId; model: string }> {
+  if (!isProviderId(provider)) {
+    return { ok: false, error: `unknown provider "${provider}" — one of: ${PROVIDER_IDS.join(', ')}` };
+  }
+  const id = typeof model === 'string' ? model.trim() : '';
+  if (!id || !findModel(provider, id)) return { ok: false, error: `model "${model}" is not in the ${provider} catalog` };
+  return { ok: true, value: { provider, model: id } };
+}
+
+/** An explicit grant must be an array of KNOWN capabilities (absent is the caller's default). */
+function checkGrant(value: unknown): FieldResult<Capability[]> {
+  if (!Array.isArray(value) || value.some((c) => !ALL_CAPS.includes(c as Capability))) {
+    return { ok: false, error: `grant must be an array of capabilities (${ALL_CAPS.join(', ')})` };
+  }
+  return { ok: true, value: value as Capability[] };
+}
+
+/** An explicit PRIVILEGE role must be one of the known roles. */
+function checkDelegationRole(value: unknown): FieldResult<DelegationRole> {
+  if (!DELEGATION_ROLES.includes(value as DelegationRole)) {
+    return { ok: false, error: `delegationRole must be one of: ${DELEGATION_ROLES.join(', ')}` };
+  }
+  return { ok: true, value: value as DelegationRole };
+}
+
+/** An explicit per-agent daily cap must be a positive, finite number of tokens. */
+function checkBudget(value: unknown): FieldResult<number> {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) {
+    return { ok: false, error: 'dailyTokenBudget must be a positive number' };
+  }
+  return { ok: true, value };
+}
+
+/** An explicit inbox-power flag must be a boolean (absent is the caller's default). */
+function checkCanMessageUser(value: unknown): FieldResult<boolean> {
+  if (typeof value !== 'boolean') return { ok: false, error: 'canMessageUser must be a boolean' };
+  return { ok: true, value };
+}
+
 /**
  * Validate an untrusted create spec against the model catalog: name required,
  * provider must be a known provider id, model must exist in that provider's
  * catalog. Role is optional (defaults to ''). Reuses modelCatalog's catalog
- * (findModel/isProviderId) — that IS the catalog.
+ * (findModel/isProviderId) — that IS the catalog. The per-field checks are shared
+ * with validateAgentPatch (edit), so the two paths can never drift.
  */
 export function validateAgentSpec(spec: AgentSpecInput): { ok: true; spec: AgentSpec } | { ok: false; error: string } {
   const name = (spec.name ?? '').trim();
   if (!name) return { ok: false, error: 'name is required' };
-  if (!isProviderId(spec.provider)) {
-    return { ok: false, error: `unknown provider "${spec.provider}" — one of: ${PROVIDER_IDS.join(', ')}` };
-  }
-  const model = (spec.model ?? '').trim();
-  if (!model || !findModel(spec.provider, model)) {
-    return { ok: false, error: `model "${spec.model}" is not in the ${spec.provider} catalog` };
-  }
-  // grant is optional; absent → the read+notify default. An explicit value must
-  // be an array of known capabilities.
-  let grant: Capability[];
-  if (spec.grant === undefined) {
-    grant = [...DEFAULT_GRANT];
-  } else if (!Array.isArray(spec.grant) || spec.grant.some((c) => !ALL_CAPS.includes(c as Capability))) {
-    return { ok: false, error: `grant must be an array of capabilities (${ALL_CAPS.join(', ')})` };
-  } else {
-    grant = spec.grant as Capability[];
+  const pm = checkProviderModel(spec.provider, spec.model);
+  if (!pm.ok) return { ok: false, error: pm.error };
+  // grant is optional; absent → the read+notify default.
+  let grant: Capability[] = [...DEFAULT_GRANT];
+  if (spec.grant !== undefined) {
+    const g = checkGrant(spec.grant);
+    if (!g.ok) return { ok: false, error: g.error };
+    grant = g.value;
   }
   // Optional per-agent daily token cap. Absent → undefined (unlimited beyond the global kill-switch).
   let dailyTokenBudget: number | undefined;
   if (spec.dailyTokenBudget !== undefined) {
-    if (typeof spec.dailyTokenBudget !== 'number' || !Number.isFinite(spec.dailyTokenBudget) || spec.dailyTokenBudget <= 0) {
-      return { ok: false, error: 'dailyTokenBudget must be a positive number' };
-    }
-    dailyTokenBudget = spec.dailyTokenBudget;
+    const b = checkBudget(spec.dailyTokenBudget);
+    if (!b.ok) return { ok: false, error: b.error };
+    dailyTokenBudget = b.value;
   }
-  // Optional PRIVILEGE role. Absent → leaf (default-deny). An explicit value must be a known role.
+  // Optional PRIVILEGE role. Absent → leaf (default-deny).
   let delegationRole: DelegationRole = DEFAULT_DELEGATION_ROLE;
   if (spec.delegationRole !== undefined) {
-    if (!DELEGATION_ROLES.includes(spec.delegationRole as DelegationRole)) {
-      return { ok: false, error: `delegationRole must be one of: ${DELEGATION_ROLES.join(', ')}` };
-    }
-    delegationRole = spec.delegationRole as DelegationRole;
+    const r = checkDelegationRole(spec.delegationRole);
+    if (!r.ok) return { ok: false, error: r.error };
+    delegationRole = r.value;
   }
   // Optional manager link. Absent / null → top-level (null). An explicit value must be a non-empty id string.
   let parentId: string | null = null;
@@ -157,18 +196,162 @@ export function validateAgentSpec(spec: AgentSpecInput): { ok: true; spec: Agent
     }
     parentId = spec.parentId.trim();
   }
-  // Optional inbox power. Absent → false (fail-closed). An explicit value must be a boolean.
+  // Optional inbox power. Absent → false (fail-closed).
   let canMessageUser = false;
   if (spec.canMessageUser !== undefined) {
-    if (typeof spec.canMessageUser !== 'boolean') {
-      return { ok: false, error: 'canMessageUser must be a boolean' };
-    }
-    canMessageUser = spec.canMessageUser;
+    const c = checkCanMessageUser(spec.canMessageUser);
+    if (!c.ok) return { ok: false, error: c.error };
+    canMessageUser = c.value;
   }
   return {
     ok: true,
-    spec: { name, role: (spec.role ?? '').trim(), provider: spec.provider, model, grant, delegationRole, dailyTokenBudget, parentId, canMessageUser },
+    spec: { name, role: (spec.role ?? '').trim(), provider: pm.value.provider, model: pm.value.model, grant, delegationRole, dailyTokenBudget, parentId, canMessageUser },
   };
+}
+
+// ── edit an existing agent (Phase 8 stage 3) ─────────────────────────────────
+
+/**
+ * Untrusted PARTIAL edit input (the `team` tool's update op / the UI form). Every
+ * field is optional and `undefined` means UNCHANGED — there is deliberately no
+ * `id` field: the slug id is IMMUTABLE (it is the folder name, the `agent:<id>`
+ * budget key and every parent reference), so a rename changes `name` only.
+ */
+export interface AgentUpdateInput {
+  name?: unknown;
+  /** Free text (the merged label + system prompt). May be cleared to ''. */
+  role?: unknown;
+  provider?: unknown;
+  model?: unknown;
+  grant?: unknown;
+  delegationRole?: unknown;
+  /** null or 0 → CLEAR the cap (unlimited); a positive whole number → set it. */
+  dailyTokenBudget?: unknown;
+  /** null → top of the org; an agent id → that manager (cycle + depth checked). */
+  parentId?: unknown;
+  canMessageUser?: unknown;
+}
+
+/**
+ * The validated patch: ONLY the fields the caller actually asked to change, so the
+ * IO layer can build a dynamic UPDATE that never rewrites an untouched column.
+ */
+export interface AgentPatch {
+  name?: string;
+  role?: string;
+  provider?: ProviderId;
+  model?: string;
+  grant?: Capability[];
+  delegationRole?: DelegationRole;
+  /** A number sets the cap; explicit null CLEARS it (SQL NULL = unlimited). */
+  dailyTokenBudget?: number | null;
+  /** An id sets the manager; explicit null moves the agent to the top. */
+  parentId?: string | null;
+  canMessageUser?: boolean;
+}
+
+/**
+ * Validate a partial edit of an EXISTING agent against the current roster. Same
+ * field checks as create (shared helpers above) plus the edit-only rules:
+ * - `id` must exist and is immutable (see AgentUpdateInput);
+ * - the EFFECTIVE (provider, model) pair — patched value ?? the stored one — must
+ *   exist in the catalog, so switching provider alone can never leave a bogus combo;
+ * - `dailyTokenBudget`: absent = unchanged, null/0 = clear, else a positive whole number;
+ * - `parentId`: absent = unchanged, null = top, otherwise a known agent that is not
+ *   the agent itself, does not close a cycle (`wouldCycle`) and keeps the chain within
+ *   DEFAULT_MAX_SPAWN_DEPTH — the same semantics (and the same subtree caveat) as
+ *   setAgentManager: the depth check bounds the edited agent's OWN chain, not its subtree;
+ * - `canMessageUser`: absent = unchanged (an explicit `false` is a real revoke).
+ * Pure — the caller does the write.
+ */
+export function validateAgentPatch(
+  agents: readonly TeamAgent[],
+  id: string,
+  input: AgentUpdateInput,
+): { ok: true; patch: AgentPatch } | { ok: false; error: string } {
+  const current = agents.find((a) => a.id === id);
+  if (!current) return { ok: false, error: `no agent with id "${id}"` };
+  const patch: AgentPatch = {};
+
+  if (input.name !== undefined) {
+    const name = typeof input.name === 'string' ? input.name.trim() : '';
+    if (!name) return { ok: false, error: 'name is required' };
+    patch.name = name;
+  }
+  if (input.role !== undefined) {
+    if (typeof input.role !== 'string') return { ok: false, error: 'role must be a string' };
+    patch.role = input.role.trim();
+  }
+  if (input.provider !== undefined || input.model !== undefined) {
+    const pm = checkProviderModel(input.provider ?? current.provider, input.model ?? current.model);
+    if (!pm.ok) return { ok: false, error: pm.error };
+    if (input.provider !== undefined) patch.provider = pm.value.provider;
+    if (input.model !== undefined) patch.model = pm.value.model;
+  }
+  if (input.grant !== undefined) {
+    const g = checkGrant(input.grant);
+    if (!g.ok) return { ok: false, error: g.error };
+    patch.grant = g.value;
+  }
+  if (input.delegationRole !== undefined) {
+    const r = checkDelegationRole(input.delegationRole);
+    if (!r.ok) return { ok: false, error: r.error };
+    patch.delegationRole = r.value;
+  }
+  if (input.dailyTokenBudget !== undefined) {
+    if (input.dailyTokenBudget === null || input.dailyTokenBudget === 0) {
+      patch.dailyTokenBudget = null; // 0 and null both mean "remove the cap"
+    } else {
+      const b = checkBudget(input.dailyTokenBudget);
+      if (!b.ok) return { ok: false, error: b.error };
+      if (!Number.isInteger(b.value)) {
+        return { ok: false, error: 'dailyTokenBudget must be a whole number of tokens (0 or null removes the cap)' };
+      }
+      patch.dailyTokenBudget = b.value;
+    }
+  }
+  if (input.parentId !== undefined) {
+    if (input.parentId === null) {
+      patch.parentId = null; // → top of the org
+    } else {
+      if (typeof input.parentId !== 'string' || !input.parentId.trim()) {
+        return { ok: false, error: 'parentId must be a non-empty agent id or null' };
+      }
+      const parentId = input.parentId.trim();
+      if (!agents.some((a) => a.id === parentId)) return { ok: false, error: `no manager with id "${parentId}"` };
+      if (wouldCycle(agents, id, parentId)) return { ok: false, error: 'refused: would create a management cycle' };
+      if (orgDepth(agents, parentId) + 1 > DEFAULT_MAX_SPAWN_DEPTH) {
+        return { ok: false, error: `refused: hierarchy too deep (max depth ${DEFAULT_MAX_SPAWN_DEPTH})` };
+      }
+      patch.parentId = parentId;
+    }
+  }
+  if (input.canMessageUser !== undefined) {
+    const c = checkCanMessageUser(input.canMessageUser);
+    if (!c.ok) return { ok: false, error: c.error };
+    patch.canMessageUser = c.value;
+  }
+  return { ok: true, patch };
+}
+
+/**
+ * The seed `knowledge/role.md` note of an agent: a stable `# <name> — role` header
+ * (the marker updateAgent's rewrite guard matches, so a hand-written note that
+ * happens to be called role.md is never clobbered) + the specialty body. Written
+ * at create and rewritten on a name/role edit, hence deterministic: nothing dated,
+ * and no model/provider line that an edit could leave stale (the agent is told its
+ * model by buildAgentContext anyway). Pure.
+ */
+export function composeRoleNote(name: string, role: string): string {
+  const who = name.trim() || 'agent';
+  return [
+    `# ${who} — role`,
+    '',
+    `_Private knowledge for this specialist; only ${who} reads this folder._`,
+    '',
+    role.trim() || '_No specialty set yet._',
+    '',
+  ].join('\n');
 }
 
 // ── privilege role → tool blocklist + capability floor (Phase 6 stage 2) ─────

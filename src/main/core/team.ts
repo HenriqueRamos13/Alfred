@@ -5,7 +5,9 @@
  *
  * On create: persist the row, scaffold `<workspace>/agents/<id>/knowledge/` with
  * a seed `role.md`, and rebuild the shared `<workspace>/agents/index.md` from the
- * live rows. On delete: drop the row and rebuild the index. The agent's folder is
+ * live rows. On update: patch only the given columns (+ `updated_ts`), refresh the
+ * seed `role.md` when the name/role moved, rebuild the index. On delete: drop the
+ * row and rebuild the index. The agent's folder is
  * intentionally LEFT on disk (its knowledge may be valuable and recursive removal
  * is riskier than it's worth) — rebuilding the index from the surviving rows means
  * a deleted agent leaves no orphan entry regardless.
@@ -13,7 +15,7 @@
 
 import { mkdir, writeFile, readFile, readdir } from 'node:fs/promises';
 import { join } from 'node:path';
-import { agentIdFromName, buildAgentsIndex, buildAgentContext, parseGrant, composeStudyNote, studyNoteSlug, addTopicToIndex, topicsFromKnowledge, wouldCycle, orgDepth, DELEGATION_ROLES, DEFAULT_DELEGATION_ROLE, DEFAULT_MAX_SPAWN_DEPTH, type AgentNote, type AgentSpec, type DelegationRole, type KnowledgeFileMeta, type TeamAgent } from './team-pure.ts';
+import { agentIdFromName, buildAgentsIndex, buildAgentContext, parseGrant, composeStudyNote, composeRoleNote, studyNoteSlug, addTopicToIndex, topicsFromKnowledge, validateAgentPatch, wouldCycle, orgDepth, DELEGATION_ROLES, DEFAULT_DELEGATION_ROLE, DEFAULT_MAX_SPAWN_DEPTH, type AgentNote, type AgentSpec, type AgentUpdateInput, type DelegationRole, type KnowledgeFileMeta, type TeamAgent } from './team-pure.ts';
 import { dayKey } from './jobs-pure.ts';
 
 type DB = import('better-sqlite3').Database;
@@ -30,6 +32,7 @@ interface Row {
   parent_id: string | null;
   can_message_user: number | null;
   created_ts: number;
+  updated_ts: number | null;
 }
 
 function rowToAgent(r: Row): TeamAgent {
@@ -50,6 +53,8 @@ function rowToAgent(r: Row): TeamAgent {
     parentId: r.parent_id ?? null,
     canMessageUser: r.can_message_user === 1,
     createdTs: r.created_ts,
+    // Tolerant of rows written before updated_ts existed / never edited → undefined.
+    updatedTs: r.updated_ts ?? undefined,
   };
 }
 
@@ -118,14 +123,82 @@ export async function createAgent(db: DB, workspace: string, spec: AgentSpec, no
 
   const knowledgeDir = join(workspace, 'agents', id, 'knowledge');
   await mkdir(knowledgeDir, { recursive: true });
-  const seed = `# ${agent.name} — role\n\n_Model: ${agent.model} (${agent.provider}). Private knowledge for this specialist; only ${agent.name} reads this folder._\n\n${agent.role || '_No specialty set yet._'}\n`;
-  await writeFile(join(knowledgeDir, 'role.md'), seed, 'utf8');
+  await writeFile(join(knowledgeDir, 'role.md'), composeRoleNote(agent.name, agent.role), 'utf8');
   // Optional seed knowledge note (from the creation form's "Seed de conhecimento").
   if (knowledgeSeed && knowledgeSeed.trim()) {
     await writeFile(join(knowledgeDir, 'seed.md'), `# Seed knowledge\n\n_Initial notes provided at creation._\n\n${knowledgeSeed.trim()}\n`, 'utf8');
   }
   await rebuildIndex(db, workspace);
   return agent;
+}
+
+/** The first line composeRoleNote writes — the guard for rewriting an agent's role.md. */
+const ROLE_NOTE_HEADER = /^# .+ — role$/;
+
+/**
+ * Edit a roster agent (Phase 8 stage 3): validate the PARTIAL patch against the live
+ * roster (validateAgentPatch — the id is immutable, the effective provider/model must
+ * be in the catalog, a reparent runs the cycle/depth checks, budget 0/null clears),
+ * then UPDATE only the columns the caller actually asked for, plus `updated_ts`.
+ *
+ * Afterwards the on-disk projections are refreshed: the agent's seed `role.md` (only
+ * when the name/role changed AND the file still carries the generated header, so a
+ * study note that slugged to "role" is never clobbered) and the shared index. The DB
+ * write is the source of truth — an fs failure degrades-and-logs and still returns ok
+ * (a later rebuildIndex reproduces the files).
+ *
+ * Edit-while-running: a delegated turn snapshots the row when it starts, so a patch
+ * applies to the agent's NEXT run.
+ */
+export async function updateAgent(
+  db: DB,
+  workspace: string,
+  id: string,
+  input: AgentUpdateInput,
+): Promise<{ ok: true; agent: TeamAgent } | { ok: false; error: string }> {
+  const agents = listAgents(db);
+  const v = validateAgentPatch(agents, id, input);
+  if (!v.ok) return { ok: false, error: v.error };
+  const before = agents.find((a) => a.id === id)!; // validateAgentPatch proved it exists
+  const { patch } = v;
+
+  // Dynamic UPDATE: an absent field is never written, so it can never clobber a
+  // stored value; SQL NULL is used ONLY where the patch explicitly says null.
+  const sets: string[] = [];
+  const params: Record<string, string | number | null> = { id, updatedTs: Date.now() };
+  const set = (column: string, key: string, value: string | number | null): void => {
+    sets.push(`${column} = @${key}`);
+    params[key] = value;
+  };
+  if (patch.name !== undefined) set('name', 'name', patch.name);
+  if (patch.role !== undefined) set('role', 'role', patch.role);
+  if (patch.provider !== undefined) set('provider', 'provider', patch.provider);
+  if (patch.model !== undefined) set('model', 'model', patch.model);
+  if (patch.grant !== undefined) set('grant_json', 'grantJson', JSON.stringify(patch.grant));
+  if (patch.delegationRole !== undefined) set('delegation_role', 'delegationRole', patch.delegationRole);
+  if (patch.dailyTokenBudget !== undefined) set('daily_token_budget', 'dailyTokenBudget', patch.dailyTokenBudget);
+  if (patch.parentId !== undefined) set('parent_id', 'parentId', patch.parentId);
+  if (patch.canMessageUser !== undefined) set('can_message_user', 'canMessageUser', patch.canMessageUser ? 1 : 0);
+  sets.push('updated_ts = @updatedTs');
+  db.prepare(`UPDATE team_agents SET ${sets.join(', ')} WHERE id = @id`).run(params);
+  const agent = getAgent(db, id)!; // just written, single-process writer
+
+  try {
+    if ((patch.name !== undefined && patch.name !== before.name) || (patch.role !== undefined && patch.role !== before.role)) {
+      // Defence-in-depth: the id is a DB slug, but it becomes a path segment here.
+      if (/^[a-z0-9-]+$/.test(id)) {
+        const file = join(workspace, 'agents', id, 'knowledge', 'role.md');
+        const current = await readFile(file, 'utf8').catch(() => null);
+        if (current != null && ROLE_NOTE_HEADER.test(current.split('\n', 1)[0].trim())) {
+          await writeFile(file, composeRoleNote(agent.name, agent.role), 'utf8');
+        }
+      }
+    }
+    await rebuildIndex(db, workspace); // name/role/model all show up in the shared index
+  } catch (err) {
+    console.error(`[team] agent "${id}" row updated but its files did not:`, err);
+  }
+  return { ok: true, agent };
 }
 
 /** Delete a roster agent's row + refresh the index. Folder is left on disk. Missing id → false. */

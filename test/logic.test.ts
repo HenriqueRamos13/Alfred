@@ -1702,6 +1702,8 @@ import {
 import {
   agentIdFromName,
   validateAgentSpec,
+  validateAgentPatch,
+  composeRoleNote,
   buildAgentsIndex,
   buildAgentContext,
   parseGrant,
@@ -1718,6 +1720,7 @@ import {
   orgDepth,
   DEFAULT_MAX_SPAWN_DEPTH,
   DEFAULT_MAX_CONCURRENT_CHILDREN,
+  type TeamAgent,
 } from '../src/main/core/team-pure.ts';
 import {
   humanizeRole,
@@ -1734,6 +1737,7 @@ import {
   mergeAugmented,
   validateFormSpec,
   mergeRole,
+  splitRole,
   formSpecToCreate,
   AUGMENTABLE_FIELDS,
   type AgentFormSpec,
@@ -2990,6 +2994,127 @@ test('validateAgentSpec — parentId + canMessageUser (Phase 7 stage 2)', () => 
   assert.equal(validateAgentSpec({ name: 'X', provider: 'deepseek', model: 'deepseek-v4-flash', canMessageUser: 'yes' }).ok, false);
 });
 
+// ── validateAgentPatch (edit an existing agent — Phase 8 stage 3) ─────────────
+
+/** cto → pm → dev (depths 0/1/2), one per provider so the cross-checks bite. */
+function patchRoster(): TeamAgent[] {
+  return [
+    { id: 'cto', name: 'CTO', role: 'runs the shop', provider: 'claude-cli', model: 'claude-opus-5', grant: ['read', 'notify'], delegationRole: 'orchestrator', parentId: null, canMessageUser: true, createdTs: 1 },
+    { id: 'pm', name: 'PM', role: 'plans', provider: 'deepseek', model: 'deepseek-v4-flash', grant: ['read'], delegationRole: 'leaf', parentId: 'cto', canMessageUser: false, createdTs: 2 },
+    { id: 'dev', name: 'Dev', role: 'codes', provider: 'openai', model: 'gpt-5.4-mini', grant: ['read'], delegationRole: 'leaf', parentId: 'pm', canMessageUser: false, createdTs: 3 },
+  ];
+}
+/** The validated patch, or `null` when the call was refused (keeps the asserts terse). */
+function patchOf(res: ReturnType<typeof validateAgentPatch>): Record<string, unknown> | null {
+  return res.ok ? (res.patch as Record<string, unknown>) : null;
+}
+
+test('validateAgentPatch — partial patch normalises; absent fields untouched', () => {
+  const agents = patchRoster();
+  // name + role trimmed; nothing else in the patch → nothing else is written
+  assert.deepEqual(patchOf(validateAgentPatch(agents, 'pm', { name: '  Product  ', role: '  plan things  ' })), {
+    name: 'Product',
+    role: 'plan things',
+  });
+  // an EMPTY patch is legal (the caller still bumps updated_ts) and touches no column
+  assert.deepEqual(patchOf(validateAgentPatch(agents, 'pm', {})), {});
+  // grant / delegationRole / canMessageUser normalise exactly as at create
+  assert.deepEqual(patchOf(validateAgentPatch(agents, 'dev', { grant: ['read', 'write'], delegationRole: 'orchestrator', canMessageUser: true })), {
+    grant: ['read', 'write'],
+    delegationRole: 'orchestrator',
+    canMessageUser: true,
+  });
+  // role may be cleared to empty (a free-text field, unlike name)
+  assert.deepEqual(patchOf(validateAgentPatch(agents, 'dev', { role: '' })), { role: '' });
+});
+
+test('validateAgentPatch — provider/model cross-check: effective pair must exist in catalog', () => {
+  const agents = patchRoster();
+  // model alone, valid in the agent's EXISTING provider
+  assert.deepEqual(patchOf(validateAgentPatch(agents, 'cto', { model: 'claude-sonnet-5' })), { model: 'claude-sonnet-5' });
+  // model alone from ANOTHER provider's catalog → refused (the effective pair is checked)
+  assert.equal(validateAgentPatch(agents, 'cto', { model: 'deepseek-v4-flash' }).ok, false);
+  // provider alone: claude-cli → claude-api share the Anthropic list, so the existing model still fits
+  assert.deepEqual(patchOf(validateAgentPatch(agents, 'cto', { provider: 'claude-api' })), { provider: 'claude-api' });
+  // provider alone to a catalog that lacks the CURRENT model → refused
+  assert.equal(validateAgentPatch(agents, 'cto', { provider: 'deepseek' }).ok, false);
+  // both together → both patched
+  assert.deepEqual(patchOf(validateAgentPatch(agents, 'cto', { provider: 'deepseek', model: 'deepseek-v4-flash' })), {
+    provider: 'deepseek',
+    model: 'deepseek-v4-flash',
+  });
+  // unknown provider, blank / non-string model
+  assert.equal(validateAgentPatch(agents, 'cto', { provider: 'anthropic' }).ok, false);
+  assert.equal(validateAgentPatch(agents, 'cto', { model: '   ' }).ok, false);
+  assert.equal(validateAgentPatch(agents, 'cto', { model: 'ghost-9' }).ok, false);
+});
+
+test('validateAgentPatch — parentId: unknown manager, self, cycle, over-depth refused', () => {
+  const agents = patchRoster(); // cto(0) → pm(1) → dev(2)
+  assert.deepEqual(patchOf(validateAgentPatch(agents, 'dev', { parentId: 'cto' })), { parentId: 'cto' });
+  assert.deepEqual(patchOf(validateAgentPatch(agents, 'dev', { parentId: null })), { parentId: null }); // → top
+  assert.deepEqual(patchOf(validateAgentPatch(agents, 'dev', { parentId: '  pm  ' })), { parentId: 'pm' }); // trimmed
+  assert.equal(validateAgentPatch(agents, 'dev', { parentId: 'ghost' }).ok, false); // unknown manager
+  assert.equal(validateAgentPatch(agents, 'dev', { parentId: 'dev' }).ok, false); // self
+  assert.equal(validateAgentPatch(agents, 'cto', { parentId: 'dev' }).ok, false); // cycle (dev is below cto)
+  assert.equal(validateAgentPatch(agents, 'pm', { parentId: 'dev' }).ok, false); // cycle (own report)
+  // over-depth: reporting to dev (depth 2) would sit at 3 > DEFAULT_MAX_SPAWN_DEPTH
+  const wide: TeamAgent[] = [...agents, { ...agents[2], id: 'qa', name: 'QA', parentId: null }];
+  const deep = validateAgentPatch(wide, 'qa', { parentId: 'dev' });
+  assert.equal(deep.ok, false);
+  assert.match(deep.ok ? '' : deep.error, new RegExp(`max depth ${DEFAULT_MAX_SPAWN_DEPTH}`));
+  // blank / non-string id (use null for "top", never '')
+  assert.equal(validateAgentPatch(agents, 'dev', { parentId: '   ' }).ok, false);
+  assert.equal(validateAgentPatch(agents, 'dev', { parentId: 42 }).ok, false);
+});
+
+test('validateAgentPatch — dailyTokenBudget null/0 clears; negative/NaN refused', () => {
+  const agents = patchRoster();
+  assert.deepEqual(patchOf(validateAgentPatch(agents, 'pm', { dailyTokenBudget: 50_000 })), { dailyTokenBudget: 50_000 });
+  // null AND 0 both mean "remove the cap" → an explicit null in the patch (SQL NULL)
+  assert.deepEqual(patchOf(validateAgentPatch(agents, 'pm', { dailyTokenBudget: null })), { dailyTokenBudget: null });
+  assert.deepEqual(patchOf(validateAgentPatch(agents, 'pm', { dailyTokenBudget: 0 })), { dailyTokenBudget: null });
+  // absent → unchanged (the column is never written)
+  assert.equal(Object.hasOwn(patchOf(validateAgentPatch(agents, 'pm', {}))!, 'dailyTokenBudget'), false);
+  for (const bad of [-5, Number.NaN, Number.POSITIVE_INFINITY, '50000', 1.5, true]) {
+    assert.equal(validateAgentPatch(agents, 'pm', { dailyTokenBudget: bad }).ok, false, `${String(bad)} accepted`);
+  }
+});
+
+test('validateAgentPatch — unknown id, blank name, bad grant refused; canMessageUser absent = unchanged', () => {
+  const agents = patchRoster();
+  // the id must exist — and it is IMMUTABLE (AgentUpdateInput carries no id: a
+  // rename changes `name` only, so the slug/folder/budget key stay stable)
+  assert.equal(validateAgentPatch(agents, 'ghost', { name: 'X' }).ok, false);
+  assert.match(validateAgentPatch(agents, 'ghost', {}).ok ? '' : (validateAgentPatch(agents, 'ghost', {}) as { error: string }).error, /ghost/);
+  assert.equal(validateAgentPatch(agents, 'pm', { name: '   ' }).ok, false); // blank name refused
+  assert.equal(validateAgentPatch(agents, 'pm', { name: 42 }).ok, false);
+  assert.equal(validateAgentPatch(agents, 'pm', { grant: ['read', 'fly'] }).ok, false);
+  assert.equal(validateAgentPatch(agents, 'pm', { grant: 'read' }).ok, false);
+  assert.equal(validateAgentPatch(agents, 'pm', { delegationRole: 'boss' }).ok, false);
+  assert.equal(validateAgentPatch(agents, 'pm', { canMessageUser: 'yes' }).ok, false);
+  // an explicit false is a REAL change (revoke inbox power); absent leaves it alone
+  assert.deepEqual(patchOf(validateAgentPatch(agents, 'cto', { canMessageUser: false })), { canMessageUser: false });
+  assert.equal(Object.hasOwn(patchOf(validateAgentPatch(agents, 'cto', {}))!, 'canMessageUser'), false);
+});
+
+test("composeRoleNote — deterministic '# <name> — role' header", () => {
+  const note = composeRoleNote('Dario', 'Dev-Back\n\nStripe + TDD');
+  assert.equal(note.split('\n')[0], '# Dario — role');
+  assert.ok(note.includes('Stripe + TDD'));
+  assert.ok(note.endsWith('\n'));
+  // deterministic: same inputs → identical bytes (nothing dated / model-derived)
+  assert.equal(composeRoleNote('Dario', 'x'), composeRoleNote('Dario', 'x'));
+  // no specialty → an explicit placeholder, header unchanged
+  const blank = composeRoleNote('QA', '   ');
+  assert.equal(blank.split('\n')[0], '# QA — role');
+  assert.match(blank, /No specialty set yet/);
+  // the first line is EXACTLY what updateAgent's role.md rewrite guard tests for
+  for (const name of ['QA', 'Dev Back', 'Ana-Maria']) {
+    assert.match(composeRoleNote(name, '').split('\n')[0], /^# .+ — role$/);
+  }
+});
+
 test('buildOrgTree — roots by null parent, children by parentId, orphan→root, cycle-safe', () => {
   const agents = [
     { id: 'cto', parentId: null },
@@ -3449,6 +3574,39 @@ test('mergeRole + formSpecToCreate — role type + system prompt fold into one, 
   assert.equal(knowledgeSeed, 'read the billing docs');
   // The mapped input passes the roster validator.
   assert.equal(validateAgentSpec(input).ok, true);
+});
+
+test('splitRole — round-trips mergeRole for label+prompt, label-only, prompt-only', () => {
+  const both = mergeRole({ ...emptyFormSpec(), role: 'QA', systemPrompt: 'Test everything.\nTDD or bust.' });
+  assert.deepEqual(splitRole(both), { role: 'QA', systemPrompt: 'Test everything.\nTDD or bust.' });
+  // label only
+  assert.deepEqual(splitRole(mergeRole({ ...emptyFormSpec(), role: 'Dev-Back', systemPrompt: '' })), { role: 'Dev-Back', systemPrompt: '' });
+  // prompt only (its first block is long prose) → no label is invented
+  const promptOnly = mergeRole({
+    ...emptyFormSpec(),
+    systemPrompt: 'You own the billing domain, Stripe included, and you never ship a line without a test first.\n\nReport concisely.',
+  });
+  assert.deepEqual(splitRole(promptOnly), { role: '', systemPrompt: promptOnly });
+  // The PAIR always re-merges to the same string — including the ambiguous case of a
+  // single SHORT line, which comes back as the label (documented in the JSDoc).
+  for (const merged of [both, 'Dev-Back', 'just a short prompt', promptOnly]) {
+    assert.equal(mergeRole({ ...emptyFormSpec(), ...splitRole(merged) }), merged);
+  }
+  assert.deepEqual(splitRole(''), { role: '', systemPrompt: '' });
+  assert.deepEqual(splitRole('   \n\n  '), { role: '', systemPrompt: '' });
+});
+
+test('splitRole — long or multiline first block is a systemPrompt, not a label', () => {
+  const long = 'a'.repeat(81);
+  assert.deepEqual(splitRole(`${long}\n\nmore`), { role: '', systemPrompt: `${long}\n\nmore` });
+  // 80 chars is the boundary and still reads as a label
+  const at80 = 'b'.repeat(80);
+  assert.deepEqual(splitRole(`${at80}\n\nmore`), { role: at80, systemPrompt: 'more' });
+  // a first block spanning two lines is prose, not a label
+  assert.deepEqual(splitRole('line one\nline two\n\nrest'), { role: '', systemPrompt: 'line one\nline two\n\nrest' });
+  // no blank-line separator at all: long or multiline → all prompt
+  assert.deepEqual(splitRole(long), { role: '', systemPrompt: long });
+  assert.deepEqual(splitRole('one\ntwo'), { role: '', systemPrompt: 'one\ntwo' });
 });
 
 test('fillFormSpec — pre-fills from a partial agent.form spec, ignores junk, empty → defaults', () => {

@@ -181,7 +181,8 @@ CREATE TABLE IF NOT EXISTS team_agents (
   daily_token_budget INTEGER,                    -- per-agent daily token cap; null → unlimited (global kill-switch only)
   parent_id   TEXT,                              -- manager this agent reports to (Phase 7); null → top of the org
   can_message_user INTEGER NOT NULL DEFAULT 0,   -- inbox power (Phase 7); 0 → fail-closed (no direct user messaging)
-  created_ts  INTEGER NOT NULL
+  created_ts  INTEGER NOT NULL,
+  updated_ts  INTEGER                            -- last edit (Phase 8 updateAgent); null → never edited
 );
 
 -- Kanban board (Phase 7): one row per work card, project-scoped by project_slug
@@ -305,6 +306,9 @@ export function openDb(dbPath: string): AlfredDb {
   const teamCols = (db.prepare('PRAGMA table_info(team_agents)').all() as { name: string }[]).map((c) => c.name);
   if (!teamCols.includes('parent_id')) db.exec('ALTER TABLE team_agents ADD COLUMN parent_id TEXT');
   if (!teamCols.includes('can_message_user')) db.exec('ALTER TABLE team_agents ADD COLUMN can_message_user INTEGER NOT NULL DEFAULT 0');
+  // Idempotent migration: `team_agents.updated_ts` (last edit, Phase 8 stage 3). Nullable —
+  // a row created before the edit path existed (or never edited) has no edit timestamp.
+  if (!teamCols.includes('updated_ts')) db.exec('ALTER TABLE team_agents ADD COLUMN updated_ts INTEGER');
   // Idempotent migration: `kanban_cards.awaiting_human` (async-HITL checkpoint, Phase 7 stage 3)
   // for boards created before it existed. Guarded so re-running on every boot is a no-op.
   const hasAwaiting = (db.prepare('PRAGMA table_info(kanban_cards)').all() as { name: string }[]).some(

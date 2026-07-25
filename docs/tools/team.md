@@ -14,14 +14,15 @@ This tool **persists + scaffolds** an agent; you **run** one with
 | op | args | output | risk |
 |----|------|--------|------|
 | `create` | `name`, `provider`, `model`, `role?`, `grant?`, `delegationRole?`, `dailyTokenBudget?`, `parentId?`, `canMessageUser?` | `{ agent }` | **T2** |
+| `update` | `id`, `name?`, `role?`, `provider?`, `model?`, `grant?`, `delegationRole?`, `dailyTokenBudget?`, `parentId?`, `canMessageUser?` | `{ agent, changed: [...] }` + `team.changed` event | **T2** |
 | `list` | — | `{ agents: [...] }` (each includes `parentId` + `canMessageUser`) | T0 |
 | `delete` | `id` | `{ deleted }` | **T2** |
 | `set_manager` | `agentId`, `parentId` | `{ agentId, parentId }` | **T2** |
 | `propose_agent` | `name?`, `role?`, `provider?`, `model?`, `parentId?`, `delegationRole?`, `dailyTokenBudget?`, `canMessageUser?`, `systemPrompt?`, `knowledgeSeed?` | `{ proposed }` + `agent.form` event | T0 |
 
-`create`/`delete`/`set_manager` are **T2** — they establish, remove, or
-restructure a capability. `list` + `propose_agent` are T0 (`propose_agent` only
-opens a UI form; it never persists an agent).
+`create`/`update`/`delete`/`set_manager` are **T2** — they establish, edit,
+remove, or restructure a capability. `list` + `propose_agent` are T0
+(`propose_agent` only opens a UI form; it never persists an agent).
 
 ## create
 - **`name`** (required) — display name (e.g. `Coder`). The agent **id** is a
@@ -74,6 +75,67 @@ On create it:
 
 Each agent reads **only its own** `agents/<id>/knowledge/` folder — cross-agent
 sharing goes through Alfred / the index, not by reading each other's folders.
+
+## update (edit an agent — Phase 8 stage 3)
+`update {id, …}` edits an **existing** agent. **T2.** Semantics are **partial**:
+only the fields you pass change; every field you omit is left exactly as it is
+(the SQL `UPDATE` is built from the present columns only, plus `updated_ts`).
+
+- **`id`** (required) — the agent to edit. It is **IMMUTABLE**: there is no way to
+  change a slug. A rename changes **`name`** only, so the knowledge folder
+  (`agents/<id>/`), the `agent:<id>` budget key and every `parent_id` reference
+  stay intact.
+- **`name`** — must be non-blank (trimmed).
+- **`role`** — free text (the label + system prompt merged, as at create). `""`
+  clears it.
+- **`provider`** / **`model`** — the **effective pair** is re-validated against the
+  catalog: `(provider ?? stored, model ?? stored)` must pass `findModel`. So
+  changing **only** the model is refused unless it exists in the agent's current
+  provider catalog, and changing **only** the provider is refused when the stored
+  model is not in the new provider's catalog (send both). `claude-api` and
+  `claude-cli` share the Anthropic list, so switching between those two keeps the
+  model valid.
+- **`grant`** — validated exactly as at create and **REPLACES** the whole
+  allowlist (it is not merged).
+- **`delegationRole`** — `leaf` | `orchestrator`.
+- **`dailyTokenBudget`** — a positive whole number sets the cap; **`0` or `null`
+  removes it** (unlimited beyond the global kill-switch); **omitted = unchanged**.
+- **`parentId`** — an agent id reparents (same refusals as `set_manager`: unknown
+  manager, **self**, a **management cycle** via `wouldCycle`, or past the **depth
+  cap** `orgDepth(newParent) + 1 > DEFAULT_MAX_SPAWN_DEPTH`; the documented caveat
+  is the same too — the check bounds the edited agent's own chain, not its
+  subtree). **`null` moves it to the top**; **omitted = unchanged**.
+- **`canMessageUser`** — **omitted = unchanged**; an explicit `false` is a real
+  **revoke** of inbox power.
+
+Every refusal is explicit (`validateAgentPatch` in `team-pure.ts`, pure +
+unit-tested); nothing is ever silently ignored. After the row write,
+`updateAgent` (`core/team.ts`):
+1. stamps **`updated_ts`**;
+2. rewrites the agent's seed `knowledge/role.md` **only** when the name/role
+   changed AND the file's first line still matches the generated header
+   `# <name> — role` (`composeRoleNote`) — a hand-written or study note that
+   happens to live at `role.md` is never clobbered;
+3. rebuilds the shared `agents/index.md` (name/role/model all show there, and the
+   `· studied:` suffixes are re-derived from the knowledge folders);
+4. emits **`team.changed`** so the TEAM card + the project **Org** tab refresh live.
+
+The DB write is the source of truth: an fs failure in steps 2–3 is logged with
+context and the op still succeeds (a later rebuild reproduces the files).
+
+> **Edit while running.** A delegated turn **snapshots the row** when it starts,
+> so a patch never mutates a turn in flight — it applies to the agent's **next**
+> run.
+
+The **UI twin** is the `alfred:updateTeamAgent` IPC (`updateTeamAgent(id, spec)`
+→ `AgentFormSpec`), used by the agent modal's *editar* tab. It is **full-form**,
+not partial: every field the form owns is sent, so a cleared budget/manager
+becomes an explicit `null` (= remove the cap / move to top). `grant` and
+`knowledgeSeed` are not in the form and are left untouched.
+
+```json
+{ "op": "update", "id": "coder", "model": "claude-sonnet-5", "dailyTokenBudget": 0 }
+```
 
 ## delete
 Removes the `team_agents` row and rebuilds the index (so no orphan entry
@@ -312,8 +374,12 @@ IPC — the renderer never touches the DB or disk:
   under the agent whose scheduled **study** job raised them (mapped via
   `job.study.agentId`); Approve/Deny call the existing `resolveJobApproval`.
 - The card stays live off the shared stream (`job.approval` / `job.data` /
-  `agent.status`). **create is NOT exposed over IPC** — agents are made by the
-  `team` command/tool; the "PAUSE SPAWN" strip toggle is the global kill-switch.
+  `agent.status`). Creating **and editing** an agent from the UI **are** exposed
+  over IPC — `createTeamAgent(spec)` (the "+ Agent" form, Phase 7 stage 5) and
+  `updateTeamAgent(id, spec)` (Phase 8 stage 3), both taking a full
+  `AgentFormSpec` and emitting `team.changed`; the `team` tool's `create`/`update`
+  ops are the agent-driven twins. The "PAUSE SPAWN" strip toggle is the global
+  kill-switch.
 
 Display strings come from the renderer-safe, unit-tested pure formatters in
 `team-format-pure.ts` (`humanizeRole`, `formatAgentBudget`,

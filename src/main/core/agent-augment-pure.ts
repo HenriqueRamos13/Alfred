@@ -229,6 +229,36 @@ export function mergeRole(spec: AgentFormSpec): string {
   return prompt || type;
 }
 
+/** A first block longer than this is prose (a system prompt), never a type label. */
+const ROLE_LABEL_MAX = 80;
+
+/**
+ * Best-effort INVERSE of mergeRole: split a persisted roster `role` back into the
+ * form's `role` (type label) + `systemPrompt` fields, so the edit form can be
+ * seeded from an existing agent. A blank-line-separated first block that is a
+ * SINGLE line of at most 80 chars reads as the label (that is exactly what
+ * mergeRole writes); anything else is treated as the prompt in full.
+ *
+ * AMBIGUITY (by construction, accepted): a single short line with no blank-line
+ * separator could equally be a label or a one-line prompt — it comes back as the
+ * LABEL. A long or multi-line first block always comes back as the prompt. Either
+ * way `mergeRole(splitRole(x)) === x` for anything mergeRole produced, so a
+ * round-trip through the form never mutates the stored role. Pure; renderer-safe.
+ */
+export function splitRole(merged: string): { role: string; systemPrompt: string } {
+  const text = (merged ?? '').trim();
+  if (!text) return { role: '', systemPrompt: '' };
+  const sep = text.match(/\n[ \t]*\n/);
+  if (!sep || sep.index === undefined) {
+    // No separator: a single short line is the label, prose is the prompt.
+    return text.includes('\n') || text.length > ROLE_LABEL_MAX ? { role: '', systemPrompt: text } : { role: text, systemPrompt: '' };
+  }
+  const head = text.slice(0, sep.index).trim();
+  const rest = text.slice(sep.index + sep[0].length).trim();
+  if (head.includes('\n') || head.length > ROLE_LABEL_MAX) return { role: '', systemPrompt: text };
+  return { role: head, systemPrompt: rest };
+}
+
 /**
  * Map the form spec → the roster's AgentSpecInput (for validateAgentSpec +
  * createAgent) plus the raw knowledgeSeed (written as the agent's first note).

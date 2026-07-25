@@ -217,6 +217,9 @@ const api = {
   /** Create a roster agent from a completed form spec (UI "Criar"); emits team.changed. */
   createTeamAgent: (spec: AgentFormSpec): Promise<{ ok: boolean; error?: string; agent?: TeamAgent }> =>
     ipcRenderer.invoke('alfred:createTeamAgent', spec),
+  /** Edit a roster agent from a completed form spec (UI "Guardar"); the id/slug is immutable. Emits team.changed. */
+  updateTeamAgent: (id: string, spec: AgentFormSpec): Promise<{ ok: boolean; error?: string; agent?: TeamAgent }> =>
+    ipcRenderer.invoke('alfred:updateTeamAgent', id, spec),
   /** Overlay window controls (frameless HUD). */
   hideWindow: (): void => ipcRenderer.send('window:hide'),
   quitWindow: (): void => ipcRenderer.send('window:quit'),

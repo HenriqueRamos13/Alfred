@@ -168,6 +168,8 @@ export interface Orchestrator {
   augmentAgentSpec(spec: AgentFormSpec, flags: AugmentFlags): Promise<AgentFormSpec>;
   /** Create a roster agent from a completed form spec (UI create). Emits team.changed. */
   createTeamAgent(spec: AgentFormSpec): Promise<{ ok: boolean; error?: string; agent?: TeamAgent }>;
+  /** Edit a roster agent from a completed form spec (UI edit; id/slug immutable). Emits team.changed. */
+  updateTeamAgent(id: string, spec: AgentFormSpec): Promise<{ ok: boolean; error?: string; agent?: TeamAgent }>;
   // ── Projects + Kanban (Phase 7) ──
   /** One project's manifest + file tree by slug (the missing IPC bridge; core exists). */
   getProject(slug: string): ProjectDetail | null | Promise<ProjectDetail | null>;
@@ -582,6 +584,18 @@ export function registerIpc(core: Orchestrator, emit: (e: StreamEvent) => void):
     } catch (err) {
       fail('create team agent', err);
       return { ok: false, error: 'create team agent failed' };
+    }
+  });
+  // Edit a roster agent from the completed form (the modal's "editar" tab). The id/slug
+  // is immutable — it identifies the row, the folder and the budget key. Core validates
+  // (name/provider/model/parent/budget) and emits team.changed on success.
+  ipcMain.handle('alfred:updateTeamAgent', async (_e, id: unknown, spec: unknown): Promise<{ ok: boolean; error?: string; agent?: TeamAgent }> => {
+    if (typeof id !== 'string' || !id.trim()) return { ok: false, error: 'invalid agent id' };
+    try {
+      return await core.updateTeamAgent(id, (spec ?? {}) as AgentFormSpec);
+    } catch (err) {
+      fail('update team agent', err);
+      return { ok: false, error: 'update team agent failed' };
     }
   });
 
