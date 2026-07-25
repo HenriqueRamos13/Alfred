@@ -19,6 +19,8 @@ import { getAgent, loadAgentContext, saveStudyNote, addStudyTopicToIndex } from 
 import { grantAllows } from '../core/jobs-pure.ts';
 import { resolveTeamModel } from '../core/team-pure.ts';
 import { delegateToAgent, runAgentTurn } from './delegate-to-agent.ts';
+import { beginActivity } from '../core/agent-activity.ts';
+import { truncateLabel } from '../core/agent-activity-pure.ts';
 import type { Tool, ToolCtx } from './types.ts';
 
 interface Args {
@@ -94,42 +96,52 @@ export async function runStudy(ctx: ToolCtx, agentId: string, topic: string, opt
 
   const t = topic.trim();
 
-  if (opts.unattended) {
-    // Scheduled study runs the agent IN-PROCESS (fail-closed governance), so a
-    // claude-cli agent (external spawn, attended-only) can't run unattended.
-    if (agent.provider === 'claude-cli') {
-      return { ok: false, error: `scheduled study needs an API-brain agent; ${agent.id} is a claude-cli agent (run it attended via agent_study)` };
+  // Live activity (Phase 8 stage 4): 'studying' spans the WHOLE study — research
+  // turn AND the trusted note write — for both callers (attended tool + scheduled
+  // job, which funnels through here), so no jobs.ts change is needed. The attended
+  // path nests a 'working' entry (delegate_to_agent) inside this one; precedence in
+  // resolveActivity keeps the card saying "a estudar".
+  const endStudy = beginActivity(ctx.emit, agent.id, 'studying', truncateLabel(t));
+  try {
+    if (opts.unattended) {
+      // Scheduled study runs the agent IN-PROCESS (fail-closed governance), so a
+      // claude-cli agent (external spawn, attended-only) can't run unattended.
+      if (agent.provider === 'claude-cli') {
+        return { ok: false, error: `scheduled study needs an API-brain agent; ${agent.id} is a claude-cli agent (run it attended via agent_study)` };
+      }
+      const context = await loadAgentContext(ctx.workspace, agent);
+      const model = resolveTeamModel(opts.model, agent);
+      const turn = await runAgentTurn(ctx, {
+        agentId: agent.id,
+        provider: agent.provider,
+        model,
+        grant: agent.grant,
+        dailyTokenBudget: agent.dailyTokenBudget,
+        system: context,
+        task: researchPrompt(t),
+        signal: opts.signal,
+        unattended: { dangerous: opts.dangerous ?? false, queue: opts.queueApproval ?? (() => {}) },
+      });
+      if (!turn.ok) return { ok: false, error: turn.error, budgetExhausted: turn.budgetExhausted };
+      const findings = (turn.result?.text ?? '').trim();
+      if (!findings) return { ok: false, error: 'the agent returned no findings to save' };
+      const note = await saveStudyNote(ctx.workspace, agent.id, t, findings);
+      await addStudyTopicToIndex(ctx.workspace, agent.id, t);
+      return { ok: true, tokens: turn.tokens, result: { agent: agent.id, topic: t, note: note.relativePath, mode: note.mode, indexUpdated: 'agents/index.md', findings } };
     }
-    const context = await loadAgentContext(ctx.workspace, agent);
-    const model = resolveTeamModel(opts.model, agent);
-    const turn = await runAgentTurn(ctx, {
-      agentId: agent.id,
-      provider: agent.provider,
-      model,
-      grant: agent.grant,
-      dailyTokenBudget: agent.dailyTokenBudget,
-      system: context,
-      task: researchPrompt(t),
-      signal: opts.signal,
-      unattended: { dangerous: opts.dangerous ?? false, queue: opts.queueApproval ?? (() => {}) },
-    });
-    if (!turn.ok) return { ok: false, error: turn.error, budgetExhausted: turn.budgetExhausted };
-    const findings = (turn.result?.text ?? '').trim();
+
+    // Attended: reuse the delegate runner verbatim (model/context/grant/governance/
+    // trifecta/global+per-agent budget). A human is present → sensitive → approval.
+    const run = await delegateToAgent.execute({ agentId: agent.id, task: researchPrompt(t), model: opts.model }, ctx);
+    if (!run.ok) return run as RunStudyResult;
+    const findings = ((run.result as { text?: string } | undefined)?.text ?? '').trim();
     if (!findings) return { ok: false, error: 'the agent returned no findings to save' };
     const note = await saveStudyNote(ctx.workspace, agent.id, t, findings);
     await addStudyTopicToIndex(ctx.workspace, agent.id, t);
-    return { ok: true, tokens: turn.tokens, result: { agent: agent.id, topic: t, note: note.relativePath, mode: note.mode, indexUpdated: 'agents/index.md', findings } };
+    return { ok: true, result: { agent: agent.id, topic: t, note: note.relativePath, mode: note.mode, indexUpdated: 'agents/index.md', findings } };
+  } finally {
+    endStudy();
   }
-
-  // Attended: reuse the delegate runner verbatim (model/context/grant/governance/
-  // trifecta/global+per-agent budget). A human is present → sensitive → approval.
-  const run = await delegateToAgent.execute({ agentId: agent.id, task: researchPrompt(t), model: opts.model }, ctx);
-  if (!run.ok) return run as RunStudyResult;
-  const findings = ((run.result as { text?: string } | undefined)?.text ?? '').trim();
-  if (!findings) return { ok: false, error: 'the agent returned no findings to save' };
-  const note = await saveStudyNote(ctx.workspace, agent.id, t, findings);
-  await addStudyTopicToIndex(ctx.workspace, agent.id, t);
-  return { ok: true, result: { agent: agent.id, topic: t, note: note.relativePath, mode: note.mode, indexUpdated: 'agents/index.md', findings } };
 }
 
 export const agentStudy: Tool<Args> = {

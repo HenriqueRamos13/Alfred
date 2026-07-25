@@ -11,6 +11,7 @@
 
 // Type-only (erased at runtime — no node import leaks in).
 import type { DelegationRole } from './team-pure.ts';
+import type { AgentActivityState } from './agent-activity-pure.ts';
 // Reuse the already-tested, renderer-safe budget formatter (jobs-format-pure is
 // node-free — it is imported by the Scheduled Tasks card too). Same "used / limit".
 export { formatBudget as formatAgentBudget } from './jobs-format-pure.ts';
@@ -18,6 +19,20 @@ export { formatBudget as formatAgentBudget } from './jobs-format-pure.ts';
 /** Human label for a delegation (privilege) role. */
 export function humanizeRole(role: DelegationRole): string {
   return role === 'orchestrator' ? 'Orquestrador' : 'Especialista (leaf)';
+}
+
+/** PT-PT label for a live activity state (Phase 8, stage 4) — the TEAM card's dot caption. */
+export function activityLabelPt(state: AgentActivityState): string {
+  switch (state) {
+    case 'working':
+      return 'a trabalhar';
+    case 'studying':
+      return 'a estudar';
+    case 'waiting-approval':
+      return 'aguarda aprovação';
+    default:
+      return 'inativo';
+  }
 }
 
 /**

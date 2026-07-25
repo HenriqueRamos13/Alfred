@@ -924,6 +924,29 @@ body.low-cpu .scanline { display: none; }
   padding: 1px 6px;
   flex-shrink: 0;
 }
+/* live activity (Phase 8 stage 4): dot + PT caption. Colours mirror AgentStatus.tsx
+   (cyan = busy, magenta = tool/study, amber = waiting on the human) and reuse the
+   shared `alfred-pulse` keyframe — an idle dot never animates (low-CPU friendly). */
+.team-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--dim);
+  flex-shrink: 0;
+}
+.team-dot.working { background: var(--acc); box-shadow: 0 0 6px var(--acc); animation: alfred-pulse 1.2s ease-in-out infinite; }
+.team-dot.studying { background: var(--mag); box-shadow: 0 0 6px var(--mag); animation: alfred-pulse 1.2s ease-in-out infinite; }
+.team-dot.waiting-approval { background: var(--amb); box-shadow: 0 0 6px var(--amb); animation: alfred-pulse 1.2s ease-in-out infinite; }
+.team-activity {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-style: italic;
+  color: var(--muted);
+  max-width: 45%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .team-role.orchestrator { color: var(--mag); }
 .team-role.leaf { color: var(--acc); }
 .team-role.msg { color: var(--grn); }

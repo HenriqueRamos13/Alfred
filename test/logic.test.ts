@@ -1728,7 +1728,16 @@ import {
   parseTopicsFromIndex,
   buildOrgTree,
   canMessageUserResolved,
+  activityLabelPt,
 } from '../src/main/core/team-format-pure.ts';
+import {
+  pushActivity,
+  removeActivity,
+  // aliased: graph-pure.ts already exports an unrelated resolveActivity (graph node lighting).
+  resolveActivity as resolveAgentActivity,
+  truncateLabel,
+  type ActivityEntry,
+} from '../src/main/core/agent-activity-pure.ts';
 import {
   emptyFormSpec,
   fillFormSpec,
@@ -3400,6 +3409,92 @@ test('parseTopicsFromIndex — extracts the right agent, empty when none, no cro
   assert.deepEqual(parseTopicsFromIndex(two, 'coder'), ['Rust async', 'WASM']);
   // unknown agent → empty
   assert.deepEqual(parseTopicsFromIndex(two, 'ghost'), []);
+});
+
+// ── Phase 8 stage 4: live per-agent activity (pure stack + resolution) ────────
+
+test('resolveActivity — empty → idle; single entry passthrough; precedence waiting-approval > studying > working', () => {
+  // empty stack → idle, stamped with `now`
+  assert.deepEqual(resolveAgentActivity([], 1_000), { state: 'idle', since: 1_000 });
+
+  const work: ActivityEntry = { token: 1, state: 'working', label: 'refactor db', since: 500 };
+  assert.deepEqual(resolveAgentActivity([work], 1_000), { state: 'working', label: 'refactor db', since: 500 });
+
+  // higher precedence wins regardless of push order
+  const study: ActivityEntry = { token: 2, state: 'studying', label: 'Rust async', since: 600 };
+  const wait: ActivityEntry = { token: 3, state: 'waiting-approval', since: 700 };
+  assert.equal(resolveAgentActivity([work, study], 1_000).state, 'studying');
+  assert.equal(resolveAgentActivity([study, work], 1_000).state, 'studying');
+  assert.equal(resolveAgentActivity([wait, work, study], 1_000).state, 'waiting-approval');
+  assert.equal(resolveAgentActivity([work, study, wait], 1_000).state, 'waiting-approval');
+  // a waiting-approval entry carries no label → the resolved activity has none
+  assert.deepEqual(resolveAgentActivity([work, wait], 1_000), { state: 'waiting-approval', since: 700 });
+
+  // among EQUAL states the most recent entry wins
+  const older: ActivityEntry = { token: 4, state: 'working', label: 'old', since: 100 };
+  const newer: ActivityEntry = { token: 5, state: 'working', label: 'new', since: 200 };
+  assert.equal(resolveAgentActivity([older, newer], 1_000).label, 'new');
+  assert.equal(resolveAgentActivity([newer, older], 1_000).label, 'new');
+});
+
+test('resolveActivity — nested study (studying + inner working) resolves to studying with the study label', () => {
+  // The attended agent_study path delegates to delegate_to_agent, so a 'working'
+  // entry nests INSIDE the 'studying' one — the UI must still say "a estudar".
+  let entries = pushActivity([], { token: 1, state: 'studying', label: 'Rust async', since: 100 });
+  entries = pushActivity(entries, { token: 2, state: 'working', label: 'Research …', since: 110 });
+  assert.deepEqual(resolveAgentActivity(entries, 900), { state: 'studying', label: 'Rust async', since: 100 });
+  // inner turn ends first (LIFO) → still studying
+  entries = removeActivity(entries, 2);
+  assert.deepEqual(resolveAgentActivity(entries, 900), { state: 'studying', label: 'Rust async', since: 100 });
+  // study ends → idle
+  entries = removeActivity(entries, 1);
+  assert.deepEqual(resolveAgentActivity(entries, 900), { state: 'idle', since: 900 });
+});
+
+test('pushActivity/removeActivity — LIFO nesting; unknown/duplicate token removal is a no-op', () => {
+  const a: ActivityEntry = { token: 1, state: 'working', label: 'a', since: 1 };
+  const b: ActivityEntry = { token: 2, state: 'working', label: 'b', since: 2 };
+  const base: ActivityEntry[] = [];
+  const one = pushActivity(base, a);
+  assert.deepEqual(base, []); // never mutates its input
+  const two = pushActivity(one, b);
+  assert.deepEqual(two.map((e) => e.token), [1, 2]); // newest last
+  assert.deepEqual(one.map((e) => e.token), [1]);
+
+  // unknown token → unchanged content
+  assert.deepEqual(removeActivity(two, 99).map((e) => e.token), [1, 2]);
+  // LIFO unwind
+  const afterB = removeActivity(two, 2);
+  assert.deepEqual(afterB.map((e) => e.token), [1]);
+  const afterA = removeActivity(afterB, 1);
+  assert.deepEqual(afterA, []);
+  // removing the same token twice is a no-op (idempotent end())
+  assert.deepEqual(removeActivity(afterA, 1), []);
+  assert.deepEqual(removeActivity(afterB, 2).map((e) => e.token), [1]);
+  // out-of-order removal is allowed too (a study can outlive its inner turn)
+  assert.deepEqual(removeActivity(two, 1).map((e) => e.token), [2]);
+});
+
+test('truncateLabel — clips at max with ellipsis; short strings untouched', () => {
+  assert.equal(truncateLabel('refactor the db layer'), 'refactor the db layer');
+  assert.equal(truncateLabel(''), '');
+  const long = 'x'.repeat(200);
+  const clipped = truncateLabel(long);
+  assert.equal(clipped.length, 64); // default max, ellipsis included
+  assert.equal(clipped.endsWith('…'), true);
+  assert.equal(clipped.startsWith('x'.repeat(63)), true);
+  // explicit max
+  assert.equal(truncateLabel('abcdefghij', 5), 'abcd…');
+  assert.equal(truncateLabel('abcde', 5), 'abcde'); // exactly max → untouched
+  // multi-line / padded tasks collapse to one display line
+  assert.equal(truncateLabel('  build\n\n  the thing\t'), 'build the thing');
+});
+
+test('activityLabelPt — the four PT labels', () => {
+  assert.equal(activityLabelPt('idle'), 'inativo');
+  assert.equal(activityLabelPt('working'), 'a trabalhar');
+  assert.equal(activityLabelPt('studying'), 'a estudar');
+  assert.equal(activityLabelPt('waiting-approval'), 'aguarda aprovação');
 });
 
 // ── Phase 5 stage 4: per-agent daily budget + scheduled study ────────────────

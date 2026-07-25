@@ -135,6 +135,7 @@ import {
 } from './agent-augment-pure.ts';
 import { agentTokensToday } from './budget.ts';
 import { parseTopicsFromIndex } from './team-format-pure.ts';
+import { getActivity } from './agent-activity.ts';
 import { grillMeEnabled, lowCpuEnabled, parseVoiceConfig } from './settings-pure.ts';
 import { parseSendDelay } from './send-delay-pure.ts';
 import { isAccent, DEFAULT_ACCENT, type AccentName } from './accent-pure.ts';
@@ -1861,6 +1862,10 @@ export function createOrchestrator(opts: CreateOrchestratorOpts): OrchestratorHa
         topics: parseTopicsFromIndex(index, a.id),
         parentId: a.parentId ?? null,
         canMessageUser: a.canMessageUser ?? false,
+        // Live state from the in-memory registry (Phase 8 stage 4): the card gets
+        // the CURRENT activity on every fetch, and agent.activity events tell it
+        // when to fetch again.
+        activity: getActivity(a.id),
       }));
     },
     getTeamAgent(id) {

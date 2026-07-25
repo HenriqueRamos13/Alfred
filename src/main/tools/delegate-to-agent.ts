@@ -49,6 +49,8 @@ import {
   type CircuitState,
 } from '../core/jobs-pure.ts';
 import { resolveProvider } from '../core/providers.ts';
+import { beginActivity } from '../core/agent-activity.ts';
+import { truncateLabel } from '../core/agent-activity-pure.ts';
 import { agentToSpec, modelSupportsVision, buildToolModelOutput } from '../core/modelCatalog.ts';
 import { runGovernedTool, classifyAction, maskSecrets, trifectaImpact } from '../core/governance.ts';
 import { BudgetTracker, isOverDailyBudget, agentTokensToday, dayKey, callSignature } from '../core/budget.ts';
@@ -157,6 +159,10 @@ export const delegateToAgent: Tool<Args> = {
     // activeChildren=0, all pass canSpawn, then all enterChild → the concurrency
     // ceiling is bypassed (TOCTOU). Reserving here serialises them correctly.
     enterChild(parentKey);
+    // Live activity (Phase 8 stage 4): the agent is 'working' for exactly as long
+    // as its turn holds the spawn slot — same bracket, so both paths (API brain and
+    // claude-cli) are covered and an abort/throw can never leave the dot lit.
+    const endWork = beginActivity(ctx.emit, agent.id, 'working', truncateLabel(a.task));
     try {
       const model = resolveTeamModel(a.model, agent);
       const context = await loadAgentContext(ctx.workspace, agent);
@@ -182,6 +188,7 @@ export const delegateToAgent: Tool<Args> = {
         unattended: nested ? { dangerous: isDangerous(ctx.db), queue: () => {} } : undefined,
       });
     } finally {
+      endWork();
       exitChild(parentKey);
     }
   },
@@ -307,7 +314,24 @@ export async function runAgentTurn(ctx: ToolCtx, spec: AgentTurnSpec): Promise<A
     ...ctx,
     delegationDepth,
     caller: { agentId, delegationRole, canMessageUser: spec.canMessageUser ?? false },
+    // Live activity (Phase 8 stage 4): brackets the HUMAN wait of a T2/T3 approval
+    // so the roster card shows WHO is blocked on the user, not just "working".
+    // Wrapped here (not in governance.ts) because only this runner knows which
+    // agent the ctx belongs to; the real approval path is otherwise untouched.
+    governance: {
+      ...ctx.governance,
+      requestApproval: async (req) => {
+        const endWait = beginActivity(ctx.emit, agentId, 'waiting-approval');
+        try {
+          return await ctx.governance.requestApproval(req);
+        } finally {
+          endWait();
+        }
+      },
+    } satisfies Governance,
   };
+  // The unattended auto-deny stub layers ON TOP of baseCtx (order matters): an
+  // unattended child never reaches the wrapped interactive approval at all.
   const unattendedCtx: ToolCtx = unattended
     ? {
         ...baseCtx,

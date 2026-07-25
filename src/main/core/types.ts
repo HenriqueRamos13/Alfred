@@ -8,8 +8,10 @@
  */
 
 // Type-only (erased under --experimental-strip-types → no runtime import cycle):
-// the agent.form event carries a partial agent-creation form spec.
+// the agent.form event carries a partial agent-creation form spec; the
+// agent.activity event + TeamAgentInfo carry a resolved live activity.
 import type { AgentFormSpec } from './agent-augment-pure.ts';
+import type { AgentActivity } from './agent-activity-pure.ts';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // JSON Schema (Anthropic tools format — a pragmatic subset)
@@ -364,6 +366,12 @@ export interface TeamAgentInfo {
   parentId: string | null;
   /** Raw inbox-power flag as stored. The UI resolves the effective power via canMessageUserResolved. */
   canMessageUser: boolean;
+  /**
+   * What this agent is doing RIGHT NOW (Phase 8 stage 4) — resolved from the
+   * in-memory activity registry, so it is ephemeral by design: after a restart
+   * nothing is running, and 'idle' is the truthful answer.
+   */
+  activity: AgentActivity;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -442,6 +450,10 @@ export type StreamEvent =
   // heartbeat sweep omits it — the UI refetches the open board regardless).
   | { kind: 'notification.changed'; projectSlug?: string }
   | { kind: 'team.changed' }
+  // A ROSTER agent's live activity changed (Phase 8 stage 4): it started/stopped
+  // working, studying, or blocking on a human approval. Distinct from
+  // agent.status, which is the MAIN (Alfred) turn status. The TEAM card re-fetches.
+  | { kind: 'agent.activity'; agentId: string; activity: AgentActivity }
   // The agent (Alfred) proposes creating an agent (team.propose_agent) instead of
   // silently creating one: the UI opens the creation form PRE-FILLED with this
   // partial spec, for the user to augment/review/confirm (Phase 7 stage 5).

@@ -6,18 +6,21 @@
  * shared index), the pending sensitive-action approval queue, and the job list
  * (to map an approval → the agent whose scheduled STUDY job raised it). It stays
  * live by listening to the SAME stream the rest of the UI gets — job.approval /
- * job.data / agent.status trigger a cheap re-fetch. Zero new tools; create is not
- * exposed here (agents are made by the `team` command/tool).
+ * job.data / agent.status / agent.activity trigger a cheap re-fetch. Zero new tools;
+ * create is not exposed here (agents are made by the `team` command/tool).
  *
- * Per agent: name, role (leaf/orchestrator), provider:model, tokens today / limit,
+ * Per agent: a live activity dot + PT caption (inativo · a trabalhar · a estudar ·
+ * aguarda aprovação — Phase 8 stage 4, resolved main-side), name, role
+ * (leaf/orchestrator), provider:model, tokens today / limit,
  * studied topics, and that agent's pending approvals (Approve/Deny → resolveJobApproval).
  * Delete needs a double confirm. No XSS surface — all data lands in React text nodes.
  */
 import { useEffect, useState } from 'react';
 import { alfred } from '../lib/ipc.ts';
-import { humanizeRole, formatAgentBudget, canMessageUserResolved } from '../../main/core/team-format-pure.ts';
+import { humanizeRole, formatAgentBudget, canMessageUserResolved, activityLabelPt } from '../../main/core/team-format-pure.ts';
 import { relativeTime, describeApproval } from '../../main/core/jobs-format-pure.ts';
 import type { Job, JobApproval, TeamAgentInfo, StreamEvent } from '../../main/core/types.ts';
+import type { AgentActivity } from '../../main/core/agent-activity-pure.ts';
 
 export function TeamCard({ onNewAgent }: { onNewAgent?: () => void } = {}) {
   const [agents, setAgents] = useState<TeamAgentInfo[]>([]);
@@ -37,7 +40,7 @@ export function TeamCard({ onNewAgent }: { onNewAgent?: () => void } = {}) {
     refetch();
     const clock = setInterval(() => setNow(Date.now()), 30_000);
     const off = alfred.onStream((e: StreamEvent) => {
-      if (e.kind === 'job.approval' || e.kind === 'job.data' || e.kind === 'team.changed') refetch();
+      if (e.kind === 'job.approval' || e.kind === 'job.data' || e.kind === 'team.changed' || e.kind === 'agent.activity') refetch();
       else if (e.kind === 'agent.status' && (e.status === 'done' || e.status === 'idle')) refetch();
     });
     return () => {
@@ -103,10 +106,18 @@ export function TeamCard({ onNewAgent }: { onNewAgent?: () => void } = {}) {
           agents.map((agent) => {
             const pending = approvalsFor(agent.id);
             const orch = agent.delegationRole === 'orchestrator';
+            // Live activity (Phase 8 stage 4). Older projections without it read as idle.
+            const activity: AgentActivity = agent.activity ?? { state: 'idle', since: now };
             return (
               <div key={agent.id} className={`team-agent${orch ? ' orchestrator' : ''}`}>
                 <div className="team-agent-head">
+                  <span className={`team-dot ${activity.state}`} title={activityLabelPt(activity.state)} />
                   <span className="team-agent-name">{agent.name}</span>
+                  {activity.state !== 'idle' && (
+                    <span className="team-activity">
+                      {activityLabelPt(activity.state)}{activity.label ? ` · ${activity.label}` : ''}
+                    </span>
+                  )}
                   <span className={`team-role${orch ? ' orchestrator' : ' leaf'}`}>
                     {humanizeRole(agent.delegationRole)}
                   </span>
