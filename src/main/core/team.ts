@@ -13,7 +13,7 @@
 
 import { mkdir, writeFile, readFile, readdir } from 'node:fs/promises';
 import { join } from 'node:path';
-import { agentIdFromName, buildAgentsIndex, buildAgentContext, parseGrant, composeStudyNote, studyNoteSlug, addTopicToIndex, wouldCycle, orgDepth, DELEGATION_ROLES, DEFAULT_DELEGATION_ROLE, DEFAULT_MAX_SPAWN_DEPTH, type AgentNote, type AgentSpec, type DelegationRole, type TeamAgent } from './team-pure.ts';
+import { agentIdFromName, buildAgentsIndex, buildAgentContext, parseGrant, composeStudyNote, studyNoteSlug, addTopicToIndex, topicsFromKnowledge, wouldCycle, orgDepth, DELEGATION_ROLES, DEFAULT_DELEGATION_ROLE, DEFAULT_MAX_SPAWN_DEPTH, type AgentNote, type AgentSpec, type DelegationRole, type KnowledgeFileMeta, type TeamAgent } from './team-pure.ts';
 import { dayKey } from './jobs-pure.ts';
 
 type DB = import('better-sqlite3').Database;
@@ -62,11 +62,41 @@ export function getAgent(db: DB, id: string): TeamAgent | undefined {
   return r ? rowToAgent(r) : undefined;
 }
 
-/** Rewrite agents/index.md from the current rows (idempotent, no orphans). */
+/**
+ * Studied topics of one agent, read from its knowledge FOLDER (the durable record —
+ * the index is only a projection). Missing folder / unreadable note degrades to no
+ * topics, never throws. Same isolation boundary as loadAgentContext: only this
+ * agent's own `agents/<id>/knowledge/`.
+ */
+async function readStudiedTopics(workspace: string, agentId: string): Promise<string[]> {
+  const dir = join(workspace, 'agents', agentId, 'knowledge');
+  let names: string[] = [];
+  try {
+    names = (await readdir(dir)).filter((f) => f.endsWith('.md')).sort();
+  } catch {
+    return []; /* no folder yet — nothing studied */
+  }
+  const files: KnowledgeFileMeta[] = [];
+  for (const f of names) {
+    const body = await readFile(join(dir, f), 'utf8').catch(() => '');
+    files.push({ name: f.replace(/\.md$/, ''), firstLine: body.split('\n', 1)[0] });
+  }
+  return topicsFromKnowledge(files);
+}
+
+/**
+ * Rewrite agents/index.md from the current rows (idempotent, no orphans) — with each
+ * agent's studied topics re-derived from its knowledge folder, so a create/delete no
+ * longer silently drops the `· studied:` suffixes addTopicToIndex appended (and that
+ * the TEAM card's topic chips are parsed from).
+ */
 async function rebuildIndex(db: DB, workspace: string): Promise<void> {
   const dir = join(workspace, 'agents');
   await mkdir(dir, { recursive: true });
-  await writeFile(join(dir, 'index.md'), buildAgentsIndex(listAgents(db)), 'utf8');
+  const agents = listAgents(db);
+  const topicsById: Record<string, string[]> = {};
+  for (const a of agents) topicsById[a.id] = await readStudiedTopics(workspace, a.id);
+  await writeFile(join(dir, 'index.md'), buildAgentsIndex(agents, topicsById), 'utf8');
 }
 
 /**
@@ -181,7 +211,8 @@ export async function saveStudyNote(
 /**
  * Add a studied topic to the agent's line in the shared index (agents/index.md)
  * so Alfred can route by learned topic. Missing/empty index or unknown agent →
- * a no-op (never throws). Local edit only — not egress.
+ * a no-op (never throws). Local edit only — not egress. The cheap incremental
+ * path: a later rebuildIndex reproduces the same suffix from the note files.
  */
 export async function addStudyTopicToIndex(workspace: string, agentId: string, topic: string): Promise<void> {
   const file = join(workspace, 'agents', 'index.md');

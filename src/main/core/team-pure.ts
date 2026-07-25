@@ -421,9 +421,9 @@ export function composeStudyNote(existing: string | null, topic: string, finding
  * written by buildAgentsIndex), dedups the topic case-insensitively, and leaves
  * every other line and the document structure byte-for-byte untouched. An
  * unknown agentId (or blank topic) returns the text unchanged.
- * ponytail: a later create/delete rebuilds index.md from DB rows (buildAgentsIndex)
- * and drops these suffixes — upgrade path is to derive topics from the knowledge
- * folder in buildAgentsIndex. For now the note files on disk are the durable record.
+ * This is the CHEAP incremental path; a rebuild reconstructs the same suffixes from
+ * the knowledge folder (topicsFromKnowledge → buildAgentsIndex), so the two agree
+ * byte-for-byte and a create/delete no longer drops what an agent studied.
  */
 export function addTopicToIndex(indexText: string, agentId: string, topic: string): string {
   const label = topic.trim().replace(/\s+/g, ' ');
@@ -444,8 +444,50 @@ export function addTopicToIndex(indexText: string, agentId: string, topic: strin
     .join('\n');
 }
 
-/** Shared "who-knows-what" index (agents/index.md): one line per agent, name → specialty. */
-export function buildAgentsIndex(agents: readonly Pick<TeamAgent, 'id' | 'name' | 'role' | 'model'>[]): string {
+/** One `knowledge/*.md` note as seen from disk: file name (no `.md`) + its first line. */
+export interface KnowledgeFileMeta {
+  /** Filename without the `.md` extension (a slug — studyNoteSlug wrote it). */
+  name: string;
+  /** First line of the file, if it could be read. */
+  firstLine?: string;
+}
+
+/**
+ * Studied topics derived from an agent's knowledge FOLDER — the durable record.
+ * composeStudyNote writes `# <topic>` as a fresh note's first line and only ever
+ * APPENDS `## Update <day>` sections, so that first h1 is a stable topic label.
+ * The `role`/`seed` scaffold notes are not studied topics and are skipped; a note
+ * with no h1 first line (hand-written, or truncated) falls back to its file name,
+ * which is already a slug. Deduped case-insensitively, first-seen order kept.
+ * Pure — the IO (readdir + first line) lives in core/team.ts.
+ */
+export function topicsFromKnowledge(files: readonly KnowledgeFileMeta[]): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const f of files) {
+    if (f.name === 'role' || f.name === 'seed') continue;
+    const h1 = (f.firstLine ?? '').trim().match(/^#\s+(.+)$/);
+    const topic = (h1 ? h1[1] : f.name).trim().replace(/\s+/g, ' ');
+    if (!topic) continue;
+    const key = topic.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(topic);
+  }
+  return out;
+}
+
+/**
+ * Shared "who-knows-what" index (agents/index.md): one line per agent, name → specialty.
+ * `topicsById` (id → studied topics, e.g. from topicsFromKnowledge) appends the SAME
+ * `· studied: a, b` suffix addTopicToIndex writes and parseTopicsFromIndex reads, so a
+ * rebuild from DB rows preserves what each agent studied instead of dropping it. Omitted
+ * (the default) → no suffixes, exactly the pre-Phase-8 output.
+ */
+export function buildAgentsIndex(
+  agents: readonly Pick<TeamAgent, 'id' | 'name' | 'role' | 'model'>[],
+  topicsById: Readonly<Record<string, readonly string[]>> = {},
+): string {
   const lines = [
     '# Team — who knows what',
     '',
@@ -454,7 +496,17 @@ export function buildAgentsIndex(agents: readonly Pick<TeamAgent, 'id' | 'name' 
   ];
   if (agents.length === 0) lines.push('_No agents yet._', '');
   for (const a of [...agents].sort((x, y) => x.id.localeCompare(y.id))) {
-    lines.push(`- **${a.name}** (\`${a.id}\`, ${a.model}) — ${a.role || '_no specialty set_'}`);
+    // Normalise + ci-dedupe exactly as addTopicToIndex does, so both writers agree.
+    const topics: string[] = [];
+    const seen = new Set<string>();
+    for (const t of topicsById[a.id] ?? []) {
+      const label = t.trim().replace(/\s+/g, ' ');
+      if (!label || seen.has(label.toLowerCase())) continue;
+      seen.add(label.toLowerCase());
+      topics.push(label);
+    }
+    const studied = topics.length > 0 ? ` · studied: ${topics.join(', ')}` : '';
+    lines.push(`- **${a.name}** (\`${a.id}\`, ${a.model}) — ${a.role || '_no specialty set_'}${studied}`);
   }
   return lines.join('\n') + '\n';
 }

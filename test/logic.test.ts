@@ -1709,6 +1709,7 @@ import {
   studyNoteSlug,
   composeStudyNote,
   addTopicToIndex,
+  topicsFromKnowledge,
   agentBudgetDecision,
   blockedToolsForRole,
   restrictGrantForRole,
@@ -3172,6 +3173,74 @@ test('addTopicToIndex — appends to the right agent, dedups, leaves others unto
   // unknown agent / blank topic → unchanged
   assert.equal(addTopicToIndex(index, 'ghost', 'X'), index);
   assert.equal(addTopicToIndex(index, 'coder', '   '), index);
+});
+
+// ── Phase 8 stage 2: studied topics survive an index rebuild ─────────────────
+
+test('topicsFromKnowledge — heading becomes topic; role/seed excluded; slug fallback when no heading; case-insensitive dedupe', () => {
+  // the note's first `# ` heading is the topic (that is what composeStudyNote writes)
+  assert.deepEqual(
+    topicsFromKnowledge([{ name: 'rust-async', firstLine: '# Rust async' }]),
+    ['Rust async'],
+  );
+  // scaffold notes are not studied topics
+  assert.deepEqual(
+    topicsFromKnowledge([
+      { name: 'role', firstLine: '# Coder — role' },
+      { name: 'seed', firstLine: '# Seed knowledge' },
+      { name: 'wasm', firstLine: '# WASM' },
+    ]),
+    ['WASM'],
+  );
+  // no heading (missing / blank / not an h1) → the file name (already a slug)
+  assert.deepEqual(topicsFromKnowledge([{ name: 'esm-notes' }]), ['esm-notes']);
+  assert.deepEqual(topicsFromKnowledge([{ name: 'esm-notes', firstLine: '   ' }]), ['esm-notes']);
+  assert.deepEqual(topicsFromKnowledge([{ name: 'esm-notes', firstLine: 'plain prose' }]), ['esm-notes']);
+  assert.deepEqual(topicsFromKnowledge([{ name: 'esm-notes', firstLine: '## Update 2026-07-24' }]), ['esm-notes']);
+  // case-insensitive dedupe, first-seen order preserved
+  assert.deepEqual(
+    topicsFromKnowledge([
+      { name: 'a', firstLine: '# Rust async' },
+      { name: 'b', firstLine: '# rust ASYNC' },
+      { name: 'c', firstLine: '# WASM' },
+    ]),
+    ['Rust async', 'WASM'],
+  );
+  assert.deepEqual(topicsFromKnowledge([]), []);
+});
+
+test('buildAgentsIndex — topicsById appends studied suffixes that parseTopicsFromIndex round-trips', () => {
+  const agents = [
+    { id: 'coder', name: 'Coder', role: 'TS', model: 'claude-opus-4-8' },
+    { id: 'writer', name: 'Writer', role: 'prose', model: 'claude-sonnet-5' },
+  ];
+  const md = buildAgentsIndex(agents, { coder: ['Rust async', 'WASM'] });
+  // round-trips through the very parser the TEAM card uses
+  assert.deepEqual(parseTopicsFromIndex(md, 'coder'), ['Rust async', 'WASM']);
+  // no topics for the other agent → no suffix, no cross-mixing
+  assert.deepEqual(parseTopicsFromIndex(md, 'writer'), []);
+  assert.equal(md.split('\n').find((l) => l.includes('`writer`')), buildAgentsIndex(agents).split('\n').find((l) => l.includes('`writer`')));
+  // byte-identical to the incremental path (addTopicToIndex) — one format, two writers
+  assert.equal(md, addTopicToIndex(addTopicToIndex(buildAgentsIndex(agents), 'coder', 'Rust async'), 'coder', 'WASM'));
+  // default 2nd arg keeps the old behaviour
+  assert.equal(buildAgentsIndex(agents), buildAgentsIndex(agents, {}));
+  // an empty topic list adds no suffix; an unknown id is ignored
+  assert.equal(buildAgentsIndex(agents, { coder: [], ghost: ['X'] }), buildAgentsIndex(agents));
+});
+
+test('buildAgentsIndex — regression: topics survive a rebuild', () => {
+  const agents = [{ id: 'coder', name: 'Coder', role: 'TS', model: 'claude-opus-4-8' }];
+  // a study run appends the topic incrementally…
+  const studied = addTopicToIndex(buildAgentsIndex(agents), 'coder', 'x');
+  assert.deepEqual(parseTopicsFromIndex(studied, 'coder'), ['x']);
+  // …and a later create/delete rebuilds index.md from DB rows + the knowledge folder
+  const files = [
+    { name: 'role', firstLine: '# Coder — role' },
+    { name: 'x', firstLine: '# x' },
+  ];
+  const rebuilt = buildAgentsIndex(agents, { coder: topicsFromKnowledge(files) });
+  assert.deepEqual(parseTopicsFromIndex(rebuilt, 'coder'), ['x']); // was [] before Phase 8 stage 2
+  assert.equal(rebuilt, studied);
 });
 
 // ── team card formatters (Phase 5, stage 5): renderer-safe, pure ─────────────
