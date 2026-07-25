@@ -14,6 +14,10 @@
  * (leaf/orchestrator), provider:model, tokens today / limit,
  * studied topics, and that agent's pending approvals (Approve/Deny → resolveJobApproval).
  * Delete needs a double confirm. No XSS surface — all data lands in React text nodes.
+ *
+ * Phase 8 stage 6: with `onOpenAgent` wired the header row is a button (click or
+ * Enter/Space) and a `ver detalhes ›` action appears — both open the AgentModal. Every
+ * other action stops propagation so it never doubles as a row click.
  */
 import { useEffect, useState } from 'react';
 import { alfred } from '../lib/ipc.ts';
@@ -22,7 +26,7 @@ import { relativeTime, describeApproval } from '../../main/core/jobs-format-pure
 import type { Job, JobApproval, TeamAgentInfo, StreamEvent } from '../../main/core/types.ts';
 import type { AgentActivity } from '../../main/core/agent-activity-pure.ts';
 
-export function TeamCard({ onNewAgent }: { onNewAgent?: () => void } = {}) {
+export function TeamCard({ onNewAgent, onOpenAgent }: { onNewAgent?: () => void; onOpenAgent?: (id: string) => void } = {}) {
   const [agents, setAgents] = useState<TeamAgentInfo[]>([]);
   const [approvals, setApprovals] = useState<JobApproval[]>([]);
   const [jobs, setJobs] = useState<Job[]>([]);
@@ -74,10 +78,10 @@ export function TeamCard({ onNewAgent }: { onNewAgent?: () => void } = {}) {
       <div className="team-ap-desc">{describeApproval(a.toolName, a.args)}</div>
       <div className="team-ap-time">{relativeTime(a.ts, now)}</div>
       <div className="team-btns">
-        <button type="button" className="sched-ap-btn ok no-drag" onClick={() => resolve(a.id, true)}>
+        <button type="button" className="sched-ap-btn ok no-drag" onClick={(e) => { e.stopPropagation(); resolve(a.id, true); }}>
           ✓ APROVAR
         </button>
-        <button type="button" className="sched-ap-btn no no-drag" onClick={() => resolve(a.id, false)}>
+        <button type="button" className="sched-ap-btn no no-drag" onClick={(e) => { e.stopPropagation(); resolve(a.id, false); }}>
           ✕ RECUSAR
         </button>
       </div>
@@ -110,7 +114,16 @@ export function TeamCard({ onNewAgent }: { onNewAgent?: () => void } = {}) {
             const activity: AgentActivity = agent.activity ?? { state: 'idle', since: now };
             return (
               <div key={agent.id} className={`team-agent${orch ? ' orchestrator' : ''}`}>
-                <div className="team-agent-head">
+                <div
+                  className={`team-agent-head${onOpenAgent ? ' no-drag team-agent-open' : ''}`}
+                  role={onOpenAgent ? 'button' : undefined}
+                  tabIndex={onOpenAgent ? 0 : undefined}
+                  title={onOpenAgent ? 'ver detalhes do agente' : undefined}
+                  onClick={onOpenAgent ? () => onOpenAgent(agent.id) : undefined}
+                  onKeyDown={onOpenAgent ? (e) => {
+                    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onOpenAgent(agent.id); }
+                  } : undefined}
+                >
                   <span className={`team-dot ${activity.state}`} title={activityLabelPt(activity.state)} />
                   <span className="team-agent-name">{agent.name}</span>
                   {activity.state !== 'idle' && (
@@ -144,15 +157,24 @@ export function TeamCard({ onNewAgent }: { onNewAgent?: () => void } = {}) {
                   </div>
                 )}
                 <div className="team-btns">
+                  {onOpenAgent && (
+                    <button
+                      type="button"
+                      className="sched-btn no-drag"
+                      onClick={(e) => { e.stopPropagation(); onOpenAgent(agent.id); }}
+                    >
+                      ver detalhes ›
+                    </button>
+                  )}
                   {confirmDelete === agent.id ? (
                     <>
-                      <button type="button" className="sched-btn danger no-drag" onClick={() => del(agent.id)}>
+                      <button type="button" className="sched-btn danger no-drag" onClick={(e) => { e.stopPropagation(); del(agent.id); }}>
                         Confirmar apagar
                       </button>
-                      <button type="button" className="sched-btn no-drag" onClick={() => setConfirmDelete(null)}>Cancelar</button>
+                      <button type="button" className="sched-btn no-drag" onClick={(e) => { e.stopPropagation(); setConfirmDelete(null); }}>Cancelar</button>
                     </>
                   ) : (
-                    <button type="button" className="sched-btn danger no-drag" onClick={() => setConfirmDelete(agent.id)}>
+                    <button type="button" className="sched-btn danger no-drag" onClick={(e) => { e.stopPropagation(); setConfirmDelete(agent.id); }}>
                       🗑 Apagar
                     </button>
                   )}

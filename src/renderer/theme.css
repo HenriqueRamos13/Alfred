@@ -1649,3 +1649,30 @@ body.low-cpu .scanline { display: none; }
 .af-btn.pri { background: color-mix(in oklab, var(--mag) 18%, transparent); color: #f0d9ff; border-color: var(--mag); }
 .af-btn.pri:hover:not(:disabled) { box-shadow: 0 0 22px color-mix(in oklab, var(--mag) 45%, transparent); }
 .af-btn:disabled { opacity: 0.5; cursor: default; }
+
+/* ── Agent-details modal (Phase 8 stage 6) — reuses .pm-* / .af-* / .team-* ──── */
+/* Clickable roster row (TeamCard header → AgentModal). */
+.team-agent-open { cursor: pointer; border-radius: 6px; padding: 2px 4px; margin: -2px -4px 4px; transition: box-shadow .15s, background .15s; }
+.team-agent-open:hover, .team-agent-open:focus-visible {
+  outline: none;
+  background: color-mix(in oklab, var(--acc) 6%, transparent);
+  box-shadow: 0 0 16px color-mix(in oklab, var(--acc) 18%, transparent);
+}
+/* A stat tile whose value is a string ("12k / ∞") needs less than the 24px numeral. */
+.pm-stat b.am-stat-v { font-size: 17px; }
+/* The role's type label above its system prompt. */
+.am-role-label { font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase;
+  color: var(--mag); border: 1px solid color-mix(in oklab, var(--mag) 35%, transparent); border-radius: 6px;
+  padding: 3px 9px; display: inline-block; margin-bottom: 10px; }
+/* Knowledge note row (a .pm-team-row that stacks + reacts to the pointer). */
+.am-note { flex-direction: column; align-items: stretch; gap: 5px; cursor: pointer; }
+.am-note:hover, .am-note:focus-visible { outline: none; border-color: var(--acc);
+  box-shadow: 0 0 18px color-mix(in oklab, var(--acc) 14%, transparent); }
+.am-note-h { display: flex; align-items: baseline; gap: 10px; }
+.am-note-t { flex: 1; font-weight: 700; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.am-note-m { font-family: var(--font-mono); font-size: 10px; color: var(--dim); flex: none; }
+.am-note-x { font-size: 12px; color: var(--dim); line-height: 1.45; }
+/* "Agora" block in the atividade tab. */
+.am-now { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+.am-now-state { font-size: 14px; font-weight: 700; color: var(--text); }
+.pm-foot-note.am-ok { color: var(--grn); }

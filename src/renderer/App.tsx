@@ -26,6 +26,7 @@ import { GraphCard } from './components/GraphCard.tsx';
 import { ScheduledTasksCard } from './components/ScheduledTasksCard.tsx';
 import { TeamCard } from './components/TeamCard.tsx';
 import { AgentForm } from './components/AgentForm.tsx';
+import { AgentModal } from './components/AgentModal.tsx';
 import type { AgentFormSpec } from '../main/core/agent-augment-pure.ts';
 import { WidgetCard } from './components/WidgetCard.tsx';
 import { HtmlWidgetCard } from './components/HtmlWidgetCard.tsx';
@@ -135,6 +136,9 @@ export default function App() {
   // Agent-creation form (Phase 7 stage 5): null = closed; a (possibly empty)
   // partial spec = open, pre-filled (blank via "+ AGENT", or from an agent.form event).
   const [agentFormSpec, setAgentFormSpec] = useState<Partial<AgentFormSpec> | null>(null);
+  // Agent-details modal (Phase 8 stage 6): the open agent's id, or null = closed. The
+  // modal fetches its own detail projection and stays live off the stream.
+  const [openAgentId, setOpenAgentId] = useState<string | null>(null);
   // Human inbox (Phase 7 stage 3): async HITL. Global list + open state; the badge
   // is unreadCount(inbox). Re-fetched on mount and every inbox.changed event.
   const [inbox, setInbox] = useState<InboxMessage[]>([]);
@@ -1490,7 +1494,7 @@ export default function App() {
               </div>
               <div className="agents-section">
                 <div className="team-section-head">◇ EQUIPA · ESPECIALISTAS</div>
-                <TeamCard onNewAgent={() => setAgentFormSpec({})} />
+                <TeamCard onNewAgent={() => setAgentFormSpec({})} onOpenAgent={setOpenAgentId} />
               </div>
             </div>
           ),
@@ -1817,6 +1821,15 @@ export default function App() {
           onAugment={alfred.augmentAgentSpec}
           onCreate={alfred.createTeamAgent}
           onClose={() => setAgentFormSpec(null)}
+        />
+      )}
+
+      {openAgentId && (
+        <AgentModal
+          agentId={openAgentId}
+          agents={teamAgents}
+          catalog={catalog}
+          onClose={() => setOpenAgentId(null)}
         />
       )}
 

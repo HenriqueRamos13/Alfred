@@ -10,7 +10,7 @@
  * shows the Done-gate. Renderer-safe: it imports only kanban-pure (no node/electron)
  * — the SAME column graph + Done-gate the main process enforces.
  */
-import { useState, type DragEvent, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type DragEvent, type ReactNode } from 'react';
 import {
   CARD_COLUMNS,
   PRIORITIES,
@@ -71,6 +71,22 @@ export function ProjectModal({ detail, cards, agents, inbox, notifications, onKa
   const [selected, setSelected] = useState<string | null>(null);
   const [dragId, setDragId] = useState<string | null>(null);
   const [error, setError] = useState<string>('');
+  const overlayRef = useRef<HTMLDivElement>(null);
+
+  // Esc closes the card sub-overlay first, then the modal (Phase 8 stage 6). Only the
+  // topmost `.overlay` reacts, so an AgentForm opened from the Team tab isn't closed
+  // together with the project it was opened from.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.key !== 'Escape') return;
+      const overlays = document.querySelectorAll('.overlay');
+      if (overlays.length > 0 && overlays[overlays.length - 1] !== overlayRef.current) return;
+      if (selected) setSelected(null);
+      else onClose();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [selected, onClose]);
 
   const m = detail?.manifest;
   const selectedCard = selected ? cards.find((c) => c.id === selected) ?? null : null;
@@ -98,7 +114,7 @@ export function ProjectModal({ detail, cards, agents, inbox, notifications, onKa
   const doneCount = cards.filter((c) => c.column === 'done').length;
 
   return (
-    <div className="overlay" onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+    <div className="overlay" ref={overlayRef} onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
       <div className="pm-panel no-drag" role="dialog" aria-label={`Project ${m?.name ?? ''}`}>
         <div className="pm-head">
           <span className="pm-dot" />

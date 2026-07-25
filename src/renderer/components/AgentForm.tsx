@@ -10,7 +10,7 @@
  * prompt + knowledge seed). Renderer-safe: only agent-augment-pure + modelCatalog
  * (no node:*). Opens blank via "+ AGENT" or pre-filled via the agent.form event.
  */
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   fillFormSpec,
   augmentPlan,
@@ -46,6 +46,20 @@ export function AgentForm({ initial, agents, catalog, onAugment, onCreate, onClo
   const [busy, setBusy] = useState<null | 'augment' | 'create'>(null);
   const [augmented, setAugmented] = useState(false);
   const [error, setError] = useState('');
+  const overlayRef = useRef<HTMLDivElement>(null);
+
+  // Esc closes the form (Phase 8 stage 6) — but only while this is the topmost
+  // `.overlay`, so a modal stacked over us isn't dismissed together with it.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.key !== 'Escape') return;
+      const overlays = document.querySelectorAll('.overlay');
+      if (overlays.length > 0 && overlays[overlays.length - 1] !== overlayRef.current) return;
+      onClose();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
 
   const models: CatalogModel[] = isProviderId(spec.provider) && catalog ? catalog[spec.provider] ?? [] : [];
   const plan = useMemo(() => augmentPlan(spec, flags), [spec, flags]);
@@ -116,7 +130,7 @@ export function AgentForm({ initial, agents, catalog, onAugment, onCreate, onClo
   };
 
   return (
-    <div className="overlay" onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+    <div className="overlay" ref={overlayRef} onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
       <div className="af-panel no-drag" role="dialog" aria-label="Novo agente">
         <div className="af-head">
           <span className="af-dot" />
