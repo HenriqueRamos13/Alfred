@@ -2,9 +2,15 @@
  * ChatLog — conversation transcript. Assistant turns render through Markdown;
  * user/system/tool turns render as plain text.
  * App-driven (not renderable via render_ui). Theme tokens: see Panel.tsx.
+ *
+ * Phase 8 stage 9: a USER bubble carrying a ladder `status` gets the SAME chip the
+ * thread view uses (statusChipPt — one vocabulary everywhere). Deliberately quiet:
+ * `done` shrinks to a bare ✓ and a legacy row (no status) shows nothing at all, so
+ * the transcript only gains ink while a message is actually in flight or has failed.
  */
 import { useEffect, useRef } from 'react';
 import type { ChatMessage, ChatRole } from '../../main/core/types.ts';
+import { statusChipPt, type UserMsgStatus } from '../../main/core/thread-pure.ts';
 import { Markdown } from './Markdown.tsx';
 
 // Bubble language ported from the design canvas: the user's turns sit right and
@@ -50,10 +56,11 @@ export interface ChatLogProps {
 }
 
 export function ChatLog({ messages, streaming }: ChatLogProps) {
-  const rows: { role: ChatRole; content: string; key: string }[] = messages.map((m) => ({
+  const rows: { role: ChatRole; content: string; key: string; status?: UserMsgStatus }[] = messages.map((m) => ({
     role: m.role,
     content: m.content,
     key: m.id,
+    status: m.status,
   }));
   if (streaming) rows.push({ role: 'assistant', content: streaming, key: '__streaming__' });
 
@@ -98,6 +105,11 @@ export function ChatLog({ messages, streaming }: ChatLogProps) {
                 <span style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{m.content}</span>
               )}
             </div>
+            {m.role === 'user' && m.status && (
+              <span className={`th-chip s-${m.status}`} title={statusChipPt(m.status)}>
+                {m.status === 'done' ? '✓' : statusChipPt(m.status)}
+              </span>
+            )}
           </div>
         );
       })}

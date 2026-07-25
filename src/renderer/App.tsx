@@ -16,8 +16,15 @@ import { CommandBar } from './components/CommandBar.tsx';
 import { ChatLog } from './components/ChatLog.tsx';
 import { ProjectList } from './components/ProjectList.tsx';
 import { ProjectModal } from './components/ProjectModal.tsx';
-import { InboxOverlay } from './components/Inbox.tsx';
+import { InboxOverlay, threadsUnread } from './components/Inbox.tsx';
 import { unreadCount, type InboxAction, type InboxMessage } from '../main/core/inbox-pure.ts';
+import {
+  NEW_THREAD_PREFIX,
+  newThreadSentinel,
+  openThreadAgentId,
+  type ThreadInfo,
+  type ThreadMessage,
+} from '../main/core/thread-pure.ts';
 import type { AgentNotification } from '../main/core/notify-pure.ts';
 import { ApprovalPrompt } from './components/ApprovalPrompt.tsx';
 import { DraggableCard } from './components/DraggableCard.tsx';
@@ -143,6 +150,17 @@ export default function App() {
   // is unreadCount(inbox). Re-fetched on mount and every inbox.changed event.
   const [inbox, setInbox] = useState<InboxMessage[]>([]);
   const [inboxOpen, setInboxOpen] = useState(false);
+  // Direct user↔agent conversations (Phase 8 stage 9) — the Inbox's CONVERSAS tab.
+  // `openThreadId` is a real thread id, a `new:<agentId>` sentinel (a conversation
+  // opened before its first message persisted a row), or null. openThreadRef mirrors
+  // it for the mount-once onStream closure (the refThreadRef pattern), which scopes
+  // the agent.chat.* stream to the thread actually on screen.
+  const [threads, setThreads] = useState<ThreadInfo[]>([]);
+  const [openThreadId, setOpenThreadId] = useState<string | null>(null);
+  const [threadMessages, setThreadMessages] = useState<ThreadMessage[]>([]);
+  const [threadStreaming, setThreadStreaming] = useState('');
+  const openThreadRef = useRef<string | null>(null);
+  openThreadRef.current = openThreadId;
   // Notifications for the open project's Activity feed + board nudge indicator
   // (Phase 7 stage 4). Re-fetched on open + every notification.changed / kanban.changed.
   const [notifications, setNotifications] = useState<AgentNotification[]>([]);
@@ -527,6 +545,14 @@ export default function App() {
   const refreshNotifications = (slug: string) => {
     alfred.listNotifications({ projectSlug: slug }).then(setNotifications).catch(() => {});
   };
+  /**
+   * The roster. Fetched on MOUNT (not only when a project opens): the Inbox's
+   * CONVERSAS tab resolves every thread's agent name — and whether the agent still
+   * exists — from this list, so an empty one would read as "removido do roster".
+   */
+  const refreshTeam = () => {
+    alfred.listTeamAgents().then(setTeamAgents).catch(() => {});
+  };
   const openProject = (slug: string) => {
     openProjectRef.current = slug;
     setOpenProjectSlug(slug);
@@ -536,7 +562,7 @@ export default function App() {
     alfred.getProject(slug).then(setProjectDetail).catch(() => {});
     refreshCards(slug);
     refreshNotifications(slug);
-    alfred.listTeamAgents().then(setTeamAgents).catch(() => {}); // Org tab hierarchy
+    refreshTeam(); // Org tab hierarchy
   };
   const closeProject = () => {
     openProjectRef.current = null;
@@ -558,6 +584,67 @@ export default function App() {
   const openCardProject = (slug: string) => {
     setInboxOpen(false);
     openProject(slug);
+  };
+
+  // Direct conversations (Phase 8 stage 9). Both refreshers are safe to call from the
+  // mount-once stream closure (they only touch setState + IPC, never stale locals).
+  const refreshThreads = () => {
+    alfred.listThreads().then(setThreads).catch(() => {});
+  };
+  /** Transcript of one thread + clear its unread (a sentinel has nothing to fetch). */
+  const refreshThreadMessages = (threadId: string) => {
+    if (!threadId || threadId.startsWith(NEW_THREAD_PREFIX)) return;
+    alfred.listThreadMessages(threadId).then(setThreadMessages).catch(() => {});
+  };
+  /** Open a persisted conversation (a sidebar row). The effect above does the rest. */
+  const openThread = (threadId: string) => setOpenThreadId(threadId);
+  /**
+   * "✎ Nova conversa". A thread ROW only exists once the first message is stored, so
+   * the view opens on a `new:<agentId>` sentinel: empty history, the agent's name in
+   * the header, and a live composer. The first send swaps it for the real id.
+   */
+  const newThread = (agentId: string) => {
+    if (!agentId) return;
+    setOpenThreadId(newThreadSentinel(agentId));
+    setThreadMessages([]);
+    setThreadStreaming('');
+  };
+  /**
+   * Send to whoever the open conversation belongs to — openThreadAgentId owns the ONE
+   * rule (a sentinel carries the id inline, a real thread resolves through the list),
+   * so both paths call the same IPC and both take the real threadId from the ack.
+   * The bubble is appended optimistically at the bottom of the ladder under the uuid
+   * we mint, which is exactly the id every later turn.status patches.
+   */
+  const sendToAgent = (text: string) => {
+    const trimmed = text.trim();
+    const agentId = openThreadAgentId(openThreadId, threads);
+    if (!trimmed || !agentId) return;
+    const id = crypto.randomUUID();
+    setThreadMessages((ms) => [
+      ...ms,
+      { id, threadId: openThreadId ?? '', author: 'user', body: trimmed, status: 'queued', createdTs: Date.now() },
+    ]);
+    alfred
+      .messageAgent(agentId, trimmed, id)
+      .then((res) => {
+        if (res.ok) {
+          // A sentinel becomes the real thread here (and a real thread resolves to
+          // itself, so the effect's refetch is the only side effect).
+          setOpenThreadId(res.threadId);
+          refreshThreads();
+          return;
+        }
+        // Refused before anything persisted (agent deleted, blank/oversized text):
+        // FAIL the optimistic bubble in place — never leave it stuck on "na fila".
+        setThreadMessages((ms) => ms.map((m) => (m.id === id ? { ...m, status: 'error', error: res.error } : m)));
+        pushLog({ tag: 'CONVERSA', tone: 'red', msg: res.error });
+      })
+      .catch((err) => {
+        const msg = err instanceof Error ? err.message : String(err);
+        setThreadMessages((ms) => ms.map((m) => (m.id === id ? { ...m, status: 'error', error: msg } : m)));
+        pushLog({ tag: 'CONVERSA', tone: 'red', msg });
+      });
   };
 
   const refreshJobs = () => {
@@ -599,6 +686,8 @@ export default function App() {
     refreshJobs();
     refreshPending();
     refreshInbox();
+    refreshThreads();
+    refreshTeam();
     // Reload the persisted conversation so history survives restarts.
     alfred.getHistory().then(setMessages).catch(() => {});
     alfred.getLayout().then(setCards).catch(() => {});
@@ -711,9 +800,12 @@ export default function App() {
           // onSubmit does, so voice-sent commands appear in the chat immediately.
           else if (e.action === 'send' && e.text) {
             const spoken = e.text;
+            // main minted the message id for the turn it already started — adopt it so
+            // the spoken bubble gets the SAME ladder chips a typed one does.
+            const id = e.messageId ?? crypto.randomUUID();
             setMessages((m) => [
               ...m,
-              { id: `u-${Date.now()}`, sessionId: 'local', role: 'user', content: spoken, ts: Date.now() },
+              { id, sessionId: 'local', role: 'user', content: spoken, ts: Date.now(), status: 'queued' },
             ]);
           }
           break;
@@ -763,13 +855,66 @@ export default function App() {
           if (openProjectRef.current) alfred.listNotifications({ projectSlug: openProjectRef.current }).then(setNotifications).catch(() => {});
           break;
         case 'team.changed':
-          // Roster / hierarchy changed (create/delete/set_manager) — refresh the Org tab.
-          alfred.listTeamAgents().then(setTeamAgents).catch(() => {});
+          // Roster / hierarchy changed (create/delete/set_manager) — refresh the Org
+          // tab AND the conversation roster (a deleted agent disables its composer).
+          refreshTeam();
           break;
         case 'agent.form':
           // Alfred proposed creating an agent (team.propose_agent) — open the form
           // pre-filled instead of it being created silently.
           setAgentFormSpec(e.spec ?? {});
+          break;
+        // ── Direct conversations (Phase 8 stage 9) ──
+        // One user message's walk up the ladder: patch the row IN PLACE in whichever
+        // surface holds it (the main chat's optimistic bubble, or the open thread) —
+        // keyed on the id the renderer itself minted, so no refetch is needed for a tick.
+        case 'turn.status': {
+          const { messageId, state, error } = e;
+          // Untouched arrays are returned AS IS (no new identity) so an unrelated
+          // tick can't re-render the other surface's whole transcript.
+          setMessages((ms) =>
+            ms.some((m) => m.id === messageId)
+              ? ms.map((m) => (m.id === messageId ? { ...m, status: state } : m))
+              : ms,
+          );
+          setThreadMessages((ms) =>
+            ms.some((m) => m.id === messageId)
+              ? ms.map((m) => (m.id === messageId ? { ...m, status: state, ...(error ? { error } : {}) } : m))
+              : ms,
+          );
+          // ChatMessage carries no reason field, so a failed MAIN-chat turn would
+          // otherwise show "⚠ falhou" with no why — log it.
+          if (state === 'error' && error) pushLog({ tag: 'TURNO', tone: 'red', msg: error });
+          break;
+        }
+        case 'agent.chat.delta':
+          // Scoped by the OPEN thread (the refThreadRef idiom): a reply streaming in
+          // another thread must never bleed into the panel on screen.
+          if (e.threadId === openThreadRef.current) setThreadStreaming((s) => s + e.text);
+          break;
+        case 'agent.chat.message':
+          // The reply is persisted: drop the live text and take the committed row.
+          if (e.threadId === openThreadRef.current) {
+            setThreadStreaming('');
+            setThreadMessages((ms) => (ms.some((m) => m.id === e.message.id) ? ms : [...ms, e.message]));
+          }
+          refreshThreads(); // lastBody / lastTs / unread on every window's sidebar
+          break;
+        case 'agent.chat.done':
+          if (e.threadId === openThreadRef.current) setThreadStreaming('');
+          break;
+        case 'agent.chat.error':
+          // The reason already landed on the user's own bubble via turn.status; here
+          // just stop streaming and log it (a half-streamed reply is never persisted).
+          if (e.threadId === openThreadRef.current) {
+            setThreadStreaming('');
+            refreshThreadMessages(e.threadId);
+          }
+          pushLog({ tag: 'CONVERSA', tone: 'red', msg: e.message });
+          break;
+        case 'thread.changed':
+          refreshThreads();
+          if (e.threadId === openThreadRef.current) refreshThreadMessages(e.threadId);
           break;
         case 'inbox.changed':
           // An ask was raised / answered / read / superseded — refresh the list + badge.
@@ -875,20 +1020,40 @@ export default function App() {
     logRef.current?.scrollTo({ top: logRef.current.scrollHeight });
   }, [logs]);
 
+  // Opening a conversation loads its transcript and clears its unread replies (a
+  // `new:` sentinel has no row yet → empty history, nothing to mark). markThreadRead
+  // is idempotent and only emits thread.changed when it actually stamped something,
+  // so this can't ping-pong with the stream handler.
+  useEffect(() => {
+    setThreadStreaming('');
+    if (!openThreadId || openThreadId.startsWith(NEW_THREAD_PREFIX)) {
+      setThreadMessages([]);
+      return;
+    }
+    refreshThreadMessages(openThreadId);
+    alfred.markThreadRead(openThreadId).catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [openThreadId]);
+
   // The real send: optimistic user bubble + fire the turn downstream (coalesce/
   // queue lives past alfred.send). This is what the edit window guards.
   const doSend = (text: string) => {
     const trimmed = text.trim();
     if (!trimmed) return;
+    // The renderer MINTS the correlation id (a plain uuid — the charset main
+    // whitelists) and uses it for BOTH the optimistic bubble and the send, so every
+    // turn.status that follows lands on this exact bubble instead of guessing.
+    const id = crypto.randomUUID();
     const msg: ChatMessage = {
-      id: `u-${Date.now()}`,
+      id,
       sessionId: 'local',
       role: 'user',
       content: trimmed,
       ts: Date.now(),
+      status: 'queued',
     };
     setMessages((m) => [...m, msg]);
-    alfred.send(trimmed).catch((err) => {
+    alfred.send(trimmed, id).catch((err) => {
       const m = err instanceof Error ? err.message : String(err);
       pushLog({ tag: 'ERROR', tone: 'red', msg: m });
       pushAlert(m);
@@ -1527,6 +1692,10 @@ export default function App() {
     }
   };
 
+  // ✉ INBOX badge — the ONE number for both surfaces behind that button: the agents'
+  // unanswered asks PLUS the agent replies in the user's own conversations.
+  const inboxBadge = unreadCount(inbox) + threadsUnread(threads);
+
   // WAKE button face: the toggle says whether it's ARMED; the live status says
   // what it's actually doing right now, so a stuck/failed mic is visible at a glance.
   const wakeFace = ((): { label: string; tone: '' | ' on' | ' danger'; title: string } => {
@@ -1654,11 +1823,11 @@ export default function App() {
           <span className="topbar-spacer" />
           <button
             type="button"
-            className={`topbar-btn no-drag${inboxOpen ? ' on' : ''}${unreadCount(inbox) > 0 ? ' danger' : ''}`}
+            className={`topbar-btn no-drag${inboxOpen ? ' on' : ''}${inboxBadge > 0 ? ' danger' : ''}`}
             onClick={() => setInboxOpen((v) => !v)}
-            title="Inbox — mensagens dos agentes (HITL assíncrono)"
+            title="Inbox — pedidos dos agentes (HITL assíncrono) + as tuas conversas diretas"
           >
-            ✉ INBOX{unreadCount(inbox) > 0 ? ` ${unreadCount(inbox)}` : ''}
+            ✉ INBOX{inboxBadge > 0 ? ` ${inboxBadge}` : ''}
           </button>
           <button
             type="button"
@@ -1809,6 +1978,14 @@ export default function App() {
           onSpeak={alfred.speakText}
           onMarkRead={alfred.markInboxRead}
           onOpenCard={openCardProject}
+          threads={threads}
+          agents={teamAgents}
+          threadMessages={threadMessages}
+          threadStreaming={threadStreaming}
+          openThreadId={openThreadId}
+          onOpenThread={openThread}
+          onNewThread={newThread}
+          onSendToAgent={sendToAgent}
           onClose={() => setInboxOpen(false)}
         />
       )}

@@ -80,6 +80,36 @@ export function reconcileStaleStatus(status: UserMsgStatus): UserMsgStatus | nul
   return isTerminalStatus(status) ? null : 'error';
 }
 
+/**
+ * The ONE PT-PT label per rung (Phase 8, stage 9). Lives next to the ladder on
+ * purpose: the main chat's user bubbles and a thread's user bubbles render the SAME
+ * vocabulary from the SAME function, so a tick can never mean two things in two
+ * panels.
+ *
+ * Deliberately short — a chip is read at a glance, so the failure REASON is never
+ * folded in here; the caller puts `error` in the element's `title` (tooltip) and,
+ * for a thread row, under the bubble. Total: an unknown value (a legacy DB cell)
+ * falls back to the bottom rung rather than rendering blank.
+ */
+export function statusChipPt(status: UserMsgStatus): string {
+  switch (status) {
+    case 'delivered':
+      return 'entregue';
+    case 'read':
+      return 'lida';
+    case 'executing':
+      return 'em execução';
+    case 'done':
+      return '✓ concluída';
+    case 'error':
+      return '⚠ falhou';
+    case 'dropped':
+      return 'descartada (fila cheia)';
+    default:
+      return 'na fila';
+  }
+}
+
 // ── user message validation ───────────────────────────────────────────────────
 
 /** Hard cap on one user message. Past this the send is REFUSED, never truncated. */
@@ -156,6 +186,36 @@ export interface ThreadInfo {
   lastTs: number;
   /** Agent-authored messages the user has not opened yet. */
   unread: number;
+}
+
+// ── the "new conversation" sentinel ───────────────────────────────────────────
+
+/**
+ * A thread row only exists once the FIRST message is sent (getOrCreateThread runs
+ * inside sendUserMessage), so the UI needs a way to have a conversation OPEN before
+ * it has an id. That is this sentinel: `new:<agentId>` is an openThreadId the view
+ * understands as "this agent, empty history, nothing persisted yet". The real id
+ * replaces it from the send's `{ ok, threadId }` ack.
+ */
+export const NEW_THREAD_PREFIX = 'new:';
+
+export function newThreadSentinel(agentId: string): string {
+  return `${NEW_THREAD_PREFIX}${agentId}`;
+}
+
+/**
+ * Which agent an openThreadId talks to — the ONE resolver both surfaces share, so a
+ * sentinel and a persisted thread take the same send path. A sentinel carries the id
+ * inline; a real id is looked up in the list. Unknown / blank / nothing open → ''
+ * (the caller shows its placeholder and never sends to an empty agent). Pure.
+ */
+export function openThreadAgentId(
+  openThreadId: string | null | undefined,
+  threads: readonly { id: string; agentId: string }[],
+): string {
+  if (!openThreadId) return '';
+  if (openThreadId.startsWith(NEW_THREAD_PREFIX)) return openThreadId.slice(NEW_THREAD_PREFIX.length).trim();
+  return threads.find((t) => t.id === openThreadId)?.agentId ?? '';
 }
 
 // ── prompt window ─────────────────────────────────────────────────────────────

@@ -4864,6 +4864,9 @@ import {
   validateUserMessage,
   buildThreadPrompt,
   threadUnreadCount,
+  statusChipPt,
+  newThreadSentinel,
+  openThreadAgentId,
   type UserMsgStatus,
 } from '../src/main/core/thread-pure.ts';
 import { enqueueTurnItem, coalesceTurnItems, type TurnItem } from '../src/main/core/turn-queue-pure.ts';
@@ -5086,4 +5089,41 @@ test('buildThreadPrompt — used with coalesceTurnItems output keeps one prompt 
   // history stays ABOVE the batch (and the batch is never duplicated into it)
   assert.ok(prompt.indexOf('Utilizador: olá') < prompt.indexOf('primeira'));
   assert.equal(prompt.split('primeira').length - 1, 1);
+});
+
+// ── Phase 8 stage 9: the chip vocabulary (ONE label per rung, both surfaces) ──
+
+test('statusChipPt — all seven states in PT', () => {
+  assert.equal(statusChipPt('queued'), 'na fila');
+  assert.equal(statusChipPt('delivered'), 'entregue');
+  assert.equal(statusChipPt('read'), 'lida');
+  assert.equal(statusChipPt('executing'), 'em execução');
+  assert.equal(statusChipPt('done'), '✓ concluída');
+  assert.equal(statusChipPt('error'), '⚠ falhou');
+  assert.equal(statusChipPt('dropped'), 'descartada (fila cheia)');
+  // every rung of the ladder has a label — no state can render blank
+  for (const s of USER_MSG_STATUSES) assert.ok(statusChipPt(s).length > 0, s);
+  // the chip stays ONE GLANCE wide: the error text belongs in the tooltip, never here
+  for (const s of USER_MSG_STATUSES) assert.ok(statusChipPt(s).length <= 24, s);
+  // junk from a legacy DB row never renders blank either (total function)
+  assert.equal(statusChipPt('bogus' as UserMsgStatus), 'na fila');
+});
+
+test('newThreadSentinel / openThreadAgentId — a conversation exists before its thread row does', () => {
+  const threads = [
+    { id: 'TH-1', agentId: 'coder', lastBody: 'olá', lastTs: 1, unread: 0 },
+    { id: 'TH-2', agentId: 'writer', lastBody: '', lastTs: 2, unread: 3 },
+  ];
+  // a real thread resolves through the list
+  assert.equal(openThreadAgentId('TH-1', threads), 'coder');
+  assert.equal(openThreadAgentId('TH-2', threads), 'writer');
+  // a sentinel carries the agent id itself — there is no row to look up yet
+  assert.equal(openThreadAgentId(newThreadSentinel('painter'), threads), 'painter');
+  assert.equal(newThreadSentinel('painter'), 'new:painter');
+  // nothing open / an unknown id → no agent (the view stays on its placeholder)
+  assert.equal(openThreadAgentId(null, threads), '');
+  assert.equal(openThreadAgentId('TH-404', threads), '');
+  assert.equal(openThreadAgentId('', threads), '');
+  // a blank sentinel is not an agent either (never sends to "")
+  assert.equal(openThreadAgentId('new:', threads), '');
 });

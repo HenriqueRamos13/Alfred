@@ -79,14 +79,85 @@ The inbox is **separate** from the T0–T3 tool-approval queue (a **two-tier** d
 - **The inbox** is a **conversation** the agent starts with the user (a decision,
   a proposal, a question). `ask_user` itself is a benign **T1** write.
 
+## Conversas diretas (user→agent)
+The channel is **two-way** (Phase 8, stages 7–9). The sections above are the *agent
+asking the user*; this one is the **user opening a plain conversation with a roster
+agent** — no card, no typed action, no tool call. It is **not** an inbox message: it
+has its **own tables**, and the Inbox overlay simply hosts it under a second tab
+(**PEDIDOS | CONVERSAS**). Source: `core/thread-pure.ts` (pure: ladder, chip labels,
+prompt window, unread, the `new:<agentId>` sentinel) + `core/threads.ts` (persistence
++ the per-thread drain), UI in `renderer/components/AgentThreads.tsx`.
+
+### Tables
+| table | row | notes |
+|---|---|---|
+| `agent_threads` | `id` (`TH-<8hex>`), `agent_id`, `subject`, `created_ts`, `updated_ts` | **v1 = ONE thread per agent** (`getOrCreateThread`); `subject` is reserved for the multi-thread step and stays `''`. `updated_ts` is bumped by every writer and is what the sidebar orders by. |
+| `agent_thread_messages` | `id` (`TM-<8hex>` or the renderer's uuid), `thread_id`, `author`, `body`, `status`, `error`, `created_ts`, `read_ts`, `started_ts`, `done_ts` | `author` is the ONLY authorship signal: `'user'` or the `agentId` (no role column). `read_ts` is **dual-meaning**: on a USER row it is when the AGENT read it; on an AGENT row when the USER opened it — that is what the badge counts. |
+
+A thread row **only exists after the first message**, so the UI opens a new
+conversation on a `new:<agentId>` **sentinel** (empty history, live composer) and
+swaps in the real id from the send's `{ ok, threadId, messageId }` ack.
+
+### The status ladder (one vocabulary, both surfaces)
+`queued → delivered → read → executing → done | error` (+ `dropped`). Forward-only,
+**skips allowed** (Alfred's own chat jumps `queued→executing` — there is no inbox to
+deliver to) and the three terminals **absorb**: nothing can move a settled message
+again. Every write goes through `statusTransition`; an illegal move is **skipped and
+logged**, never thrown and never silently applied. The renderer **mints** the message
+id (`crypto.randomUUID()`, charset-whitelisted at the IPC boundary) and uses it for
+its optimistic bubble, so each `turn.status` event patches exactly one bubble.
+
+The **same** ladder drives `messages.status` in the main chat, so **one** chip
+renderer (`statusChipPt`) serves both: `na fila · entregue · lida · em execução ·
+✓ concluída · ⚠ falhou · descartada (fila cheia)`. The failure **reason** lives in the
+chip's tooltip and under the bubble — never in the chip.
+
+### Governance (unchanged by this feature)
+- The turn is **ATTENDED** (`delegationDepth 0`): the user is right there, so a
+  sensitive tool takes the **normal** approval path (an `approval.request` reaches the
+  HUD) — exactly like answering an inbox ask, never the unattended fail-closed queue.
+- It runs through the **same** `runRosterAgentAttended` as `delegate_to_agent`: the
+  **spawn gate** first (depth · per-parent concurrency · the SPAWN kill-switch), and a
+  refusal is reported as an **errored message** (the user sees `⚠ falhou` + why),
+  never a silent drop.
+- The agent's **grant floor**, its **role blocklist** and **both** budgets (per-agent
+  daily + global) apply verbatim. Sending authorises the **turn**, not the tools.
+- Messages pile up **per thread**: a same-agent send while a turn runs waits (`na
+  fila`) and the batch is **coalesced into ONE prompt**; different agents run in
+  parallel under the shared concurrency ceiling. Over the cap the **oldest** pending
+  message is `dropped` — loudly, on the ladder.
+- History window: the last 20 messages / 8000 chars, whole messages dropped from the
+  oldest end (`buildThreadPrompt`) — never half a message.
+
+### Caveat: `claude-cli` agents
+An agent on the `claude-cli` provider **does not stream**: no `agent.chat.delta`
+arrives, so the thread shows `em execução` and then the whole reply at once. Its
+per-agent grant / inbox gate also stay **advisory** on that path (the MCP bridge runs
+under the top-level context — the same limitation documented above for `ask_user`).
+
+### Boot reconciliation
+A message still mid-ladder when the app died can never be advanced (its runner is
+gone), so boot settles **every** non-terminal row — threads *and* main chat — as
+`error` with `interrompida por reinício da app`. Terminal rows are skipped, which is
+what makes the pass safe to run over the whole table on every start.
+
 ## UI
-- **Global Inbox** — the header **✉ INBOX** button (with an unread badge) opens an
-  overlay: a message list (from-agent, subject, age, unread dot) + a reader.
+- **Global Inbox** — the header **✉ INBOX** button opens the overlay; its badge is
+  the **sum** of unanswered asks + unread agent replies across threads. Two tabs:
+  **PEDIDOS** (the asks) and **CONVERSAS** (the direct threads: a sidebar with the
+  agent, the last message, its age and an unread count, plus a **✎ Nova conversa**
+  roster picker; the reader shows the bubbles, per-message chips, the live reply and
+  the composer — `Enter` envia, `Shift+Enter` nova linha). A roster agent deleted
+  mid-thread → history stays readable, the composer is **disabled** with
+  *agente removido do roster*.
+- **Message list** (PEDIDOS) — from-agent, subject, age, unread dot + a reader.
 - **Reader** — subject/body, provenance (agent · project · card link · kind tag ·
   "⏳ à espera Xm"), a **▶ Ouvir** button (TTS via `speakText`), a voice affordance,
   and the four typed actions (reject reveals its mandatory reason inline).
 - **Project board** — the per-project modal has an **Inbox tab** (the same list
-  filtered to that project); cards with a pending ask show a **⏳ waiting human** badge.
+  filtered to that project, PEDIDOS only — the conversation props are optional, so
+  that reuse shows no tab strip); cards with a pending ask show a **⏳ waiting
+  human** badge.
 
 ## Notes / limits
 - **Non-blocking is the contract.** `ask_user` never blocks the run; the agent

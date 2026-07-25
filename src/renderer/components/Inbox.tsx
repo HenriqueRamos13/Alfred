@@ -1,6 +1,7 @@
 /**
  * Inbox UI (Phase 7, stage 3) — the human side of async HITL. Renderer-safe: the
- * only domain import is inbox-pure (no node/electron). Two exports share ONE view:
+ * only domain imports are the *-pure modules (no node/electron). Two exports share
+ * ONE view:
  *   - InboxView    — list + reader + ▶TTS + mic + typed actions. Reused by the
  *                    global overlay AND the ProjectModal Inbox tab (filtered).
  *   - InboxOverlay — the global overlay wrapper (the `.overlay` idiom).
@@ -9,6 +10,12 @@
  * Responder / Rejeitar. Reject REQUIRES a reason (answerTransition enforces it in
  * code; the UI surfaces the refusal). Answering persists + emits inbox.changed;
  * the agent's automatic resume is Stage 4.
+ *
+ * Phase 8 stage 9 adds a second TAB — PEDIDOS (the asks above) | CONVERSAS (the
+ * user's own direct threads with roster agents, rendered by AgentThreads in the SAME
+ * .ib-list / .ib-read split). The conversation props are ALL optional: without them
+ * (the ProjectModal's Inbox tab) the strip is hidden and the view behaves exactly as
+ * it did before.
  */
 import { useEffect, useRef, useState } from 'react';
 import {
@@ -16,6 +23,9 @@ import {
   type InboxAction,
   type InboxMessage,
 } from '../../main/core/inbox-pure.ts';
+import { openThreadAgentId, type ThreadInfo, type ThreadMessage } from '../../main/core/thread-pure.ts';
+import type { TeamAgentInfo } from '../../main/core/types.ts';
+import { ThreadsPane, ThreadView } from './AgentThreads.tsx';
 
 /** Result shape of alfred.answerInbox. */
 type AnswerResult = { ok: boolean; error?: string };
@@ -27,6 +37,24 @@ export interface InboxViewProps {
   onMarkRead: (id: string) => void;
   /** Open the origin card's project board (the card link). Optional. */
   onOpenCard?: (projectSlug: string) => void;
+  // ── Direct conversations (Phase 8 stage 9). All optional, all supplied together:
+  // the CONVERSAS tab appears only when the three handlers are wired. ──
+  threads?: ThreadInfo[];
+  agents?: TeamAgentInfo[];
+  /** Transcript of the OPEN thread (App fetches it on open / on thread.changed). */
+  threadMessages?: ThreadMessage[];
+  /** Live agent reply for the open thread ('' = idle). */
+  threadStreaming?: string;
+  /** A real thread id, a `new:<agentId>` sentinel, or null. */
+  openThreadId?: string | null;
+  onOpenThread?: (threadId: string) => void;
+  onNewThread?: (agentId: string) => void;
+  onSendToAgent?: (text: string) => void;
+}
+
+/** Total unread agent replies across every thread — the CONVERSAS tab counter. */
+export function threadsUnread(threads: readonly ThreadInfo[] | undefined): number {
+  return (threads ?? []).reduce((n, t) => n + (t.unread || 0), 0);
 }
 
 function initials(id: string): string {
@@ -44,13 +72,37 @@ function ago(ts: number, now: number): string {
   return `${Math.floor(h / 24)} d`;
 }
 
-export function InboxView({ messages, onAnswer, onSpeak, onMarkRead, onOpenCard }: InboxViewProps) {
+export function InboxView({
+  messages,
+  onAnswer,
+  onSpeak,
+  onMarkRead,
+  onOpenCard,
+  threads,
+  agents,
+  threadMessages,
+  threadStreaming,
+  openThreadId,
+  onOpenThread,
+  onNewThread,
+  onSendToAgent,
+}: InboxViewProps) {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [reply, setReply] = useState('');
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
+  const [tab, setTab] = useState<'pedidos' | 'conversas'>('pedidos');
   const replyRef = useRef<HTMLTextAreaElement>(null);
   const now = Date.now();
+
+  // The conversation surface only exists when App wired it (the ProjectModal reuse
+  // passes none of it) — fail-closed: no handlers, no tab strip, no behaviour change.
+  // Bundled into one object so the branch below narrows without non-null assertions.
+  const chat =
+    onOpenThread && onNewThread && onSendToAgent ? { onOpenThread, onNewThread, onSendToAgent } : null;
+  const openThread = (threads ?? []).find((t) => t.id === openThreadId) ?? null;
+  const openAgentId = openThreadAgentId(openThreadId, threads ?? []);
+  const openAgent = (agents ?? []).find((a) => a.id === openAgentId);
 
   // Default-select the first message; keep a valid selection as the list changes.
   const selected = messages.find((m) => m.id === selectedId) ?? messages[0] ?? null;
@@ -74,7 +126,57 @@ export function InboxView({ messages, onAnswer, onSpeak, onMarkRead, onOpenCard 
     else setReply('');
   };
 
-  return (
+  // PEDIDOS | CONVERSAS. Rendered only with the conversation props wired, and reused
+  // by both branches below (one strip, one place to change a label).
+  const tabsUnread = threadsUnread(threads);
+  const tabs = chat && (
+    <div className="pm-tabs ib-tabs">
+      <button
+        type="button"
+        className={`no-drag${tab === 'pedidos' ? ' on' : ''}`}
+        onClick={() => setTab('pedidos')}
+        title="Perguntas que os agentes te fizeram (HITL assíncrono)"
+      >
+        Pedidos
+      </button>
+      <button
+        type="button"
+        className={`no-drag${tab === 'conversas' ? ' on' : ''}`}
+        onClick={() => setTab('conversas')}
+        title="As tuas conversas diretas com os agentes do roster"
+      >
+        Conversas{tabsUnread > 0 ? ` ${tabsUnread}` : ''}
+      </button>
+    </div>
+  );
+
+  if (chat && tab === 'conversas') {
+    return (
+      <div className="ib-wrap">
+        {tabs}
+        <div className="ib-view">
+          <ThreadsPane
+            threads={threads ?? []}
+            agents={agents ?? []}
+            openThreadId={openThreadId ?? null}
+            onOpenThread={chat.onOpenThread}
+            onNewThread={chat.onNewThread}
+          />
+          <ThreadView
+            thread={openThread}
+            agentName={openAgent?.name?.trim() || openAgentId}
+            // Resolved, never guessed: an id with no roster row = the agent was deleted.
+            agentGone={!!openAgentId && !openAgent}
+            messages={threadMessages ?? []}
+            streaming={threadStreaming ?? ''}
+            onSend={chat.onSendToAgent}
+          />
+        </div>
+      </div>
+    );
+  }
+
+  const asks = (
     <div className="ib-view">
       <div className="ib-list">
         {messages.length === 0 ? (
@@ -177,6 +279,15 @@ export function InboxView({ messages, onAnswer, onSpeak, onMarkRead, onOpenCard 
       </div>
     </div>
   );
+
+  return chat ? (
+    <div className="ib-wrap">
+      {tabs}
+      {asks}
+    </div>
+  ) : (
+    asks
+  );
 }
 
 export interface InboxOverlayProps extends InboxViewProps {
@@ -185,7 +296,8 @@ export interface InboxOverlayProps extends InboxViewProps {
 
 /** The global Inbox as a full overlay (opened from the header INBOX button). */
 export function InboxOverlay({ onClose, messages, ...rest }: InboxOverlayProps) {
-  const unread = unreadCount(messages);
+  // Both surfaces behind the button, so the header count matches the header badge.
+  const unread = unreadCount(messages) + threadsUnread(rest.threads);
   return (
     <div className="overlay" onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
       <div className="pm-panel ib-panel no-drag" role="dialog" aria-label="Inbox">

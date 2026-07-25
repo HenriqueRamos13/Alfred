@@ -1582,6 +1582,67 @@ body.low-cpu .scanline { display: none; }
 .ib-answered-h { font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--grn); }
 .ib-answered-b { margin-top: 8px; font-size: 14px; color: var(--text); white-space: pre-wrap; }
 
+/* ── Direct user↔agent conversations (Phase 8 stage 9) — .th-* + the tab strip ── */
+.ib-wrap { display: flex; flex-direction: column; height: 100%; min-height: 420px; }
+.ib-wrap .ib-view { flex: 1; min-height: 0; }
+.ib-tabs { flex: none; }
+
+/* threads pane (rides the .ib-list chrome) */
+/* opaque twin of --card: the picker is STICKY, so rows must not bleed through it */
+.th-new { position: sticky; top: 0; z-index: 1; padding: 9px 10px; background: #070d16;
+  border-bottom: 1px solid color-mix(in oklab, var(--acc) 14%, transparent); }
+.th-pick { width: 100%; background: rgba(0,0,0,.35); color: var(--acc); cursor: pointer;
+  border: 1px solid color-mix(in oklab, var(--acc) 30%, transparent); border-radius: 7px; padding: 6px 8px;
+  font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.04em; }
+.th-pick:hover { border-color: var(--acc); box-shadow: 0 0 10px color-mix(in oklab, var(--acc) 18%, transparent); }
+.th-badge { position: absolute; top: 12px; right: 12px; min-width: 16px; text-align: center; color: #02141a;
+  background: var(--acc); border-radius: 9px; padding: 1px 5px; font-family: var(--font-mono); font-size: 9px;
+  box-shadow: 0 0 8px color-mix(in oklab, var(--acc) 45%, transparent); }
+.th-row .ib-prev { color: var(--dim); }
+.th-row.unread .ib-prev { color: var(--text); }
+
+/* transcript */
+.th-read { padding: 0; overflow: hidden; /* .th-msgs is the only scroller */ }
+.th-head { display: flex; align-items: center; gap: 10px; padding: 12px 16px;
+  border-bottom: 1px solid color-mix(in oklab, var(--acc) 14%, transparent); }
+.th-head h3 { margin: 0; font-size: 15px; color: var(--text); }
+.th-head-meta { margin-left: auto; font-family: var(--font-mono); font-size: 9.5px; letter-spacing: 0.12em;
+  text-transform: uppercase; color: var(--dim); }
+.th-msgs { flex: 1; min-height: 0; overflow: auto; padding: 14px 16px; display: flex; flex-direction: column; gap: 10px; }
+.th-empty { padding: 30px 0; }
+.th-msg { display: flex; flex-direction: column; align-items: flex-start; gap: 3px; }
+.th-msg.user { align-items: flex-end; }
+.th-bubble { max-width: 84%; border-radius: 3px; padding: 8px 10px; font-size: 13px; color: var(--text);
+  white-space: pre-wrap; word-break: break-word;
+  border: 1px solid color-mix(in oklab, var(--acc) 32%, transparent); background: color-mix(in oklab, var(--acc) 6%, transparent); }
+.th-msg.user .th-bubble { border-color: color-mix(in oklab, var(--amb) 40%, transparent);
+  background: color-mix(in oklab, var(--amb) 7%, transparent); }
+.th-cursor { display: inline-block; width: 7px; height: 12px; margin-left: 3px; vertical-align: -1px;
+  background: var(--acc); animation: blinkdot 1s steps(2, start) infinite; }
+.th-err { font-family: var(--font-mono); font-size: 10.5px; color: var(--red); max-width: 84%; }
+
+/* the ONE chip vocabulary (statusChipPt) — shared with the main chat's user bubbles */
+.th-chip { font-family: var(--font-mono); font-size: 9px; letter-spacing: 0.08em; color: var(--dim);
+  border: 1px solid color-mix(in oklab, var(--acc) 18%, transparent); border-radius: 5px; padding: 1px 6px; }
+.th-chip.s-executing { color: var(--acc); border-color: color-mix(in oklab, var(--acc) 45%, transparent);
+  animation: breathe 1.4s ease-in-out infinite; }
+.th-chip.s-done { color: var(--grn); border-color: color-mix(in oklab, var(--grn) 35%, transparent); }
+.th-chip.s-error { color: var(--red); border-color: color-mix(in oklab, var(--red) 45%, transparent); }
+.th-chip.s-dropped { color: var(--dim); text-decoration: line-through; }
+
+/* composer */
+.th-composer { flex: none; display: flex; align-items: flex-end; gap: 8px; flex-wrap: wrap; padding: 10px 16px 12px;
+  border-top: 1px solid color-mix(in oklab, var(--acc) 18%, transparent); }
+.th-gone { flex: 1 0 100%; font-family: var(--font-mono); font-size: 10.5px; color: var(--amb); }
+.th-composer textarea { flex: 1; min-width: 160px; min-height: 56px; resize: vertical; background: rgba(0,0,0,.3);
+  color: var(--text); border: 1px solid color-mix(in oklab, var(--acc) 28%, transparent); border-radius: 8px;
+  padding: 9px 10px; font-family: var(--font-head); font-size: 13.5px; }
+.th-composer textarea:disabled { opacity: 0.5; }
+.th-send { font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.1em; cursor: pointer; border-radius: 7px;
+  padding: 9px 15px; background: transparent; color: var(--acc); border: 1px solid var(--acc); }
+.th-send:hover:enabled { background: var(--acc); color: #02141a; }
+.th-send:disabled { opacity: 0.45; cursor: default; }
+
 /* ── Agent-creation form (Phase 7 stage 5) — .overlay + af-* ──────────────── */
 .af-panel {
   position: relative; width: min(720px, 94vw); max-height: 88vh;
