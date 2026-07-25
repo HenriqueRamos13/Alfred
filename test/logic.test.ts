@@ -1712,6 +1712,7 @@ import {
   composeStudyNote,
   addTopicToIndex,
   topicsFromKnowledge,
+  noteMeta,
   agentBudgetDecision,
   blockedToolsForRole,
   restrictGrantForRole,
@@ -3495,6 +3496,57 @@ test('activityLabelPt — the four PT labels', () => {
   assert.equal(activityLabelPt('working'), 'a trabalhar');
   assert.equal(activityLabelPt('studying'), 'a estudar');
   assert.equal(activityLabelPt('waiting-approval'), 'aguarda aprovação');
+});
+
+// ── Phase 8 stage 5: knowledge-note projection (noteMeta) ────────────────────
+
+test("noteMeta — title from first '# ' heading; slug fallback; excerpt strips the heading and clips at ~280 chars", () => {
+  // the h1 composeStudyNote writes is the title; the slug drops the .md
+  const m = noteMeta('rust-async.md', '# Rust async\n\nTokio spawns tasks on a work-stealing scheduler.\n');
+  assert.equal(m.slug, 'rust-async');
+  assert.equal(m.title, 'Rust async');
+  assert.equal(m.excerpt, 'Tokio spawns tasks on a work-stealing scheduler.');
+
+  // no h1 (or a blank one) → the file name, which is already a slug
+  assert.equal(noteMeta('esm-notes.md', 'plain prose, no heading').title, 'esm-notes');
+  assert.equal(noteMeta('esm-notes.md', '#    \n\nbody').title, 'esm-notes');
+  assert.equal(noteMeta('esm-notes.md', '').title, 'esm-notes');
+  assert.equal(noteMeta('esm-notes.md', '').excerpt, '');
+  // a body with no heading is ALL excerpt (nothing to strip)
+  assert.equal(noteMeta('esm-notes.md', 'plain prose, no heading').excerpt, 'plain prose, no heading');
+  // a name arriving without the extension still slugs to itself
+  assert.equal(noteMeta('wasm', '# WASM').slug, 'wasm');
+  // heading-only note → empty excerpt (never the title repeated)
+  assert.equal(noteMeta('wasm.md', '# WASM\n').excerpt, '');
+
+  // long body → clipped with an ellipsis, at most 280 chars + the ellipsis
+  const long = `# Topic\n\n${'lorem ipsum '.repeat(60)}`;
+  const clipped = noteMeta('topic.md', long).excerpt;
+  assert.equal(clipped.endsWith('…'), true);
+  assert.equal(clipped.length <= 281, true);
+  assert.equal(clipped.length > 200, true); // clipped near the cap, not word-trimmed to nothing
+  assert.equal(clipped.includes('\n'), false);
+  // a body that fits is NOT clipped
+  const short = noteMeta('topic.md', '# Topic\n\nshort body').excerpt;
+  assert.equal(short, 'short body');
+  assert.equal(short.endsWith('…'), false);
+});
+
+test("noteMeta — excerpt collapses whitespace and ignores '## Update' section markers in the clip", () => {
+  // every run of whitespace (newlines, tabs, blank lines) becomes one space
+  assert.equal(
+    noteMeta('n.md', '# T\n\n\nfirst   line\n\tsecond\tline\n\n').excerpt,
+    'first line second line',
+  );
+  // composeStudyNote appends `## Update <day>` sections — structural markers, not prose
+  const restudied = '# Rust async\n\nfirst findings\n\n## Update 2026-07-25\n\nsecond findings\n';
+  const m = noteMeta('rust-async.md', restudied);
+  assert.equal(m.title, 'Rust async');
+  assert.equal(m.excerpt, 'first findings second findings');
+  assert.equal(m.excerpt.includes('#'), false);
+  assert.equal(m.excerpt.includes('Update'), false);
+  // a multi-word / padded h1 collapses too
+  assert.equal(noteMeta('n.md', '#   Rust   async  \n\nbody').title, 'Rust async');
 });
 
 // ── Phase 5 stage 4: per-agent daily budget + scheduled study ────────────────

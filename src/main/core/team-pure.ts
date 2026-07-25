@@ -660,6 +660,62 @@ export function topicsFromKnowledge(files: readonly KnowledgeFileMeta[]): string
   return out;
 }
 
+// ── knowledge-note projection (Phase 8, stage 5): the agent-detail note list ──
+
+/** Longest excerpt the note list renders before the ellipsis (~2 lines of card text). */
+const EXCERPT_MAX = 280;
+
+/** Display projection of ONE `knowledge/<slug>.md` note: its slug, h1 title and prose excerpt. */
+export interface NoteMeta {
+  /** File name without `.md` — the id readKnowledgeNote takes back. */
+  slug: string;
+  /** First `# ` heading of the note, or the slug when it has none. */
+  title: string;
+  /** Whitespace-collapsed prose after the heading, clipped to EXCERPT_MAX chars. */
+  excerpt: string;
+}
+
+/** Clip on a word boundary when one is close enough to the cap; hard-cut otherwise. */
+function clipExcerpt(text: string): string {
+  if (text.length <= EXCERPT_MAX) return text;
+  const cut = text.slice(0, EXCERPT_MAX);
+  const space = cut.lastIndexOf(' ');
+  return `${(space > EXCERPT_MAX * 0.6 ? cut.slice(0, space) : cut).trimEnd()}…`;
+}
+
+/**
+ * Project one knowledge note for the agent-detail list WITHOUT shipping the whole
+ * file to the renderer (the viewer fetches the body on demand via readKnowledgeNote).
+ *
+ * The title is the first `# ` heading — composeStudyNote writes it and only ever
+ * APPENDS `## Update <day>` sections below, so it is a stable label; a note with no
+ * (or a blank) h1 falls back to its slug, exactly like topicsFromKnowledge. The
+ * excerpt is the prose AFTER that heading with every markdown heading line dropped
+ * (`## Update` markers are structure, not content) and all whitespace collapsed, so
+ * a re-studied note previews its findings instead of its section scaffolding. Pure —
+ * the readdir/stat/readFile lives in core/team.ts.
+ */
+export function noteMeta(fileName: string, body: string): NoteMeta {
+  const slug = fileName.replace(/\.md$/, '');
+  const lines = body.split('\n');
+  let title = '';
+  let bodyStart = 0;
+  for (let i = 0; i < lines.length; i++) {
+    const m = lines[i].match(/^#\s+(.+)$/);
+    if (!m) continue;
+    title = m[1].trim().replace(/\s+/g, ' ');
+    bodyStart = i + 1;
+    break;
+  }
+  const prose = lines
+    .slice(bodyStart)
+    .filter((l) => !/^\s{0,3}#{1,6}\s/.test(l))
+    .join(' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return { slug, title: title || slug, excerpt: clipExcerpt(prose) };
+}
+
 /**
  * Shared "who-knows-what" index (agents/index.md): one line per agent, name → specialty.
  * `topicsById` (id → studied topics, e.g. from topicsFromKnowledge) appends the SAME

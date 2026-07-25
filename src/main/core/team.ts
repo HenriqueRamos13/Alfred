@@ -13,12 +13,21 @@
  * a deleted agent leaves no orphan entry regardless.
  */
 
-import { mkdir, writeFile, readFile, readdir } from 'node:fs/promises';
+import { mkdir, writeFile, readFile, readdir, stat } from 'node:fs/promises';
 import { join } from 'node:path';
-import { agentIdFromName, buildAgentsIndex, buildAgentContext, parseGrant, composeStudyNote, composeRoleNote, studyNoteSlug, addTopicToIndex, topicsFromKnowledge, validateAgentPatch, wouldCycle, orgDepth, DELEGATION_ROLES, DEFAULT_DELEGATION_ROLE, DEFAULT_MAX_SPAWN_DEPTH, type AgentNote, type AgentSpec, type AgentUpdateInput, type DelegationRole, type KnowledgeFileMeta, type TeamAgent } from './team-pure.ts';
+import { agentIdFromName, buildAgentsIndex, buildAgentContext, parseGrant, composeStudyNote, composeRoleNote, studyNoteSlug, addTopicToIndex, topicsFromKnowledge, noteMeta, validateAgentPatch, wouldCycle, orgDepth, DELEGATION_ROLES, DEFAULT_DELEGATION_ROLE, DEFAULT_MAX_SPAWN_DEPTH, type AgentNote, type AgentSpec, type AgentUpdateInput, type DelegationRole, type KnowledgeFileMeta, type TeamAgent } from './team-pure.ts';
 import { dayKey } from './jobs-pure.ts';
+import type { AgentKnowledgeNote } from './types.ts';
 
 type DB = import('better-sqlite3').Database;
+
+/**
+ * The ONLY shape an id/slug may have before it becomes a path segment under
+ * `<workspace>/agents/…` (agentIdFromName + studyNoteSlug produce exactly this).
+ * Every fs entry point below asserts it, so no `..`, `/` or absolute path can
+ * traverse out of the agent's own folder — including the IPC-reachable readers.
+ */
+const AGENT_SLUG = /^[a-z0-9-]+$/;
 
 interface Row {
   id: string;
@@ -186,7 +195,7 @@ export async function updateAgent(
   try {
     if ((patch.name !== undefined && patch.name !== before.name) || (patch.role !== undefined && patch.role !== before.role)) {
       // Defence-in-depth: the id is a DB slug, but it becomes a path segment here.
-      if (/^[a-z0-9-]+$/.test(id)) {
+      if (AGENT_SLUG.test(id)) {
         const file = join(workspace, 'agents', id, 'knowledge', 'role.md');
         const current = await readFile(file, 'utf8').catch(() => null);
         if (current != null && ROLE_NOTE_HEADER.test(current.split('\n', 1)[0].trim())) {
@@ -271,7 +280,7 @@ export async function saveStudyNote(
   // Defence-in-depth: agentId goes straight into the write path. Callers pass a
   // DB-row id (a slug from agentIdFromName), but assert the confined charset here
   // so a mis-wired caller (e.g. a future scheduled-study path) can never traverse.
-  if (!/^[a-z0-9-]+$/.test(agentId)) throw new Error(`invalid agentId "${agentId}" (must be a slug)`);
+  if (!AGENT_SLUG.test(agentId)) throw new Error(`invalid agentId "${agentId}" (must be a slug)`);
   const slug = studyNoteSlug(topic);
   const dir = join(workspace, 'agents', agentId, 'knowledge');
   await mkdir(dir, { recursive: true });
@@ -279,6 +288,52 @@ export async function saveStudyNote(
   const existing = await readFile(file, 'utf8').catch(() => null);
   await writeFile(file, composeStudyNote(existing, topic, findings, dayKey(now.getTime())), 'utf8');
   return { slug, file, mode: existing ? 'append' : 'create', relativePath: `agents/${agentId}/knowledge/${slug}.md` };
+}
+
+/**
+ * List an agent's PRIVATE knowledge notes for the agent-detail projection: metadata
+ * (workspace-relative path, mtime, size) + the pure noteMeta title/excerpt, newest
+ * first. Same isolation boundary as loadAgentContext — only `agents/<id>/knowledge/`.
+ *
+ * Defence in depth: this is IPC-reachable (the renderer picks the agent id), so the
+ * id is asserted to be a slug BEFORE it becomes a path segment; anything else yields
+ * []. A missing folder / unreadable note degrades to fewer notes, never throws.
+ */
+export async function listKnowledgeNotes(workspace: string, agentId: string): Promise<AgentKnowledgeNote[]> {
+  if (!AGENT_SLUG.test(agentId)) return [];
+  const dir = join(workspace, 'agents', agentId, 'knowledge');
+  let names: string[] = [];
+  try {
+    names = (await readdir(dir)).filter((f) => f.endsWith('.md'));
+  } catch {
+    return []; /* no folder yet — no notes */
+  }
+  const notes: AgentKnowledgeNote[] = [];
+  for (const f of names) {
+    const st = await stat(join(dir, f)).catch(() => null);
+    if (!st || !st.isFile()) continue; // a `*.md` DIRECTORY is not a note
+    const body = await readFile(join(dir, f), 'utf8').catch(() => '');
+    const meta = noteMeta(f, body);
+    notes.push({
+      ...meta,
+      relativePath: `agents/${agentId}/knowledge/${f}`,
+      mtime: st.mtimeMs,
+      size: st.size,
+    });
+  }
+  // Newest first, slug as the tie-break so equal mtimes don't depend on readdir order.
+  return notes.sort((a, b) => b.mtime - a.mtime || a.slug.localeCompare(b.slug));
+}
+
+/**
+ * Read ONE knowledge note's markdown (the modal's note viewer). Both ids are asserted
+ * to be slugs — agentId AND slug are renderer-supplied over IPC, and each becomes a
+ * path segment, so `..`, `/` or an absolute path can never reach the filesystem. An
+ * unknown agent / note (or an unreadable file) → null, never a throw.
+ */
+export async function readKnowledgeNote(workspace: string, agentId: string, slug: string): Promise<string | null> {
+  if (!AGENT_SLUG.test(agentId) || !AGENT_SLUG.test(slug)) return null;
+  return await readFile(join(workspace, 'agents', agentId, 'knowledge', `${slug}.md`), 'utf8').catch(() => null);
 }
 
 /**

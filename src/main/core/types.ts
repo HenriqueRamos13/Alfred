@@ -12,6 +12,9 @@
 // agent.activity event + TeamAgentInfo carry a resolved live activity.
 import type { AgentFormSpec } from './agent-augment-pure.ts';
 import type { AgentActivity } from './agent-activity-pure.ts';
+// TeamAgentDetail carries the stored privilege role (team-pure owns the union; the
+// type-only import keeps that module's node-touching value imports out of here).
+import type { DelegationRole } from './team-pure.ts';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // JSON Schema (Anthropic tools format — a pragmatic subset)
@@ -372,6 +375,64 @@ export interface TeamAgentInfo {
    * nothing is running, and 'idle' is the truthful answer.
    */
   activity: AgentActivity;
+}
+
+/**
+ * One of an agent's PRIVATE knowledge notes (`agents/<id>/knowledge/<slug>.md`),
+ * projected for the agent-detail modal (Phase 8 stage 5). Metadata + a clipped
+ * excerpt only — the full markdown is fetched on demand (readAgentNote), so opening
+ * an agent never ships its whole folder over IPC.
+ */
+export interface AgentKnowledgeNote {
+  /** File name without `.md` — the id readAgentNote takes back. */
+  slug: string;
+  /** First `# ` heading of the note, or the slug when it has none (noteMeta). */
+  title: string;
+  /** Workspace-relative path, for display only: `agents/<id>/knowledge/<slug>.md`. */
+  relativePath: string;
+  /** Last-modified epoch ms (the note list sorts newest first). */
+  mtime: number;
+  /** File size in bytes. */
+  size: number;
+  /** Whitespace-collapsed prose preview (~280 chars, heading markers dropped). */
+  excerpt: string;
+}
+
+/**
+ * FULL projection of one roster agent for the agent-detail modal (Phase 8 stage 5) —
+ * the richer sibling of TeamAgentInfo (which stays the lean list projection). Assembled
+ * main-side from team.ts (the row + the knowledge folder), budget.ts (tokens today),
+ * the shared index (studied topics) and the live activity registry; the renderer never
+ * touches the DB or disk.
+ */
+export interface TeamAgentDetail {
+  id: string;
+  name: string;
+  /** Free-text specialty / system prompt as stored (the UI splits it with splitRole). */
+  role: string;
+  provider: string;
+  model: string;
+  /** Capability allowlist as stored (the role floor still applies at call time). */
+  grant: Capability[];
+  /** Privilege role: leaf (no spawn) | orchestrator (may spawn). */
+  delegationRole: DelegationRole;
+  /** Per-agent daily token cap, or undefined for unlimited. */
+  dailyTokenBudget?: number;
+  /** Manager this agent reports to; null = top of the org. */
+  parentId: string | null;
+  /** Raw inbox-power flag as stored (resolve the effective power via canMessageUserResolved). */
+  canMessageUser: boolean;
+  createdTs: number;
+  /** Last edit, or undefined when never edited. */
+  updatedTs?: number;
+  /** Tokens this agent has spent today (day-keyed, summed across models). */
+  tokensToday: number;
+  /** Studied topics parsed from this agent's line in the shared index. */
+  topics: string[];
+  /** What the agent is doing right now (ephemeral registry — 'idle' after a restart). */
+  activity: AgentActivity;
+  /** Its private knowledge notes, newest first (metadata + excerpt only). */
+  notes: AgentKnowledgeNote[];
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

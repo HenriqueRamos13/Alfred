@@ -21,6 +21,7 @@ import type {
   Job,
   JobApproval,
   StreamEvent,
+  TeamAgentDetail,
   TeamAgentInfo,
   VoiceConfig,
   WakeStatus,
@@ -160,6 +161,10 @@ export interface Orchestrator {
   // ── Team roster (Phase 5) — data-only for the TEAM card. ──
   /** Roster projection for the TEAM card (role/model, tokens today, studied topics). */
   listTeamAgents(): TeamAgentInfo[] | Promise<TeamAgentInfo[]>;
+  /** Full detail of one roster agent (row + tokens/topics/activity + knowledge notes); null when unknown. */
+  getTeamAgentDetail(id: string): TeamAgentDetail | null | Promise<TeamAgentDetail | null>;
+  /** Markdown of one of an agent's knowledge notes (the modal's viewer); null when absent. */
+  readAgentNote(agentId: string, slug: string): string | null | Promise<string | null>;
   /** Delete a roster agent (row + index entry). Resolves to whether a row was removed. */
   deleteTeamAgent(id: string): Promise<boolean>;
   /** Reparent an agent in the org hierarchy (parentId null = top). Refuses cycles / over-depth explicitly. */
@@ -543,6 +548,30 @@ export function registerIpc(core: Orchestrator, emit: (e: StreamEvent) => void):
   // ── Team roster — data-only. Read the roster projection; delete an agent.
   // create is NOT exposed (agents are made by the `team` command/tool). ──
   ipcMain.handle('alfred:listTeamAgents', guard('list team agents', () => core.listTeamAgents(), [] as TeamAgentInfo[]));
+  // Full detail of one agent (the agent-detail modal). Trust boundary: a non-empty
+  // string id; core returns null for an unknown/deleted agent and the slug charset is
+  // re-asserted before any of it reaches the filesystem (listKnowledgeNotes).
+  ipcMain.handle('alfred:getTeamAgentDetail', async (_e, id: unknown): Promise<TeamAgentDetail | null> => {
+    if (typeof id !== 'string' || !id) return null;
+    try {
+      return (await core.getTeamAgentDetail(id)) ?? null;
+    } catch (err) {
+      fail('get team agent detail', err);
+      return null;
+    }
+  });
+  // One knowledge note's markdown (the modal's note viewer). Both ids must be non-empty
+  // strings here; core enforces the slug charset (defence in depth on a path segment).
+  ipcMain.handle('alfred:readAgentNote', async (_e, agentId: unknown, slug: unknown): Promise<string | null> => {
+    if (typeof agentId !== 'string' || !agentId) return null;
+    if (typeof slug !== 'string' || !slug) return null;
+    try {
+      return (await core.readAgentNote(agentId, slug)) ?? null;
+    } catch (err) {
+      fail('read agent note', err);
+      return null;
+    }
+  });
   ipcMain.handle('alfred:deleteTeamAgent', async (_e, id: unknown): Promise<boolean> => {
     if (typeof id !== 'string' || !id) return false;
     try {

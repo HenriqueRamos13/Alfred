@@ -32,6 +32,7 @@ import type {
   JobApproval,
   ProjectRecord,
   StreamEvent,
+  TeamAgentDetail,
   TeamAgentInfo,
   Tool,
   ToolCtx,
@@ -118,7 +119,7 @@ import {
   updateJob as updateJobDb,
   deleteJob as deleteJobDb,
 } from './jobs.ts';
-import { listAgents, getAgent, deleteAgent, setAgentManager, createAgent, updateAgent } from './team.ts';
+import { listAgents, getAgent, deleteAgent, setAgentManager, createAgent, updateAgent, listKnowledgeNotes, readKnowledgeNote } from './team.ts';
 import type { TeamAgent } from './team-pure.ts';
 import { validateAgentSpec } from './team-pure.ts';
 import { pickCuratorSpec } from './curator.ts';
@@ -845,8 +846,14 @@ export interface OrchestratorHandle {
   // ── Team roster (Phase 5, stage 5) — data-only for the TEAM card. ──
   /** Roster projection for the TEAM card: role/model + tokens today + studied topics (from the shared index). */
   listTeamAgents(): Promise<TeamAgentInfo[]>;
-  /** One roster agent (full record), or undefined. */
-  getTeamAgent(id: string): TeamAgent | undefined;
+  /**
+   * FULL detail of one roster agent for the agent-detail modal (Phase 8 stage 5):
+   * the stored row + tokens today + studied topics + live activity + its knowledge
+   * notes (metadata/excerpts only). null when the id is unknown (deleted while open).
+   */
+  getTeamAgentDetail(id: string): Promise<TeamAgentDetail | null>;
+  /** Markdown of ONE of an agent's knowledge notes (the modal's viewer); null when absent. */
+  readAgentNote(agentId: string, slug: string): Promise<string | null>;
   /** Delete a roster agent (row + index entry; folder left on disk). false if unknown. */
   deleteTeamAgent(id: string): Promise<boolean>;
   /**
@@ -1868,8 +1875,34 @@ export function createOrchestrator(opts: CreateOrchestratorOpts): OrchestratorHa
         activity: getActivity(a.id),
       }));
     },
-    getTeamAgent(id) {
-      return getAgent(db, id);
+    async getTeamAgentDetail(id) {
+      const a = getAgent(db, id);
+      if (!a) return null; // deleted while the modal was open → the UI shows an empty state
+      // Same sources as listTeamAgents (identical budget call + index parse), plus the
+      // fields only the detail view needs: role text, grant, timestamps and the notes.
+      const index = await readFile(join(config.workspace, 'agents', 'index.md'), 'utf8').catch(() => '');
+      return {
+        id: a.id,
+        name: a.name,
+        role: a.role,
+        provider: a.provider,
+        model: a.model,
+        grant: a.grant,
+        delegationRole: a.delegationRole,
+        dailyTokenBudget: a.dailyTokenBudget,
+        parentId: a.parentId ?? null,
+        canMessageUser: a.canMessageUser ?? false,
+        createdTs: a.createdTs,
+        updatedTs: a.updatedTs,
+        tokensToday: agentTokensToday(db, a.id, dayKey()),
+        topics: parseTopicsFromIndex(index, a.id),
+        activity: getActivity(a.id),
+        notes: await listKnowledgeNotes(config.workspace, a.id),
+      };
+    },
+    readAgentNote(agentId, slug) {
+      // Both ids are renderer-supplied; readKnowledgeNote asserts the slug charset.
+      return readKnowledgeNote(config.workspace, agentId, slug);
     },
     async deleteTeamAgent(id) {
       const ok = await deleteAgent(db, config.workspace, id);

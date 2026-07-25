@@ -15,6 +15,7 @@ import type {
   DisplayInfo,
   Job,
   JobApproval,
+  TeamAgentDetail,
   TeamAgentInfo,
   VoiceConfig,
   WakeStatus,
@@ -206,6 +207,12 @@ const api = {
   deleteJob: (id: string): Promise<boolean> => ipcRenderer.invoke('alfred:deleteJob', id),
   /** Team roster projection for the TEAM card (role/model, tokens today, studied topics). */
   listTeamAgents: (): Promise<TeamAgentInfo[]> => ipcRenderer.invoke('alfred:listTeamAgents'),
+  /** Full detail of one roster agent (row + tokens/topics/activity + knowledge notes); null when unknown. */
+  getTeamAgentDetail: (id: string): Promise<TeamAgentDetail | null> =>
+    ipcRenderer.invoke('alfred:getTeamAgentDetail', id),
+  /** Markdown of one of an agent's knowledge notes (the detail modal's viewer); null when absent. */
+  readAgentNote: (agentId: string, slug: string): Promise<string | null> =>
+    ipcRenderer.invoke('alfred:readAgentNote', agentId, slug),
   /** Delete a roster agent (row + index entry). Resolves true when a row was removed. */
   deleteTeamAgent: (id: string): Promise<boolean> => ipcRenderer.invoke('alfred:deleteTeamAgent', id),
   /** Reparent an agent in the org hierarchy (parentId null = top). Refuses cycles / over-depth. */
