@@ -163,7 +163,7 @@ from `process.env`, never logged, and masked in the audit. Defaults live in code
 |----------|---------|--------------|
 | `ALFRED_PROVIDER` | `anthropic` | Default active brain: `anthropic` \| `openai` \| `deepseek`. |
 | `ANTHROPIC_API_KEY` | — | Enables the Anthropic brain (a key containing `xxxx` is a placeholder = disabled). |
-| `ANTHROPIC_MODEL` | `claude-sonnet-5` | Anthropic model id. |
+| `ANTHROPIC_MODEL` | `claude-opus-5` | Anthropic model id. |
 | `OPENAI_API_KEY` | — | Enables the OpenAI/ChatGPT brain. |
 | `OPENAI_MODEL` | `gpt-4o` | OpenAI model id. |
 | `DEEPSEEK_API_KEY` | — | Enables the DeepSeek brain. |

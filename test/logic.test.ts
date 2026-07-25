@@ -1755,6 +1755,21 @@ test('catalog — every provider default is a real model in its own list', () =>
   for (const p of PROVIDER_IDS) assert.ok(findModel(p, DEFAULT_MODEL[p]), `${p} default missing`);
 });
 
+test('catalog — Claude Opus 5 is in the Anthropic list and is the new Anthropic default', () => {
+  assert.equal(findModel('claude-api', 'claude-opus-5')?.name, 'Opus 5');
+  // the Anthropic list is SHARED, so claude-cli sees it too
+  assert.equal(findModel('claude-cli', 'claude-opus-5')?.name, 'Opus 5');
+  // list order = dropdown order: right after Fable 5
+  assert.deepEqual(listModels('claude-api').slice(0, 2).map((m) => m.id), ['claude-fable-5', 'claude-opus-5']);
+  assert.deepEqual(catalogPrices()['claude-opus-5'], { inputPerM: 5, outputPerM: 25 });
+  assert.equal(modelSupportsVision('claude-api', 'claude-opus-5'), true);
+  // $5/M in + $25/M out
+  assert.equal(costOf('claude-opus-5', { inputTokens: 1_000_000, outputTokens: 1_000_000 }), 30);
+  // both Claude providers default to it
+  assert.equal(DEFAULT_MODEL['claude-api'], 'claude-opus-5');
+  assert.equal(DEFAULT_MODEL['claude-cli'], 'claude-opus-5');
+});
+
 test('catalogPrices — flat table prices any catalog model (feeds the cost estimator)', () => {
   const prices = catalogPrices();
   assert.deepEqual(prices['claude-sonnet-5'], { inputPerM: 2, outputPerM: 10 });
@@ -1826,8 +1841,8 @@ test('agentClaudeModel — main Claude model for delegation, else the default', 
   assert.equal(agentClaudeModel(JSON.stringify({ main: { provider: 'claude-cli', model: 'claude-opus-4-8' } })), 'claude-opus-4-8');
   assert.equal(agentClaudeModel(JSON.stringify({ main: { provider: 'claude-api', model: 'claude-haiku-4-5' } })), 'claude-haiku-4-5');
   // non-Claude main → fall back to the default Claude model
-  assert.equal(agentClaudeModel(JSON.stringify({ main: { provider: 'deepseek', model: 'deepseek-v4-flash' } })), 'claude-sonnet-5');
-  assert.equal(agentClaudeModel(undefined), 'claude-sonnet-5');
+  assert.equal(agentClaudeModel(JSON.stringify({ main: { provider: 'deepseek', model: 'deepseek-v4-flash' } })), 'claude-opus-5');
+  assert.equal(agentClaudeModel(undefined), 'claude-opus-5');
 });
 
 // ── reference agent (Phase 2): focused-context helpers ────────────────────────

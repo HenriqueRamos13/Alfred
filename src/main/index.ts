@@ -157,7 +157,7 @@ function loadConfig(): AlfredConfig {
   return {
     anthropicApiKey: process.env.ANTHROPIC_API_KEY ?? '',
     provider: process.env.ALFRED_PROVIDER || 'anthropic',
-    model: process.env.ANTHROPIC_MODEL || process.env.ALFRED_MODEL || 'claude-sonnet-5',
+    model: process.env.ANTHROPIC_MODEL || process.env.ALFRED_MODEL || 'claude-opus-5',
     workspace: process.env.ALFRED_WORKSPACE || join(homedir(), 'AlfredWorkspace'),
     dailyTokenBudget: Number(process.env.ALFRED_DAILY_TOKEN_BUDGET) || 2_000_000,
     dailyUsdBudget: process.env.ALFRED_DAILY_USD_BUDGET

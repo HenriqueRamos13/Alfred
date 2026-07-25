@@ -45,6 +45,7 @@ export interface CatalogModel {
 // reads image files itself, so it's vision-capable too.
 const ANTHROPIC_MODELS: CatalogModel[] = [
   { id: 'claude-fable-5', name: 'Fable 5', inputPerM: 10, outputPerM: 50, vision: true },
+  { id: 'claude-opus-5', name: 'Opus 5', inputPerM: 5, outputPerM: 25, vision: true },
   { id: 'claude-opus-4-8', name: 'Opus 4.8', inputPerM: 5, outputPerM: 25, vision: true },
   {
     id: 'claude-sonnet-5',
@@ -87,10 +88,10 @@ export const MODEL_CATALOG: Record<ProviderId, CatalogModel[]> = {
   deepseek: DEEPSEEK_MODELS,
 };
 
-/** Per-provider default model (main → sonnet-5; the cheap agents → deepseek flash). */
+/** Per-provider default model (main → opus-5; the cheap agents → deepseek flash). */
 export const DEFAULT_MODEL: Record<ProviderId, string> = {
-  'claude-api': 'claude-sonnet-5',
-  'claude-cli': 'claude-sonnet-5',
+  'claude-api': 'claude-opus-5',
+  'claude-cli': 'claude-opus-5',
   openai: 'gpt-5.6-terra',
   deepseek: 'deepseek-v4-flash',
 };

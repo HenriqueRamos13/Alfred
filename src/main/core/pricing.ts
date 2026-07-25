@@ -8,6 +8,9 @@
  *
  * Published prices (verified July 2026 — always ESTIMATES, confirm before you
  * rely on them; providers change these and caching/batch discounts apply):
+ *   - claude-opus-5: $5 / $25 (the new Anthropic default; same price as its
+ *     predecessor Opus 4.8, 1M context). Source: Anthropic models/pricing docs,
+ *     verified 2026-07-25.
  *   - claude-sonnet-5: intro $2 / $10 (until 2026-08-31; standard $3 / $15 from
  *     2026-09-01). Source: edenai.co / finout.io Sonnet 5 pricing, Jul 2026.
  *   - gpt-4o: $2.50 / $10. Source: OpenAI pricing via pecollective/finout, Jul 2026.

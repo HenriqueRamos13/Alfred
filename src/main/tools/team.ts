@@ -48,7 +48,7 @@ export const team: Tool<Args> = {
     'Each agent has its OWN model and a private knowledge folder. ops: ' +
     'create {name, role?, provider, model, grant?} — persists the agent, scaffolds agents/<id>/knowledge/ + a seed role note, ' +
     'and updates the shared who-knows-what index; the model can be ANY id in the catalog (e.g. provider "claude-cli" + ' +
-    'model "claude-opus-4-8" = Opus 4.8, or "claude-sonnet-5"); an unknown provider/model is rejected. grant is the agent\'s ' +
+    'model "claude-opus-5" = Opus 5, or "claude-sonnet-5"); an unknown provider/model is rejected. grant is the agent\'s ' +
     'autonomy allowlist when delegated to (default ["read","notify"]). delegationRole is the PRIVILEGE role: "leaf" (default, ' +
     'cannot spawn/schedule/manage-roster/write-vault/message-user) or "orchestrator" (may spawn children, bounded). ' +
     'dailyTokenBudget is an optional per-agent daily token cap ' +
@@ -70,7 +70,7 @@ export const team: Tool<Args> = {
       name: { type: 'string', description: 'op=create: the agent display name (e.g. "Coder").' },
       role: { type: 'string', description: 'op=create: the specialty / system-prompt role (optional).' },
       provider: { type: 'string', description: 'op=create: provider id — one of claude-api, claude-cli, openai, deepseek.' },
-      model: { type: 'string', description: 'op=create: a model id in the provider catalog, e.g. "claude-opus-4-8" (Opus 4.8).' },
+      model: { type: 'string', description: 'op=create: a model id in the provider catalog, e.g. "claude-opus-5" (Opus 5).' },
       grant: {
         type: 'array',
         items: { type: 'string', enum: ['read', 'notify', 'write', 'browse', 'shell', 'send', 'delete', 'money', 'secrets'] },

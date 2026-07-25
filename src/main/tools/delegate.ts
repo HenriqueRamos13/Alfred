@@ -39,7 +39,7 @@ export const delegate: Tool<Args> = {
       model: {
         type: 'string',
         description:
-          'Optional Anthropic model to run the delegated `claude -p` on, e.g. "claude-opus-4-8" (Opus 4.8) or "claude-sonnet-5". ' +
+          'Optional Anthropic model to run the delegated `claude -p` on, e.g. "claude-opus-5" (Opus 5, the current default) or "claude-sonnet-5". ' +
           'Any id in the Claude catalog. Omitted/unknown → the main agent\'s model.',
       },
     },
@@ -79,7 +79,7 @@ export const delegate: Tool<Args> = {
     const rawAgentCfg = (
       ctx.db.prepare("SELECT value FROM settings WHERE key = 'agent_config'").get() as { value?: string } | undefined
     )?.value;
-    // An explicit, valid model wins (so Alfred can delegate on Opus 4.8/Sonnet);
+    // An explicit, valid model wins (so Alfred can delegate on Opus 5/Sonnet);
     // otherwise fall back to the main agent's Claude model.
     const model = resolveDelegateModel(a.model, agentClaudeModel(rawAgentCfg));
 

@@ -30,7 +30,7 @@ opens a UI form; it never persists an agent).
 - **`provider`** (required) — one of `claude-api`, `claude-cli`, `openai`,
   `deepseek`.
 - **`model`** (required) — a model id **in that provider's catalog**, e.g.
-  `claude-opus-4-8` (Opus 4.8), `claude-sonnet-5`, `deepseek-v4-flash`. An unknown
+  `claude-opus-5` (Opus 5, the Anthropic default), `claude-sonnet-5`, `deepseek-v4-flash`. An unknown
   provider **or** a model not in the provider's catalog is **rejected** with a
   clear error (`validateAgentSpec`).
 - **`role`** (optional) — the specialty / system-prompt role; defaults to empty.
@@ -109,7 +109,7 @@ roster agent **cannot** call `team` (it stays with the top-level agent).
 ```
 
 ```json
-{ "op": "create", "name": "Coder", "provider": "claude-cli", "model": "claude-opus-4-8", "role": "TypeScript/Node refactors", "grant": ["read", "write", "shell"] }
+{ "op": "create", "name": "Coder", "provider": "claude-cli", "model": "claude-opus-5", "role": "TypeScript/Node refactors", "grant": ["read", "write", "shell"] }
 ```
 
 ## propose_agent (open the creation form — Phase 7 stage 5)

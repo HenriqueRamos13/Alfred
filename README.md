@@ -11,7 +11,7 @@ drive the machine: filesystem, shell, a real browser, and read-only Gmail.
 
 - **Provider-agnostic orchestrator** on top of the [Vercel AI SDK](https://sdk.vercel.ai),
   streaming to a neon control UI. Swap brains without touching the loop (see
-  **Brains / Providers** below). Default brain: Anthropic `claude-sonnet-5`.
+  **Brains / Providers** below). Default brain: Anthropic `claude-opus-5`.
 - **System control & status** — the `system` tool lets Alfred use the Mac like
   its own: read battery, volume, brightness, displays and Wi-Fi; list running
   apps / the frontmost app; open and quit apps; post native (Electron)
@@ -86,7 +86,7 @@ set `ALFRED_PROVIDER` to change it.
 
 | Brain | Env | Default model | Notes |
 |-------|-----|---------------|-------|
-| **Anthropic** (default) | `ANTHROPIC_API_KEY`, `ANTHROPIC_MODEL` | `claude-sonnet-5` | The active brain out of the box. |
+| **Anthropic** (default) | `ANTHROPIC_API_KEY`, `ANTHROPIC_MODEL` | `claude-opus-5` | The active brain out of the box. |
 | **OpenAI / ChatGPT** | `OPENAI_API_KEY`, `OPENAI_MODEL` | `gpt-4o` | |
 | **DeepSeek** | `DEEPSEEK_API_KEY`, `DEEPSEEK_MODEL` | `deepseek-v4-flash` | `deepseek-v4-pro` also available. (`deepseek-chat`/`deepseek-reasoner` retired 2026-07-24.) |
 | **Claude Code CLI** | — (binary on `PATH`) | `claude -p` | Delegation brain, not a chat API — see below. |
@@ -133,7 +133,7 @@ setting.
 
 | Agent | Role | Default |
 |-------|------|---------|
-| **main** | the chat brain | derived from `ALFRED_PROVIDER` (e.g. `anthropic` → `claude-api` + `claude-sonnet-5`) |
+| **main** | the chat brain | derived from `ALFRED_PROVIDER` (e.g. `anthropic` → `claude-api` + `claude-opus-5`) |
 | **reference** | isolated read-only Q&A over one vault note/node (◈ REFERENCE panel) | DeepSeek V4 Flash |
 | **curator** | the memory curator | DeepSeek V4 Flash |
 
@@ -197,7 +197,7 @@ audit.
 |----------|---------|--------------|
 | `ALFRED_PROVIDER` | `anthropic` | Default active brain: `anthropic` \| `openai` \| `deepseek`. |
 | `ANTHROPIC_API_KEY` | — | Enables the Anthropic brain (a key containing `xxxx` is treated as a placeholder = disabled). |
-| `ANTHROPIC_MODEL` | `claude-sonnet-5` | Anthropic model id. |
+| `ANTHROPIC_MODEL` | `claude-opus-5` | Anthropic model id. |
 | `OPENAI_API_KEY` | — | Enables the OpenAI/ChatGPT brain. |
 | `OPENAI_MODEL` | `gpt-4o` | OpenAI model id. |
 | `DEEPSEEK_API_KEY` | — | Enables the DeepSeek brain. |

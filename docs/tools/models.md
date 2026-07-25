@@ -7,7 +7,7 @@ and governance are identical whichever brain drives them. Source:
 ## The four brains
 | id | key / requirement | default model env |
 |----|-------------------|-------------------|
-| `anthropic` | `ANTHROPIC_API_KEY` (default active) | `ANTHROPIC_MODEL` / `ALFRED_MODEL` → `claude-sonnet-5` |
+| `anthropic` | `ANTHROPIC_API_KEY` (default active) | `ANTHROPIC_MODEL` / `ALFRED_MODEL` → `claude-opus-5` |
 | `openai` | `OPENAI_API_KEY` | `OPENAI_MODEL` → `gpt-4o` |
 | `deepseek` | `DEEPSEEK_API_KEY` | `DEEPSEEK_MODEL` → `deepseek-v4-flash` |
 | `claude-code` | `claude` CLI on PATH | `claude -p` (subscription-billed, external cost) |
@@ -61,7 +61,7 @@ it to completion and returns parsed JSON.
 - Input: `task` (required), `cwd` (default workspace; **confined to the
   workspace** — a cwd outside it is rejected), `model` (optional).
 - **`model`** — the Anthropic model to run the delegated `claude -p` on: any id in
-  the Claude catalog, e.g. `claude-opus-4-8` (Opus 4.8) or `claude-sonnet-5`.
+  the Claude catalog, e.g. `claude-opus-5` (Opus 5, the default) or `claude-sonnet-5`.
   Validated against the catalog; absent/unknown → the **main agent's** Claude
   model (`agentClaudeModel`). Passed through as `--model <id>` (the same path the
   claude-code brain uses). Pure resolution: `resolveDelegateModel`.
@@ -72,5 +72,5 @@ it to completion and returns parsed JSON.
   hand off wholesale.
 
 ```json
-{ "task": "Add a health-check endpoint and a test for it", "cwd": "api", "model": "claude-opus-4-8" }
+{ "task": "Add a health-check endpoint and a test for it", "cwd": "api", "model": "claude-opus-5" }
 ```

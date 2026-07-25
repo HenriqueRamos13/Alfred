@@ -105,7 +105,7 @@ export function resolveActiveBrainId(
 // ── registry + resolution (touches the AI SDK) ────────────────────────────────
 
 function anthropicModel(env: Env): string {
-  return env.ANTHROPIC_MODEL || env.ALFRED_MODEL || 'claude-sonnet-5';
+  return env.ANTHROPIC_MODEL || env.ALFRED_MODEL || 'claude-opus-5';
 }
 
 /** API-brain registry (the three AI-SDK providers). */
