@@ -15,8 +15,9 @@ import type { AgentActivity } from './agent-activity-pure.ts';
 // TeamAgentDetail carries the stored privilege role (team-pure owns the union; the
 // type-only import keeps that module's node-touching value imports out of here).
 import type { DelegationRole } from './team-pure.ts';
-// ChatMessage carries the unified user-message ladder status (Phase 8 stage 7).
-import type { UserMsgStatus } from './thread-pure.ts';
+// ChatMessage carries the unified user-message ladder status (Phase 8 stage 7);
+// the agent.chat.* events carry one persisted thread message (stage 8).
+import type { ThreadMessage, UserMsgStatus } from './thread-pure.ts';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // JSON Schema (Anthropic tools format — a pragmatic subset)
@@ -483,7 +484,11 @@ export type StreamEvent =
   // A wake command was recognised as an ACTION (not dictation). hide/show are
   // already applied in main; 'send' with no text asks the renderer to submit the
   // current input; text (when present) is what was sent, for the log.
-  | { kind: 'voice.command'; sessionId: string; action: 'hide' | 'show' | 'send'; text?: string }
+  // messageId: on "enviar <texto>" MAIN already ran the turn, so it also MINTS the
+  // correlation id and hands it over — the renderer's optimistic bubble adopts it
+  // and therefore gets the same turn.status chips a typed message does. Absent for
+  // hide/show and for a bare "enviar" (there the renderer submits and mints).
+  | { kind: 'voice.command'; sessionId: string; action: 'hide' | 'show' | 'send'; text?: string; messageId?: string }
   // Alfred started/stopped speaking (TTS). While true the wake path is muted
   // (half-duplex) so the UI shows the mic as silenced.
   | { kind: 'speaking'; sessionId: string; speaking: boolean }
@@ -523,6 +528,24 @@ export type StreamEvent =
   // working, studying, or blocking on a human approval. Distinct from
   // agent.status, which is the MAIN (Alfred) turn status. The TEAM card re-fetches.
   | { kind: 'agent.activity'; agentId: string; activity: AgentActivity }
+  // User↔agent thread turn (Phase 8 stage 8) — the DIRECT conversation with one
+  // roster agent. Scoped by threadId exactly like reference.* above, so an open
+  // thread view only renders its own stream and the main chat.* is never touched.
+  // No deltas on the claude-cli path (the child streams nothing back) — the UI
+  // just gets the final agent.chat.message.
+  | { kind: 'agent.chat.delta'; threadId: string; text: string }
+  | { kind: 'agent.chat.message'; threadId: string; message: ThreadMessage }
+  | { kind: 'agent.chat.done'; threadId: string }
+  | { kind: 'agent.chat.error'; threadId: string; message: string }
+  // A thread's rows changed (new message, a status move, marked read): the threads
+  // sidebar + unread badge re-fetch. Broadcast, so badges clear in every window.
+  | { kind: 'thread.changed'; threadId: string; agentId: string }
+  // One USER message moved on the shared status ladder (thread-pure.ts) — the same
+  // event for the main chat (`messages.id`) and for a thread
+  // (`agent_thread_messages.id`), so ONE chip renderer serves both. `queueDepth` is
+  // how many turns are pending behind it (only meaningful on 'queued'); `error` is
+  // the reason on 'error'.
+  | { kind: 'turn.status'; messageId: string; state: UserMsgStatus; queueDepth?: number; error?: string }
   // The agent (Alfred) proposes creating an agent (team.propose_agent) instead of
   // silently creating one: the UI opens the creation form PRE-FILLED with this
   // partial spec, for the user to augment/review/confirm (Phase 7 stage 5).

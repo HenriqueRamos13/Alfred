@@ -109,7 +109,7 @@ import {
   isProviderId,
 } from './modelCatalog.ts';
 import type { AgentConfig, AgentConfigMap, AgentId, ProviderId, CatalogModel } from './modelCatalog.ts';
-import { getSetting, setSetting, insertMessage, getRecentMessages } from './db.ts';
+import { getSetting, setSetting, insertMessage, getRecentMessages, setMessageStatus } from './db.ts';
 import {
   JobScheduler,
   listJobs,
@@ -146,7 +146,17 @@ import {
   sttLocalePreference,
   type Language,
 } from './language-pure.ts';
-import { enqueueTurn, coalesceTurns } from './turn-queue-pure.ts';
+import { enqueueTurnItem, coalesceTurnItems, type TurnItem } from './turn-queue-pure.ts';
+import { isValidMessageId, type ThreadInfo, type ThreadMessage, type UserMsgStatus } from './thread-pure.ts';
+import {
+  sendUserMessage,
+  listThreads as listThreadsDb,
+  listThreadMessages as listThreadMessagesDb,
+  markThreadRead as markThreadReadDb,
+  getThread,
+  reconcileThreadsAtBoot,
+  type SendUserMessageResult,
+} from './threads.ts';
 import { dayKey } from './budget.ts';
 import { spawnClaudeCli, dangerousArgs } from './claudeSpawn.ts';
 import * as tts from './tts.ts';
@@ -704,7 +714,12 @@ export interface FactoryResetInfo {
 }
 
 export interface OrchestratorHandle {
-  send(text: string): Promise<void>;
+  /**
+   * Run one command / chat turn. `messageId` is the renderer's correlation id for
+   * its optimistic bubble (validated; minted here when absent/malformed) — every
+   * turn.status event for this turn carries it.
+   */
+  send(text: string, messageId?: string): Promise<void>;
   /** Recent persisted chat messages (oldest→newest) for the UI to reload on open. */
   getHistory(limit?: number): ChatMessage[];
   /** Emergency kill — abort + clear queue + latch (suppresses mic/wake). */
@@ -910,6 +925,25 @@ export interface OrchestratorHandle {
   answerInbox(id: string, action: string, text?: string): InboxResult;
   /** Mark a message read (drops the unread dot / badge). Emits inbox.changed. */
   markInboxRead(id: string): InboxMessage | undefined;
+  // ── User↔agent threads (Phase 8 stage 8) — the direct conversation. ──
+  /**
+   * The user sends `text` to a roster agent. Resolves as soon as the message is
+   * persisted + queued (NOT when the agent replies): the turn walks the shared
+   * status ladder and streams agent.chat.* / turn.status / thread.changed events.
+   * ATTENDED — the send authorises the turn; every tool inside still faces the
+   * agent's grant, its role blocklist, both budgets and normal approvals.
+   */
+  messageAgent(agentId: string, text: string, messageId?: string): Promise<SendUserMessageResult>;
+  /** Every thread with its last message + unread count, newest activity first. */
+  listThreads(): ThreadInfo[];
+  /** One thread's transcript, oldest→newest. */
+  listThreadMessages(threadId: string): ThreadMessage[];
+  /**
+   * The user opened a thread: stamp read_ts on the agent-authored rows that had
+   * none and emit thread.changed, so the badge clears in EVERY window. Returns how
+   * many rows were stamped (0 → nothing was unread).
+   */
+  markThreadRead(threadId: string): number;
   // ── Notifications + heartbeat (Phase 7 stage 4) — self-orchestration wakes. ──
   /** Notifications (optionally filtered by recipient/project/unseen), newest first — the Activity feed. */
   listNotifications(filter?: NotificationFilter): AgentNotification[];
@@ -1070,8 +1104,12 @@ export function createOrchestrator(opts: CreateOrchestratorOpts): OrchestratorHa
         const body = intent.text?.trim() ?? '';
         // Text after "enviar" → a new turn straight away. Bare "enviar" → let the
         // renderer submit whatever is already in the input (the last dictation).
-        emit({ kind: 'voice.command', sessionId, action: 'send', text: body || undefined });
-        if (body) void send(body);
+        // MAIN runs the turn on this path, so MAIN mints the correlation id and
+        // hands it over in the event: the renderer's optimistic voice bubble adopts
+        // it and gets the same turn.status chips a typed message does.
+        const messageId = body ? randomUUID() : undefined;
+        emit({ kind: 'voice.command', sessionId, action: 'send', text: body || undefined, messageId });
+        if (body) void send(body, messageId);
         return true;
       }
       default:
@@ -1091,8 +1129,35 @@ export function createOrchestrator(opts: CreateOrchestratorOpts): OrchestratorHa
   // `claude -p --resume <same session>` corrupting continuity). Every entry point
   // (IPC send, wake "enviar", auto-send) routes through send() → enqueue → drain
   // one at a time.
-  const turnQueue: string[] = [];
+  // Items, not bare strings (Phase 8 stage 8): each pending turn carries the id of
+  // the `messages` row it was persisted as, so the ladder can say WHICH bubble is
+  // queued / executing / done / dropped.
+  const turnQueue: TurnItem[] = [];
   let draining = false;
+
+  /** One rung of the shared ladder for a MAIN-chat message: persist + tell the UI. */
+  const markTurn = (messageId: string, state: UserMsgStatus, extra?: { queueDepth?: number; error?: string }): void => {
+    try {
+      setMessageStatus(db, messageId, state);
+    } catch (err) {
+      console.error('[alfred] message status write failed:', err instanceof Error ? err.message : err);
+    }
+    const e: Extract<StreamEvent, { kind: 'turn.status' }> = { kind: 'turn.status', messageId, state };
+    if (extra?.queueDepth !== undefined) e.queueDepth = extra.queueDepth;
+    if (extra?.error !== undefined) e.error = extra.error;
+    emit(e);
+  };
+
+  /**
+   * Kill / cancel / conversation reset / factory reset all drop what is PENDING.
+   * Every dropped message is settled on the ladder + announced, so a bubble never
+   * sits on "na fila" forever after a stop. The RUNNING batch is already out of the
+   * queue: aborting it makes runTurn throw, and the drain's catch marks it 'error'.
+   */
+  const dropPendingTurns = (): void => {
+    for (const item of turnQueue) markTurn(item.id, 'dropped');
+    turnQueue.length = 0;
+  };
 
   // ── Curator (memory organiser) — runs on IDLE after a task, debounced ───────
   // Never mid-task: send() awaits the turn, then schedules; a new turn clears the
@@ -1350,7 +1415,13 @@ export function createOrchestrator(opts: CreateOrchestratorOpts): OrchestratorHa
       }
   }
 
-  async function send(text: string): Promise<void> {
+  /**
+   * The main-chat entry point. `messageId` is the RENDERER's correlation id (its
+   * optimistic bubble): honoured when it matches `[A-Za-z0-9-]{1,64}`, otherwise we
+   * mint one — either way it becomes the `messages.id` every turn.status event is
+   * keyed on, so the chip lands on the right bubble.
+   */
+  async function send(text: string, messageId?: string): Promise<void> {
     // A new turn cancels a pending curator sweep — never organise mid-task.
     if (curatorTimer) {
       clearTimeout(curatorTimer);
@@ -1359,17 +1430,21 @@ export function createOrchestrator(opts: CreateOrchestratorOpts): OrchestratorHa
     // Persist the user turn immediately so it survives restarts, feeds the
     // continuity transcript, and appears in order. The renderer shows it
     // optimistically, so it is stored (not re-emitted) to avoid a duplicate.
+    // 'queued' is the bottom of the shared ladder (thread-pure.ts).
     if (text.trim()) {
+      const id = isValidMessageId(messageId) ? messageId : randomUUID();
       try {
-        insertMessage(db, { id: randomUUID(), sessionId, role: 'user', content: text, ts: Date.now() });
+        insertMessage(db, { id, sessionId, role: 'user', content: text, ts: Date.now(), status: 'queued' });
       } catch (err) {
         console.error('[alfred] persist user message failed:', err instanceof Error ? err.message : err);
       }
-    }
-    // Enqueue. If a drain is already running, this turn waits its FIFO turn.
-    const { dropped } = enqueueTurn(turnQueue, text);
-    if (dropped !== null) {
-      console.warn(`[alfred] turn queue over cap — dropped oldest pending turn (queue runaway?): ${dropped.slice(0, 80)}`);
+      // Enqueue. If a drain is already running, this turn waits its FIFO turn.
+      const { dropped } = enqueueTurnItem(turnQueue, { id, text });
+      emit({ kind: 'turn.status', messageId: id, state: 'queued', queueDepth: turnQueue.length });
+      if (dropped !== null) {
+        console.warn(`[alfred] turn queue over cap — dropped oldest pending turn (queue runaway?): ${dropped.text.slice(0, 80)}`);
+        markTurn(dropped.id, 'dropped');
+      }
     }
     if (draining) return;
 
@@ -1381,14 +1456,24 @@ export function createOrchestrator(opts: CreateOrchestratorOpts): OrchestratorHa
       // message was already persisted per-message on enqueue (own bubble) — only
       // the PROMPT is combined here, never re-persisted. A failed turn is logged
       // and the drain continues.
+      //
+      // The ladder skips delivered/read here: Alfred's own chat has no inbox to
+      // deliver to, so a queued message goes straight to executing (the skip the
+      // forward-only ladder explicitly allows).
       while (turnQueue.length) {
         const batch = turnQueue.splice(0);
-        const combined = coalesceTurns(batch);
+        const { text: combined, ids } = coalesceTurnItems(batch);
+        // A blank entry contributes no text, so nothing will ever answer it.
+        for (const item of batch) if (!ids.includes(item.id)) markTurn(item.id, 'dropped');
         if (!combined) continue;
+        for (const id of ids) markTurn(id, 'executing');
         try {
           await runTurn(combined);
+          for (const id of ids) markTurn(id, 'done');
         } catch (err) {
-          console.error('[alfred] turn failed:', err instanceof Error ? err.message : err);
+          const error = err instanceof Error ? err.message : String(err);
+          console.error('[alfred] turn failed:', error);
+          for (const id of ids) markTurn(id, 'error', { error });
         }
       }
     } finally {
@@ -1417,6 +1502,21 @@ export function createOrchestrator(opts: CreateOrchestratorOpts): OrchestratorHa
     },
   });
   scheduler.start();
+
+  // Crash recovery for BOTH message ladders (Phase 8 stage 8): a user message left
+  // mid-ladder when the app died has no runner left to advance it, so it is settled
+  // as 'error' here — ONCE, at boot, before any IPC channel exists to enqueue a new
+  // turn. Never fatal: a failed reconcile must not stop Alfred from booting.
+  try {
+    const reconciled = reconcileThreadsAtBoot(db);
+    if (reconciled.threadMessages || reconciled.chatMessages) {
+      console.info(
+        `[alfred] boot: settled ${reconciled.threadMessages} thread + ${reconciled.chatMessages} chat message(s) interrupted by the restart`,
+      );
+    }
+  } catch (err) {
+    console.error('[alfred] boot thread reconcile failed:', err instanceof Error ? err.message : err);
+  }
 
   /** Current heartbeat toggle + sweep interval (enabled default OFF, interval default 60s). */
   const readHeartbeat = (): { enabled: boolean; intervalMs: number } => {
@@ -1469,7 +1569,7 @@ export function createOrchestrator(opts: CreateOrchestratorOpts): OrchestratorHa
     },
     stop() {
       activeAbort?.(); // abort the live turn — AI-SDK stream OR the claude -p child
-      turnQueue.length = 0; // drop pending turns — a kill switch means stop, not "finish the queue"
+      dropPendingTurns(); // pending turns are dropped (+ marked) — a kill switch means stop, not "finish the queue"
       tts.stop();
       // Kill switch also silences every mic owner — no audio capture after an
       // emergency stop. wakeSuppressed keeps wake from auto-restarting on the
@@ -1483,7 +1583,7 @@ export function createOrchestrator(opts: CreateOrchestratorOpts): OrchestratorHa
       // drop pending turns. No latch — mic/wake untouched, conversation/memory
       // intact. Go idle now so the primary button flips back to Send immediately.
       activeAbort?.();
-      turnQueue.length = 0;
+      dropPendingTurns();
       emit({ kind: 'agent.status', sessionId, status: 'idle' });
     },
     resolveApproval({ id, decision, remember }) {
@@ -1529,7 +1629,7 @@ export function createOrchestrator(opts: CreateOrchestratorOpts): OrchestratorHa
     },
     resetConversation() {
       activeAbort?.(); // abort the live turn — AI-SDK stream OR the claude -p child
-      turnQueue.length = 0; // no queued turns should run against a wiped conversation
+      dropPendingTurns(); // no queued turns should run against a wiped conversation
       // Clear the persisted chat + the claude-code --resume ids so the next turn
       // starts a fresh session. Memory / facts / projects are untouched.
       try {
@@ -1571,7 +1671,7 @@ export function createOrchestrator(opts: CreateOrchestratorOpts): OrchestratorHa
       // 1. Halt everything that owns a resource: the running turn, TTS, the mic
       //    (wake + manual), the browser and the MCP bridge. Best-effort each.
       activeAbort?.(); // abort the live turn — AI-SDK stream OR the claude -p child
-      turnQueue.length = 0; // no queued turns should run against a factory-reset state
+      dropPendingTurns(); // no queued turns should run against a factory-reset state
       tts.stop();
       scheduler.stop(); // disarm all job timers so no autonomous job fires/re-arms after the wipe
       wakeSuppressed = true;
@@ -2068,6 +2168,29 @@ export function createOrchestrator(opts: CreateOrchestratorOpts): OrchestratorHa
       const msg = markInboxReadMessage(db, id);
       if (msg) emit({ kind: 'inbox.changed' });
       return msg;
+    },
+    // ── User↔agent threads (Phase 8 stage 8). ──
+    messageAgent(agentId, text, messageId) {
+      // ctx is the orchestrator's own governed ToolCtx (delegationDepth 0) — that is
+      // what makes the turn ATTENDED, so approvals reach the user's UI.
+      return sendUserMessage({ db, ctx, emit }, agentId, text, messageId);
+    },
+    listThreads() {
+      return listThreadsDb(db);
+    },
+    listThreadMessages(threadId) {
+      return listThreadMessagesDb(db, threadId);
+    },
+    markThreadRead(threadId) {
+      const stamped = markThreadReadDb(db, threadId);
+      // Nothing stamped → nothing to clear, so no event (idempotent re-opens of a
+      // thread stay silent). On a real change EVERY window re-fetches, which is how
+      // the unread badge drops on the other monitors too.
+      if (stamped) {
+        const thread = getThread(db, threadId);
+        if (thread) emit({ kind: 'thread.changed', threadId: thread.id, agentId: thread.agentId });
+      }
+      return stamped;
     },
     listNotifications(filter) {
       return listNotificationRows(db, filter);

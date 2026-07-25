@@ -15,17 +15,28 @@
  * message the boot reconcile already settled. Every writer bumps the thread's
  * updated_ts, which is what the sidebar orders by.
  *
- * The orchestrator/IPC/renderer wiring is stage 8; this module is the IO surface.
+ * Stage 8 adds the ORCHESTRATION on top (sendUserMessage + the per-thread drain);
+ * the IPC/renderer wiring is stage 9.
  */
 import { randomUUID } from 'node:crypto';
 import {
   statusTransition,
   reconcileStaleStatus,
   isUserMsgStatus,
+  isValidMessageId,
+  validateUserMessage,
+  buildThreadPrompt,
   type ThreadInfo,
   type ThreadMessage,
   type UserMsgStatus,
 } from './thread-pure.ts';
+import { enqueueTurnItem, coalesceTurnItems, type TurnItem } from './turn-queue-pure.ts';
+import { getAgent } from './team.ts';
+// core→tools import (precedent: jobs.ts importing runStudy) — the ATTENDED roster
+// runner is a tool-layer concern (spawn gate + provider branch) that both the
+// delegate tool and a thread turn share verbatim.
+import { runRosterAgentAttended } from '../tools/delegate-to-agent.ts';
+import type { StreamEvent, ToolCtx } from './types.ts';
 
 type DB = import('better-sqlite3').Database;
 
@@ -336,4 +347,213 @@ export function reconcileThreadsAtBoot(db: DB): { threadMessages: number; chatMe
     );
   }
   return { threadMessages, chatMessages };
+}
+
+// ── orchestration: one user send → one ATTENDED agent turn ────────────────────
+
+/** What a thread turn needs from the orchestrator (nothing Electron, nothing global). */
+export interface ThreadDeps {
+  db: DB;
+  /**
+   * The orchestrator's governed ToolCtx. Its `delegationDepth` is 0, which is what
+   * makes a thread turn ATTENDED: the user is right there, so a sensitive action
+   * takes the NORMAL approval path (approval.request reaches the UI) exactly like
+   * answerInbox. Every tool the agent then calls still hits its grant floor, its
+   * role blocklist and both budgets — the send authorises the TURN, not the tools.
+   */
+  ctx: ToolCtx;
+  emit: (e: StreamEvent) => void;
+}
+
+/** Ack of a send: the ids the caller correlates its optimistic bubble with. */
+export type SendUserMessageResult =
+  | { ok: true; threadId: string; messageId: string }
+  | { ok: false; error: string };
+
+/** Per-thread FIFO + its single-flight flag. */
+interface ThreadQueue {
+  queue: TurnItem[];
+  draining: boolean;
+}
+
+/**
+ * Pending turns per thread. In-module (one orchestrator process, same reasoning as
+ * the delegate tool's activeByParent) and keyed by threadId, so SAME-agent sends
+ * serialise ("na fila") while DIFFERENT agents run in parallel — bounded by the
+ * shared maxConcurrentChildren ceiling in the spawn gate, which reports its refusal
+ * as an errored message instead of silently dropping the turn.
+ */
+const queues = new Map<string, ThreadQueue>();
+
+/** turn.status without leaking undefined keys into the event (optional fields). */
+function emitStatus(
+  deps: ThreadDeps,
+  messageId: string,
+  state: UserMsgStatus,
+  extra?: { queueDepth?: number; error?: string },
+): void {
+  const e: Extract<StreamEvent, { kind: 'turn.status' }> = { kind: 'turn.status', messageId, state };
+  if (extra?.queueDepth !== undefined) e.queueDepth = extra.queueDepth;
+  if (extra?.error !== undefined) e.error = extra.error;
+  deps.emit(e);
+}
+
+function emitChanged(deps: ThreadDeps, threadId: string, agentId: string): void {
+  deps.emit({ kind: 'thread.changed', threadId, agentId });
+}
+
+/**
+ * The user sent `text` to `agentId`. Validates, persists the message at the bottom
+ * of the ladder, enqueues it on that thread's FIFO and kicks the drain.
+ *
+ * Returns as soon as the message is PERSISTED AND QUEUED — deliberately NOT when
+ * the agent has replied: the composer must clear immediately and every later rung
+ * (delivered/read/executing/done|error) plus the reply itself arrives as events. The
+ * drain is therefore detached and swallows its own errors (it can never reject into
+ * a caller that already went away).
+ *
+ * `messageId` lets the renderer mint the correlation id for its optimistic bubble;
+ * anything that is not `[A-Za-z0-9-]{1,64}` (or already taken) is ignored and we
+ * mint our own — the returned id is always the authoritative one.
+ */
+export async function sendUserMessage(
+  deps: ThreadDeps,
+  agentId: string,
+  text: string,
+  messageId?: string,
+): Promise<SendUserMessageResult> {
+  const valid = validateUserMessage(text);
+  if (!valid.ok) return { ok: false, error: valid.error };
+  const id = typeof agentId === 'string' ? agentId.trim() : '';
+  if (!id) return { ok: false, error: 'agentId is required' };
+  // A removed agent has no runner and no context to load: refuse the COMPOSE rather
+  // than persisting a message that could only ever end as an error.
+  const agent = getAgent(deps.db, id);
+  if (!agent) return { ok: false, error: `o agente "${id}" já não existe na equipa` };
+
+  const thread = getOrCreateThread(deps.db, agent.id);
+  // Reuse the renderer's id when it is well-formed AND free (a retry of an already
+  // stored id must not blow up the INSERT on the primary key).
+  const wanted = isValidMessageId(messageId) && !getThreadMessage(deps.db, messageId) ? messageId : undefined;
+  const row = insertUserThreadMessage(deps.db, thread.id, valid.text, wanted);
+  emitChanged(deps, thread.id, agent.id);
+
+  const q = queues.get(thread.id) ?? { queue: [], draining: false };
+  queues.set(thread.id, q);
+  const { dropped } = enqueueTurnItem(q.queue, { id: row.id, text: valid.text });
+  emitStatus(deps, row.id, 'queued', { queueDepth: q.queue.length });
+  // Runaway: the OLDEST pending message is dropped — loudly, on the ladder and in
+  // the UI, never a silent vanish.
+  if (dropped) {
+    console.warn(`[alfred:threads] thread ${thread.id} queue over cap — dropped ${dropped.id}: ${dropped.text.slice(0, 80)}`);
+    markDropped(deps.db, [dropped.id]);
+    emitStatus(deps, dropped.id, 'dropped');
+    emitChanged(deps, thread.id, agent.id);
+  }
+
+  // Detached on purpose (see above). The drain settles its own failures; the .catch
+  // is the last resort for a DB-level throw, so it can never become an unhandled
+  // rejection in the main process.
+  if (!q.draining) {
+    void drainThread(deps, agent.id, thread.id, q).catch((err) => {
+      console.error(`[alfred:threads] drain of ${thread.id} failed:`, err instanceof Error ? err.message : err);
+    });
+  }
+  return { ok: true, threadId: thread.id, messageId: row.id };
+}
+
+/**
+ * Single-flight drain of ONE thread. Each pass takes every message that piled up
+ * (coalesced into a single prompt, Claude-Code-style: the pile-up is one turn, not
+ * N) and walks it up the ladder — delivered → read → executing → done|error —
+ * emitting a turn.status per message id at every rung so each bubble shows its own
+ * chip while sharing the turn.
+ *
+ * Never throws: an unexpected failure settles that batch as 'error' and the loop
+ * continues, because a row left 'executing' would only be cleaned up by the next
+ * boot reconcile (i.e. the UI would lie until the app restarts).
+ *
+ * The agent row is re-read PER BATCH (by id, which is immutable), so an edit lands
+ * on the next run — and a roster deletion mid-thread errors the queued messages
+ * instead of running a ghost.
+ */
+async function drainThread(deps: ThreadDeps, agentId: string, threadId: string, q: ThreadQueue): Promise<void> {
+  if (q.draining) return;
+  q.draining = true;
+  try {
+    while (q.queue.length) {
+      const batch = q.queue.splice(0);
+      const batchIds = batch.map((b) => b.id);
+      deliverMessages(deps.db, batchIds);
+      for (const id of batchIds) emitStatus(deps, id, 'delivered');
+
+      const { text, ids } = coalesceTurnItems(batch);
+      // A blank-only entry contributes nothing to the prompt, so it can never be
+      // answered — settle it instead of leaving it mid-ladder.
+      const skipped = batchIds.filter((id) => !ids.includes(id));
+      if (skipped.length) {
+        markDropped(deps.db, skipped);
+        for (const id of skipped) emitStatus(deps, id, 'dropped');
+      }
+      if (!ids.length) continue;
+
+      const agent = getAgent(deps.db, agentId);
+      if (!agent) {
+        const error = `o agente "${agentId}" já não existe na equipa`;
+        markError(deps.db, ids, error);
+        deps.emit({ kind: 'agent.chat.error', threadId, message: error });
+        for (const id of ids) emitStatus(deps, id, 'error', { error });
+        deps.emit({ kind: 'thread.changed', threadId, agentId });
+        continue;
+      }
+
+      try {
+        // History EXCLUDES this batch: those messages are the "new message" block
+        // that buildThreadPrompt puts last, and sending them twice would read to
+        // the model like the user repeated himself.
+        const inBatch = new Set(batchIds);
+        const history = listThreadMessages(deps.db, threadId)
+          .filter((m) => !inBatch.has(m.id))
+          .map((m) => ({ author: m.author, body: m.body }));
+        const prompt = buildThreadPrompt(agent, history, text);
+
+        markMessagesRead(deps.db, ids);
+        for (const id of ids) emitStatus(deps, id, 'read');
+        markExecuting(deps.db, ids);
+        for (const id of ids) emitStatus(deps, id, 'executing');
+
+        const res = await runRosterAgentAttended(deps.ctx, agent, prompt, {
+          onDelta: (t) => deps.emit({ kind: 'agent.chat.delta', threadId, text: t }),
+        });
+
+        if (res.ok) {
+          const body = res.result?.text?.trim() || '(o agente terminou sem resposta)';
+          const reply = insertAgentReply(deps.db, threadId, agent.id, body);
+          markDone(deps.db, ids);
+          deps.emit({ kind: 'agent.chat.message', threadId, message: reply });
+          deps.emit({ kind: 'agent.chat.done', threadId });
+          for (const id of ids) emitStatus(deps, id, 'done');
+        } else {
+          // Budget exhausted, spawn ceiling, brain not connected, a failed run: the
+          // reason lands on the USER's own bubble (no half-reply row is persisted).
+          const error = res.error || 'a corrida do agente falhou';
+          markError(deps.db, ids, error);
+          deps.emit({ kind: 'agent.chat.error', threadId, message: error });
+          for (const id of ids) emitStatus(deps, id, 'error', { error });
+        }
+      } catch (err) {
+        const error = err instanceof Error ? err.message : String(err);
+        console.error(`[alfred:threads] thread ${threadId} turn threw:`, err);
+        markError(deps.db, ids, error);
+        deps.emit({ kind: 'agent.chat.error', threadId, message: error });
+        for (const id of ids) emitStatus(deps, id, 'error', { error });
+      }
+      emitChanged(deps, threadId, agentId);
+    }
+  } finally {
+    q.draining = false;
+    // Drop the empty bucket (a fresh send recreates it) so the map can't grow with
+    // one dead entry per thread ever touched.
+    if (queues.get(threadId) === q && !q.queue.length) queues.delete(threadId);
+  }
 }

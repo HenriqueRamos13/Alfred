@@ -30,6 +30,8 @@ import type { ProjectDetail } from './core/projects.ts';
 import type { KanbanCard } from './core/kanban-pure.ts';
 import type { InboxMessage } from './core/inbox-pure.ts';
 import type { InboxFilter, InboxResult } from './core/inbox.ts';
+import { isValidMessageId, type ThreadInfo, type ThreadMessage } from './core/thread-pure.ts';
+import type { SendUserMessageResult } from './core/threads.ts';
 import type { AgentNotification } from './core/notify-pure.ts';
 import type { NotificationFilter } from './core/notify.ts';
 import type { BrainInfo } from './core/providers.ts';
@@ -49,8 +51,11 @@ import {
 } from './core/modelCatalog.ts';
 
 export interface Orchestrator {
-  /** Run one command / chat turn; streams StreamEvents via the injected emit. */
-  send(text: string): Promise<void>;
+  /**
+   * Run one command / chat turn; streams StreamEvents via the injected emit.
+   * `messageId` is the renderer's validated correlation id (turn.status events).
+   */
+  send(text: string, messageId?: string): Promise<void>;
   /** Recent persisted chat messages for the UI to reload on open. */
   getHistory(limit?: number): ChatMessage[] | Promise<ChatMessage[]>;
   /** Kill switch — abort the running task (latches: suppresses mic/wake). */
@@ -191,6 +196,15 @@ export interface Orchestrator {
   answerInbox(id: string, action: string, text?: string): InboxResult | Promise<InboxResult>;
   /** Mark a message read (drops the unread badge). */
   markInboxRead(id: string): InboxMessage | undefined | Promise<InboxMessage | undefined>;
+  // ── User↔agent threads (Phase 8 stage 8) — the direct conversation. ──
+  /** Send the user's message to a roster agent; resolves once queued (events do the rest). */
+  messageAgent(agentId: string, text: string, messageId?: string): Promise<SendUserMessageResult>;
+  /** Threads with last message + unread count (newest activity first). */
+  listThreads(): ThreadInfo[] | Promise<ThreadInfo[]>;
+  /** One thread's transcript (oldest→newest). */
+  listThreadMessages(threadId: string): ThreadMessage[] | Promise<ThreadMessage[]>;
+  /** Mark a thread's agent replies read (clears the badge in every window). */
+  markThreadRead(threadId: string): number | Promise<number>;
   // ── Notifications + heartbeat (Phase 7 stage 4). ──
   /** Notifications for the Activity feed, optionally filtered (newest first). */
   listNotifications(filter?: NotificationFilter): AgentNotification[] | Promise<AgentNotification[]>;
@@ -231,9 +245,12 @@ export function registerIpc(core: Orchestrator, emit: (e: StreamEvent) => void):
     }
   };
 
-  ipcMain.handle('alfred:send', async (_e, text: unknown) => {
+  // Trust boundary: `messageId` is the renderer's correlation id and becomes a
+  // PRIMARY KEY, so only `[A-Za-z0-9-]{1,64}` passes — anything else is dropped and
+  // main mints its own (the renderer learns the real id from turn.status).
+  ipcMain.handle('alfred:send', async (_e, text: unknown, messageId: unknown) => {
     try {
-      await core.send(String(text ?? ''));
+      await core.send(String(text ?? ''), isValidMessageId(messageId) ? messageId : undefined);
     } catch (err) {
       fail('send', err);
     }
@@ -707,6 +724,43 @@ export function registerIpc(core: Orchestrator, emit: (e: StreamEvent) => void):
     } catch (err) {
       fail('mark inbox read', err);
       return null;
+    }
+  });
+
+  // ── User↔agent threads (Phase 8 stage 8) — the direct conversation. ──
+  // Trust boundary: agentId/text are checked here as SHAPES (non-empty strings) and
+  // re-validated in core (validateUserMessage + the roster lookup own the rules);
+  // messageId must match the id whitelist or it is ignored, never coerced.
+  ipcMain.handle(
+    'alfred:messageAgent',
+    async (_e, agentId: unknown, text: unknown, messageId: unknown): Promise<SendUserMessageResult> => {
+      if (typeof agentId !== 'string' || !agentId.trim()) return { ok: false, error: 'agentId is required' };
+      if (typeof text !== 'string') return { ok: false, error: 'message must be a string' };
+      try {
+        return await core.messageAgent(agentId, text, isValidMessageId(messageId) ? messageId : undefined);
+      } catch (err) {
+        fail('message agent', err);
+        return { ok: false, error: 'message agent failed' };
+      }
+    },
+  );
+  ipcMain.handle('alfred:listThreads', guard('list threads', () => core.listThreads(), [] as ThreadInfo[]));
+  ipcMain.handle('alfred:listThreadMessages', async (_e, threadId: unknown): Promise<ThreadMessage[]> => {
+    if (typeof threadId !== 'string' || !threadId.trim()) return [];
+    try {
+      return await core.listThreadMessages(threadId);
+    } catch (err) {
+      fail('list thread messages', err);
+      return [];
+    }
+  });
+  ipcMain.handle('alfred:markThreadRead', async (_e, threadId: unknown): Promise<number> => {
+    if (typeof threadId !== 'string' || !threadId.trim()) return 0;
+    try {
+      return await core.markThreadRead(threadId);
+    } catch (err) {
+      fail('mark thread read', err);
+      return 0;
     }
   });
 

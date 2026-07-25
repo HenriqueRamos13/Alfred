@@ -5033,3 +5033,57 @@ test('coalesceTurnItems — joins non-blank texts with blank line; ids track kep
   // the legacy string API still behaves (orchestrator migrates in stage 8)
   assert.equal(coalesceTurns(['a', '', ' b ']), 'a\n\nb');
 });
+
+// ── Phase 8 stage 8: correlation ids + batch→prompt composition ───────────────
+
+import { isValidMessageId, MESSAGE_ID_MAX_CHARS } from '../src/main/core/thread-pure.ts';
+
+test('isValidMessageId — accepts renderer uuids / TM- ids, refuses anything else', () => {
+  // the two shapes that really flow: the renderer's crypto.randomUUID() and a TM-/TH- id
+  assert.equal(isValidMessageId('3f1c8e2a-9b4d-4f7e-8a11-0c5d6e7f8a9b'), true);
+  assert.equal(isValidMessageId('TM-1a2b3c4d'), true);
+  assert.equal(isValidMessageId('a'), true);
+  assert.equal(isValidMessageId('A-9'), true);
+  // length bound (a hostile renderer must not push a 10k-char primary key)
+  assert.equal(isValidMessageId('a'.repeat(MESSAGE_ID_MAX_CHARS)), true);
+  assert.equal(isValidMessageId('a'.repeat(MESSAGE_ID_MAX_CHARS + 1)), false);
+  // charset: no whitespace, no SQL/path punctuation, no unicode, no empties
+  assert.equal(isValidMessageId(''), false);
+  assert.equal(isValidMessageId(' TM-1'), false);
+  assert.equal(isValidMessageId('TM 1'), false);
+  assert.equal(isValidMessageId('TM_1'), false);
+  assert.equal(isValidMessageId("TM-1'; DROP TABLE messages--"), false);
+  assert.equal(isValidMessageId('../../etc/passwd'), false);
+  assert.equal(isValidMessageId('TM-café'), false);
+  // non-strings from IPC are refused, never coerced
+  assert.equal(isValidMessageId(undefined), false);
+  assert.equal(isValidMessageId(null), false);
+  assert.equal(isValidMessageId(42), false);
+  assert.equal(isValidMessageId({ toString: () => 'TM-1' }), false);
+});
+
+test('buildThreadPrompt — used with coalesceTurnItems output keeps one prompt per batch', () => {
+  const agent = { id: 'coder', name: 'Coder' };
+  // three messages piled up behind a running turn; the middle one is blank
+  const batch: TurnItem[] = [
+    { id: 'TM-1', text: 'primeira' },
+    { id: 'TM-2', text: '   ' },
+    { id: 'TM-3', text: ' segunda ' },
+  ];
+  const { text, ids } = coalesceTurnItems(batch);
+  // only the ids that made it into the text may be marked executing/done
+  assert.deepEqual(ids, ['TM-1', 'TM-3']);
+  const history = [
+    { author: 'user', body: 'olá' },
+    { author: 'coder', body: 'oi' },
+  ];
+  const prompt = buildThreadPrompt(agent, history, text);
+  // ONE prompt for the whole batch: a single framing + a single new-message section
+  assert.equal(prompt.split('# Mensagem direta do utilizador').length - 1, 1);
+  assert.equal(prompt.split('# Nova mensagem do utilizador').length - 1, 1);
+  // ...carrying every non-blank message of the batch, in FIFO order, at the end
+  assert.match(prompt, /# Nova mensagem do utilizador\nprimeira\n\nsegunda$/);
+  // history stays ABOVE the batch (and the batch is never duplicated into it)
+  assert.ok(prompt.indexOf('Utilizador: olá') < prompt.indexOf('primeira'));
+  assert.equal(prompt.split('primeira').length - 1, 1);
+});

@@ -26,6 +26,8 @@ import type { ProjectDetail } from '../main/core/projects.ts';
 import type { KanbanCard } from '../main/core/kanban-pure.ts';
 import type { InboxMessage } from '../main/core/inbox-pure.ts';
 import type { InboxFilter, InboxResult } from '../main/core/inbox.ts';
+import type { ThreadInfo, ThreadMessage } from '../main/core/thread-pure.ts';
+import type { SendUserMessageResult } from '../main/core/threads.ts';
 import type { AgentNotification } from '../main/core/notify-pure.ts';
 import type { NotificationFilter } from '../main/core/notify.ts';
 import type { Graph } from '../main/core/graph.ts';
@@ -63,8 +65,13 @@ const api = {
   listDisplays: (): Promise<DisplayInfo[]> => ipcRenderer.invoke('alfred:listDisplays'),
   /** Whether Google OAuth is validly configured (not empty/placeholder) — drives the "connect Gmail" hint. */
   gmailConfigured: gmailConfigured(process.env),
-  /** Send a user command / chat turn to the orchestrator. */
-  send: (text: string): Promise<void> => ipcRenderer.invoke('alfred:send', text),
+  /**
+   * Send a user command / chat turn to the orchestrator. `messageId` is this
+   * window's correlation id (crypto.randomUUID()) for the optimistic bubble —
+   * turn.status events come back keyed on it. Main validates and re-mints when it
+   * is malformed, so the events are always the authority.
+   */
+  send: (text: string, messageId?: string): Promise<void> => ipcRenderer.invoke('alfred:send', text, messageId),
   /** Load recent persisted chat history to repopulate the conversation on open. */
   getHistory: (limit?: number): Promise<ChatMessage[]> => ipcRenderer.invoke('alfred:getHistory', limit),
   /** Kill switch — abort the running task (latches: suppresses mic/wake). */
@@ -121,6 +128,21 @@ const api = {
     ipcRenderer.invoke('alfred:answerInbox', id, action, text),
   /** Mark a message read (drops the unread badge). */
   markInboxRead: (id: string): Promise<InboxMessage | null> => ipcRenderer.invoke('alfred:markInboxRead', id),
+  // ── User↔agent threads (Phase 8 stage 8) — the direct conversation. ──
+  /**
+   * Send a direct message to a roster agent. Resolves as soon as it is queued
+   * ({ok, threadId, messageId}) — the reply arrives as agent.chat.* events and the
+   * bubble's ticks as turn.status. `messageId` is this window's correlation id.
+   */
+  messageAgent: (agentId: string, text: string, messageId?: string): Promise<SendUserMessageResult> =>
+    ipcRenderer.invoke('alfred:messageAgent', agentId, text, messageId),
+  /** Threads with last message + unread count (newest first); re-fetched on thread.changed. */
+  listThreads: (): Promise<ThreadInfo[]> => ipcRenderer.invoke('alfred:listThreads'),
+  /** One thread's transcript (oldest→newest). */
+  listThreadMessages: (threadId: string): Promise<ThreadMessage[]> =>
+    ipcRenderer.invoke('alfred:listThreadMessages', threadId),
+  /** The user opened a thread: clear its unread agent replies (badge drops everywhere). */
+  markThreadRead: (threadId: string): Promise<number> => ipcRenderer.invoke('alfred:markThreadRead', threadId),
   // ── Notifications + heartbeat (Phase 7 stage 4) — self-orchestration wakes. ──
   /** Notifications for the Activity feed, optionally filtered (newest first); re-fetched on notification.changed. */
   listNotifications: (filter?: NotificationFilter): Promise<AgentNotification[]> =>

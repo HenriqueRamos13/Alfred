@@ -100,6 +100,28 @@ export function validateUserMessage(raw: unknown): { ok: true; text: string } | 
   return { ok: true, text };
 }
 
+// ── correlation ids ───────────────────────────────────────────────────────────
+
+/** Hard cap on a caller-supplied message id (a primary key, not free text). */
+export const MESSAGE_ID_MAX_CHARS = 64;
+
+/**
+ * The one shape a message id may have: `[A-Za-z0-9-]{1,64}` — enough for a
+ * `crypto.randomUUID()` minted by the renderer for its optimistic bubble and for
+ * our own `TM-<8hex>`, and nothing else.
+ *
+ * WHY a whitelist: this value arrives over IPC from the renderer and becomes a
+ * PRIMARY KEY the status events are keyed on, so anything outside the charset (SQL
+ * punctuation, path separators, whitespace, unicode homoglyphs, an unbounded blob)
+ * is refused at the boundary and the caller mints its own id instead. Pure + total:
+ * a non-string is `false`, never coerced.
+ */
+const MESSAGE_ID_RE = /^[A-Za-z0-9-]{1,64}$/;
+
+export function isValidMessageId(v: unknown): v is string {
+  return typeof v === 'string' && MESSAGE_ID_RE.test(v);
+}
+
 // ── shapes ────────────────────────────────────────────────────────────────────
 
 /** One message in a user↔agent thread. `author` is 'user' or the agentId. */

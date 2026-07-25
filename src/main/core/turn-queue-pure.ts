@@ -31,9 +31,9 @@ export function coalesceTurns(texts: string[]): string {
 //
 // The status ladder (thread-pure.ts) needs to say WHICH stored message is queued /
 // executing / done / dropped, so the queue carries the persisted message id next to
-// the text. Same FIFO + same bound as the string API above — the string functions
-// stay exported and unchanged for the orchestrator's current call sites (it migrates
-// to the item API in stage 8).
+// the text. Same FIFO + same bound as the string API above. Since stage 8 BOTH
+// queues (the main chat and every user↔agent thread) run on the item API; the string
+// functions stay as the id-less reference implementation the item ones mirror.
 
 /** A pending turn plus the id of the row it was persisted as. */
 export interface TurnItem {

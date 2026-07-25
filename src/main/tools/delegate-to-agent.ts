@@ -35,6 +35,7 @@ import {
   DEFAULT_MAX_CONCURRENT_CHILDREN,
   type DelegationRole,
   type SpawnLimits,
+  type TeamAgent,
 } from '../core/team-pure.ts';
 import {
   grantAllows,
@@ -142,57 +143,99 @@ export const delegateToAgent: Tool<Args> = {
     const agent = getAgent(ctx.db, a.agentId);
     if (!agent) return { ok: false, error: `no roster agent with id "${a.agentId}" (create one with the team tool, or op=list to see them)` };
 
-    // Spawn bounds + kill-switch (Phase 6 stage 2). `depth` is the CURRENT runner's
-    // depth (0 = top-level, attended Alfred). The child runs at depth+1. Refuse —
-    // EXPLICITLY, never silently — when paused, too deep, or over the concurrent
-    // children ceiling. Applies to top-level and nested delegations alike.
-    const depth = ctx.delegationDepth ?? 0;
-    const parentKey = ctx.sessionId;
-    const decision = canSpawn(depth, activeChildren(parentKey), spawnLimits(), spawnPaused(ctx.db));
-    if (!decision.ok) {
+    const out = await runRosterAgentAttended(ctx, agent, a.task.trim(), { model: a.model });
+    // The spawn gate refused BEFORE any work happened: surface it as a blocked TOOL
+    // call in the activity log (the runner itself has no tool identity — the thread
+    // path reports the same refusal as a message status instead).
+    if (out.spawnRefused) {
       ctx.emit({ kind: 'tool.start', sessionId: ctx.sessionId, toolName: 'delegate_to_agent', args: maskSecrets({ agentId: a.agentId }), tier: 'T2' });
-      ctx.emit({ kind: 'tool.end', sessionId: ctx.sessionId, toolName: 'delegate_to_agent', status: 'blocked', error: decision.reason });
-      return { ok: false, error: decision.reason };
+      ctx.emit({ kind: 'tool.end', sessionId: ctx.sessionId, toolName: 'delegate_to_agent', status: 'blocked', error: out.error });
+      return { ok: false, error: out.error };
     }
-    // Reserve the slot SYNCHRONOUSLY, right after the check — before any `await`.
-    // Otherwise parallel delegate_to_agent tool calls in one model step all read
-    // activeChildren=0, all pass canSpawn, then all enterChild → the concurrency
-    // ceiling is bypassed (TOCTOU). Reserving here serialises them correctly.
-    enterChild(parentKey);
-    // Live activity (Phase 8 stage 4): the agent is 'working' for exactly as long
-    // as its turn holds the spawn slot — same bracket, so both paths (API brain and
-    // claude-cli) are covered and an abort/throw can never leave the dot lit.
-    const endWork = beginActivity(ctx.emit, agent.id, 'working', truncateLabel(a.task));
-    try {
-      const model = resolveTeamModel(a.model, agent);
-      const context = await loadAgentContext(ctx.workspace, agent);
-
-      // A NESTED spawn (this call itself runs inside a delegated child, depth ≥ 1)
-      // is UNATTENDED — no human watches a fan-out — so the child runs FAIL-CLOSED
-      // (sensitive actions denied/parked, never auto-run, never inheriting the
-      // parent's interactive approval). A TOP-LEVEL delegate (Alfred, depth 0)
-      // stays ATTENDED (the normal approval path).
-      const nested = depth >= 1;
-      if (agent.provider === 'claude-cli') return await runClaudeCli(ctx, context, a.task.trim(), model);
-      return await runAgentTurn(ctx, {
-        agentId: agent.id,
-        provider: agent.provider,
-        model,
-        grant: agent.grant,
-        delegationRole: agent.delegationRole,
-        canMessageUser: agent.canMessageUser ?? false,
-        delegationDepth: depth + 1,
-        dailyTokenBudget: agent.dailyTokenBudget,
-        system: context,
-        task: a.task.trim(),
-        unattended: nested ? { dangerous: isDangerous(ctx.db), queue: () => {} } : undefined,
-      });
-    } finally {
-      endWork();
-      exitChild(parentKey);
-    }
+    return out;
   },
 };
+
+/** Knobs the two attended callers (this tool, a user↔agent thread) differ on. */
+export interface RosterRunOpts {
+  /** Model override — validated against the agent's provider catalog (else its own). */
+  model?: string;
+  /** Live token sink (thread streaming). API brains only; claude-cli streams nothing. */
+  onDelta?: (text: string) => void;
+}
+
+/**
+ * ONE attended run of a roster agent — the shared body behind `delegate_to_agent`
+ * (Alfred delegating) and a user↔agent thread turn (the user typing to the agent
+ * directly, Phase 8 stage 8). Both are ATTENDED: a human fired them, so sensitive
+ * actions take the NORMAL approval path (never the unattended fail-closed queue).
+ *
+ * What it owns, in this exact order (all of it was inlined in `execute` before the
+ * extraction — the ordering IS the invariant):
+ *   1. the spawn gate (depth / per-parent concurrency / spawn_paused kill-switch),
+ *   2. the SYNCHRONOUS slot reservation (TOCTOU — see below),
+ *   3. the Stage-4 'working' activity bracket,
+ *   4. the provider branch (claude-cli child vs. in-process API turn),
+ *   5. slot + activity release in a `finally` (an abort/throw can never leak either).
+ *
+ * `agent` is expected to exist (the caller resolved it) and `task` to be non-blank.
+ * A gate refusal returns `{ ok:false, spawnRefused:true }` so each caller can report
+ * it in ITS OWN vocabulary (a blocked tool event / an errored message) — the runner
+ * emits nothing for it.
+ */
+export async function runRosterAgentAttended(
+  ctx: ToolCtx,
+  agent: TeamAgent,
+  task: string,
+  opts?: RosterRunOpts,
+): Promise<AgentTurnResult> {
+  // Spawn bounds + kill-switch (Phase 6 stage 2). `depth` is the CURRENT runner's
+  // depth (0 = top-level, attended Alfred). The child runs at depth+1. Refuse —
+  // EXPLICITLY, never silently — when paused, too deep, or over the concurrent
+  // children ceiling. Applies to top-level and nested delegations alike.
+  const depth = ctx.delegationDepth ?? 0;
+  const parentKey = ctx.sessionId;
+  const decision = canSpawn(depth, activeChildren(parentKey), spawnLimits(), spawnPaused(ctx.db));
+  if (!decision.ok) return { ok: false, error: decision.reason, spawnRefused: true };
+  // Reserve the slot SYNCHRONOUSLY, right after the check — before any `await`.
+  // Otherwise parallel delegate_to_agent tool calls in one model step all read
+  // activeChildren=0, all pass canSpawn, then all enterChild → the concurrency
+  // ceiling is bypassed (TOCTOU). Reserving here serialises them correctly.
+  enterChild(parentKey);
+  // Live activity (Phase 8 stage 4): the agent is 'working' for exactly as long
+  // as its turn holds the spawn slot — same bracket, so both paths (API brain and
+  // claude-cli) are covered and an abort/throw can never leave the dot lit.
+  const endWork = beginActivity(ctx.emit, agent.id, 'working', truncateLabel(task));
+  try {
+    const model = resolveTeamModel(opts?.model, agent);
+    const context = await loadAgentContext(ctx.workspace, agent);
+
+    // A NESTED spawn (this call itself runs inside a delegated child, depth ≥ 1)
+    // is UNATTENDED — no human watches a fan-out — so the child runs FAIL-CLOSED
+    // (sensitive actions denied/parked, never auto-run, never inheriting the
+    // parent's interactive approval). A TOP-LEVEL delegate (Alfred, depth 0) and
+    // every thread turn (the user is right there) stay ATTENDED.
+    const nested = depth >= 1;
+    if (agent.provider === 'claude-cli') return await runClaudeCli(ctx, context, task, model);
+    return await runAgentTurn(ctx, {
+      agentId: agent.id,
+      provider: agent.provider,
+      model,
+      grant: agent.grant,
+      delegationRole: agent.delegationRole,
+      canMessageUser: agent.canMessageUser ?? false,
+      delegationDepth: depth + 1,
+      dailyTokenBudget: agent.dailyTokenBudget,
+      system: context,
+      task,
+      unattended: nested ? { dangerous: isDangerous(ctx.db), queue: () => {} } : undefined,
+      onDelta: opts?.onDelta,
+    });
+  } finally {
+    endWork();
+    exitChild(parentKey);
+  }
+}
 
 /** Result of one in-process agent turn (API brains). */
 export interface AgentTurnResult {
@@ -203,6 +246,12 @@ export interface AgentTurnResult {
   budgetExhausted?: boolean;
   /** Tokens this turn spent (0 when unavailable, e.g. aborted). */
   tokens?: number;
+  /**
+   * The SPAWN GATE refused before the turn started (depth / concurrency ceiling /
+   * spawn_paused). Set only by runRosterAgentAttended, so each caller reports the
+   * refusal in its own vocabulary (blocked tool event vs. errored user message).
+   */
+  spawnRefused?: boolean;
 }
 
 export interface AgentTurnSpec {
@@ -229,6 +278,12 @@ export interface AgentTurnSpec {
   unattended?: { dangerous: boolean; queue: (toolName: string, args: unknown) => void };
   /** Per-run hard-interrupt (scheduler) — aborts the turn when it fires. */
   signal?: AbortSignal;
+  /**
+   * Live text sink: every assistant text-delta as it arrives, so a user↔agent
+   * thread can stream the reply into the UI (Phase 8 stage 8). A throwing sink is
+   * logged and swallowed — a broken UI channel must never fail the agent's turn.
+   */
+  onDelta?: (text: string) => void;
 }
 
 /**
@@ -451,8 +506,16 @@ export async function runAgentTurn(ctx: ToolCtx, spec: AgentTurnSpec): Promise<A
 
     let text = '';
     for await (const part of result.fullStream) {
-      if (part.type === 'text-delta') text += part.text;
-      else if (part.type === 'error') throw part.error instanceof Error ? part.error : new Error(String(part.error));
+      if (part.type === 'text-delta') {
+        text += part.text;
+        if (spec.onDelta) {
+          try {
+            spec.onDelta(part.text);
+          } catch (err) {
+            console.error('[alfred] agent delta sink failed:', err instanceof Error ? err.message : err);
+          }
+        }
+      } else if (part.type === 'error') throw part.error instanceof Error ? part.error : new Error(String(part.error));
     }
     let tokens = 0;
     try {
