@@ -6,6 +6,7 @@
 import Database from 'better-sqlite3';
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
+import { isUserMsgStatus, statusTransition, type UserMsgStatus } from './thread-pure.ts';
 
 export type AlfredDb = Database.Database;
 
@@ -81,7 +82,14 @@ CREATE TABLE IF NOT EXISTS messages (
   session_id  TEXT NOT NULL,
   role        TEXT NOT NULL,
   content     TEXT NOT NULL,
-  ts          INTEGER NOT NULL
+  ts          INTEGER NOT NULL,
+  -- Unified user-message status ladder (Phase 8 stage 7, see core/thread-pure.ts):
+  -- queued|delivered|read|executing|done|error|dropped on USER rows; NULL on
+  -- assistant/tool rows and on every row written before the ladder existed.
+  -- ponytail: messages_fts_au re-indexes the row on EVERY update, so each status
+  -- bump churns the FTS index. Accepted — a handful of updates per turn on a
+  -- personal transcript; revisit if history ever grows to millions of rows.
+  status      TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, ts);
 
@@ -266,6 +274,41 @@ CREATE TABLE IF NOT EXISTS agent_notifications (
 );
 CREATE INDEX IF NOT EXISTS idx_notify_to ON agent_notifications(to_agent_id, seen_ts);
 CREATE INDEX IF NOT EXISTS idx_notify_project ON agent_notifications(project_slug, created_ts);
+
+-- User↔agent conversation threads (Phase 8 stage 7). SEPARATE from inbox_messages:
+-- the inbox is the AGENT asking the user a typed question (ask/answer, HITL); a
+-- thread is the USER opening a plain conversation WITH an agent. v1 = one thread per
+-- agent (see core/threads.ts getOrCreateThread), so "subject" is reserved for the
+-- multi-thread step and defaults to ''. updated_ts is bumped by EVERY writer, and is
+-- what the sidebar orders by.
+CREATE TABLE IF NOT EXISTS agent_threads (
+  id          TEXT PRIMARY KEY,               -- TH-<8hex>
+  agent_id    TEXT NOT NULL,
+  subject     TEXT NOT NULL DEFAULT '',
+  created_ts  INTEGER NOT NULL,
+  updated_ts  INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_threads_agent ON agent_threads(agent_id, updated_ts);
+
+-- Messages inside a thread. "author" is the ONLY authorship signal: 'user' or the
+-- agentId (no role column). "status" walks the SAME ladder as messages.status
+-- (core/thread-pure.ts): queued→delivered→read→executing→done|error, +dropped;
+-- forward-only, terminals absorbing, every write routed through statusTransition.
+-- read_ts is dual-meaning by authorship: on a USER row it is when the AGENT read it,
+-- on an AGENT row it is when the USER opened it (that is what the badge counts).
+CREATE TABLE IF NOT EXISTS agent_thread_messages (
+  id          TEXT PRIMARY KEY,               -- TM-<8hex>
+  thread_id   TEXT NOT NULL,
+  author      TEXT NOT NULL,                  -- 'user' | agentId
+  body        TEXT NOT NULL DEFAULT '',
+  status      TEXT NOT NULL DEFAULT 'queued',
+  error       TEXT,                            -- why it failed (status 'error')
+  created_ts  INTEGER NOT NULL,
+  read_ts     INTEGER,
+  started_ts  INTEGER,                         -- run start (status 'executing')
+  done_ts     INTEGER                          -- settled (done|error)
+);
+CREATE INDEX IF NOT EXISTS idx_thread_msgs ON agent_thread_messages(thread_id, created_ts);
 `;
 
 export function openDb(dbPath: string): AlfredDb {
@@ -320,6 +363,14 @@ export function openDb(dbPath: string): AlfredDb {
     (c) => c.name === 'study',
   );
   if (!hasStudy) db.exec('ALTER TABLE scheduled_jobs ADD COLUMN study TEXT');
+  // Idempotent migration: `messages.status` (unified user-message ladder, Phase 8
+  // stage 7) for transcripts written before it existed. NULL on every legacy row and
+  // on assistant/tool rows — only USER rows walk the ladder, and rowToStored drops a
+  // null so the type stays `status?: UserMsgStatus`.
+  const hasMsgStatus = (db.prepare('PRAGMA table_info(messages)').all() as { name: string }[]).some(
+    (c) => c.name === 'status',
+  );
+  if (!hasMsgStatus) db.exec('ALTER TABLE messages ADD COLUMN status TEXT');
   // Idempotent FTS5 backfill: index any pre-existing messages the triggers never
   // saw (DBs created before messages_fts existed, or rows inserted while it was
   // absent). Insert only the missing ids, so re-running on every boot is a no-op.
@@ -353,23 +404,69 @@ export interface StoredMessage {
   role: string;
   content: string;
   ts: number;
+  /** Ladder status — USER rows only (see core/thread-pure.ts); absent otherwise. */
+  status?: UserMsgStatus;
 }
 
-/** Persist one chat message (idempotent on id). */
+interface MessageRow {
+  id: string;
+  sessionId: string;
+  role: string;
+  content: string;
+  ts: number;
+  status: string | null;
+}
+
+/** Drop a null/unknown status so the shape stays `status?: UserMsgStatus`. */
+function rowToStored(r: MessageRow): StoredMessage {
+  const m: StoredMessage = { id: r.id, sessionId: r.sessionId, role: r.role, content: r.content, ts: r.ts };
+  if (isUserMsgStatus(r.status)) m.status = r.status;
+  return m;
+}
+
+/** Persist one chat message (idempotent on id). `status` is optional (user rows). */
 export function insertMessage(db: AlfredDb, m: StoredMessage): void {
-  db.prepare('INSERT OR IGNORE INTO messages(id, session_id, role, content, ts) VALUES (?, ?, ?, ?, ?)').run(
+  db.prepare('INSERT OR IGNORE INTO messages(id, session_id, role, content, ts, status) VALUES (?, ?, ?, ?, ?, ?)').run(
     m.id,
     m.sessionId,
     m.role,
     m.content,
     m.ts,
+    m.status ?? null,
   );
 }
 
 /** Recent messages across all sessions, oldest→newest (for UI reload + model continuity). */
 export function getRecentMessages(db: AlfredDb, limit = 100): StoredMessage[] {
   const rows = db
-    .prepare('SELECT id, session_id AS sessionId, role, content, ts FROM messages ORDER BY ts DESC, rowid DESC LIMIT ?')
-    .all(limit) as StoredMessage[];
-  return rows.reverse();
+    .prepare(
+      'SELECT id, session_id AS sessionId, role, content, ts, status FROM messages ORDER BY ts DESC, rowid DESC LIMIT ?',
+    )
+    .all(limit) as MessageRow[];
+  return rows.reverse().map(rowToStored);
+}
+
+/**
+ * Advance one transcript message on the unified ladder. Routed through
+ * statusTransition, so a backwards/terminal move is SKIPPED and logged instead of
+ * silently corrupting the row (same rule the thread markers in core/threads.ts
+ * apply). A row with no status yet (legacy row, or an assistant row being adopted)
+ * has nothing to compare against, so the first stamp is always accepted. Returns
+ * true when a write happened.
+ */
+export function setMessageStatus(db: AlfredDb, id: string, status: UserMsgStatus): boolean {
+  const row = db.prepare('SELECT status FROM messages WHERE id = ?').get(id) as { status: string | null } | undefined;
+  if (!row) {
+    console.warn(`[alfred:db] no message "${id}" to mark "${status}"`);
+    return false;
+  }
+  if (isUserMsgStatus(row.status)) {
+    const t = statusTransition(row.status, status);
+    if (!t.ok) {
+      console.warn(`[alfred:db] skipping status change on message "${id}": ${t.error}`);
+      return false;
+    }
+  }
+  db.prepare('UPDATE messages SET status = ? WHERE id = ?').run(status, id);
+  return true;
 }

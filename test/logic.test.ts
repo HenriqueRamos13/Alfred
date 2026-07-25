@@ -4853,3 +4853,183 @@ test('batteryAbsent — real readings are not the sentinel', () => {
     false,
   );
 });
+
+// ── Phase 8 stage 7: user↔agent threads (status ladder + prompt window) ───────
+
+import {
+  USER_MSG_STATUSES,
+  USER_MSG_MAX_CHARS,
+  statusTransition,
+  reconcileStaleStatus,
+  validateUserMessage,
+  buildThreadPrompt,
+  threadUnreadCount,
+  type UserMsgStatus,
+} from '../src/main/core/thread-pure.ts';
+import { enqueueTurnItem, coalesceTurnItems, type TurnItem } from '../src/main/core/turn-queue-pure.ts';
+
+const refused = (r: { ok: true } | { ok: false; error: string }): string => (r.ok ? '' : r.error);
+
+test('statusTransition — forward-only ladder; terminal done/error/dropped refuse everything', () => {
+  // the happy ladder, rung by rung
+  assert.deepEqual(statusTransition('queued', 'delivered'), { ok: true });
+  assert.deepEqual(statusTransition('delivered', 'read'), { ok: true });
+  assert.deepEqual(statusTransition('read', 'executing'), { ok: true });
+  assert.deepEqual(statusTransition('executing', 'done'), { ok: true });
+  // backwards is refused, never silently
+  assert.equal(statusTransition('read', 'queued').ok, false);
+  assert.match(refused(statusTransition('read', 'queued')), /forward-only/);
+  assert.equal(statusTransition('executing', 'delivered').ok, false);
+  // re-marking the same rung is a no-op the caller must skip, not a legal move
+  assert.equal(statusTransition('read', 'read').ok, false);
+  // every terminal ABSORBS: nothing leaves it — not even another terminal
+  for (const t of ['done', 'error', 'dropped'] as const) {
+    for (const n of USER_MSG_STATUSES) {
+      assert.equal(statusTransition(t, n).ok, false);
+      assert.match(refused(statusTransition(t, n)), /terminal/);
+    }
+  }
+  // but any non-terminal may reach any terminal
+  for (const c of ['queued', 'delivered', 'read', 'executing'] as const) {
+    for (const t of ['done', 'error', 'dropped'] as const) assert.deepEqual(statusTransition(c, t), { ok: true });
+  }
+});
+
+test('statusTransition — skipping ranks is legal (queued→executing for Alfred chat)', () => {
+  // Alfred's own chat never "delivers"/"reads" — it jumps straight to executing.
+  assert.deepEqual(statusTransition('queued', 'executing'), { ok: true });
+  assert.deepEqual(statusTransition('queued', 'read'), { ok: true });
+  assert.deepEqual(statusTransition('queued', 'done'), { ok: true });
+  assert.deepEqual(statusTransition('delivered', 'executing'), { ok: true });
+  // junk from the DB/IPC boundary is refused, never coerced onto the ladder
+  assert.equal(statusTransition('bogus' as UserMsgStatus, 'done').ok, false);
+  assert.equal(statusTransition('queued', 'bogus' as UserMsgStatus).ok, false);
+});
+
+test('reconcileStaleStatus — queued/delivered/read/executing → error; terminal → null', () => {
+  // a status left mid-ladder by a crash/restart can never advance again → error
+  assert.equal(reconcileStaleStatus('queued'), 'error');
+  assert.equal(reconcileStaleStatus('delivered'), 'error');
+  assert.equal(reconcileStaleStatus('read'), 'error');
+  assert.equal(reconcileStaleStatus('executing'), 'error');
+  // terminals are already settled → nothing to reconcile
+  assert.equal(reconcileStaleStatus('done'), null);
+  assert.equal(reconcileStaleStatus('error'), null);
+  assert.equal(reconcileStaleStatus('dropped'), null);
+});
+
+test('validateUserMessage — trims; refuses blank; caps at 8000 chars', () => {
+  assert.deepEqual(validateUserMessage('  olá  '), { ok: true, text: 'olá' });
+  assert.equal(validateUserMessage('').ok, false);
+  assert.equal(validateUserMessage('   \n\t ').ok, false);
+  // non-strings are refused, not stringified
+  assert.equal(validateUserMessage(null).ok, false);
+  assert.equal(validateUserMessage(undefined).ok, false);
+  assert.equal(validateUserMessage(42).ok, false);
+  assert.equal(validateUserMessage({ text: 'hi' }).ok, false);
+  assert.equal(USER_MSG_MAX_CHARS, 8000);
+  const max = 'x'.repeat(USER_MSG_MAX_CHARS);
+  assert.deepEqual(validateUserMessage(max), { ok: true, text: max });
+  // the cap is measured AFTER the trim
+  assert.deepEqual(validateUserMessage(`  ${max}  `), { ok: true, text: max });
+  // one over → refused, never silently truncated
+  const over = validateUserMessage('x'.repeat(USER_MSG_MAX_CHARS + 1));
+  assert.equal(over.ok, false);
+  assert.match(refused(over), /8000/);
+});
+
+test('buildThreadPrompt — windows to last 20 messages and ~8000 chars, newest kept, oldest dropped whole', () => {
+  const agent = { id: 'coder', name: 'Coder' };
+  // 30 messages → only the last 20 survive the message window
+  const history = Array.from({ length: 30 }, (_, i) => ({ author: i % 2 ? 'coder' : 'user', body: `msg-${i}` }));
+  const lines = buildThreadPrompt(agent, history, 'nova').split('\n');
+  assert.equal(lines.includes('Utilizador: msg-10'), true);
+  assert.equal(lines.includes('Coder: msg-29'), true);
+  assert.equal(lines.some((l) => l.endsWith('msg-9')), false);
+  assert.equal(lines.some((l) => l.endsWith('msg-0')), false);
+  // char budget: WHOLE messages dropped from the oldest until the history fits
+  const big = Array.from({ length: 5 }, (_, i) => ({ author: 'user', body: `[TAG${i}] ${'z'.repeat(2990)}` }));
+  const capped = buildThreadPrompt(agent, big, 'nova');
+  assert.equal(capped.includes('[TAG4]'), true); // newest kept
+  assert.equal(capped.includes('[TAG3]'), true);
+  assert.equal(capped.includes('[TAG2]'), false); // oldest dropped
+  assert.equal(capped.includes('[TAG0]'), false);
+  // explicit opts honoured, and a message is never half-included
+  const three = [
+    { author: 'user', body: 'a'.repeat(40) },
+    { author: 'coder', body: 'b'.repeat(40) },
+    { author: 'user', body: 'c'.repeat(40) },
+  ];
+  const clipped = buildThreadPrompt(agent, three, 'nova', { maxChars: 120 });
+  assert.equal(clipped.includes('a'.repeat(40)), false);
+  assert.equal(clipped.includes('b'.repeat(40)), true);
+  assert.equal(clipped.includes('c'.repeat(40)), true);
+  assert.equal(buildThreadPrompt(agent, three, 'nova', { maxMessages: 1 }).includes('b'.repeat(40)), false);
+});
+
+test('buildThreadPrompt — framing + history + new message last; empty history omits the history section', () => {
+  const agent = { id: 'coder', name: 'Coder' };
+  const p = buildThreadPrompt(agent, [{ author: 'user', body: 'olá' }, { author: 'coder', body: 'oi' }], ' como vais? ');
+  // framing first: reply to the USER directly, in the user's language
+  assert.equal(p.startsWith('# Mensagem direta do utilizador'), true);
+  assert.match(p, /na língua dele/);
+  // labelled history, in order, with the agent's display name
+  assert.equal(p.includes('# Conversa até agora'), true);
+  assert.equal(p.indexOf('Utilizador: olá') < p.indexOf('Coder: oi'), true);
+  // the NEW message is last (and trimmed)
+  assert.equal(p.trimEnd().endsWith('como vais?'), true);
+  assert.equal(p.indexOf('Coder: oi') < p.indexOf('como vais?'), true);
+  // no history → no history section at all
+  const bare = buildThreadPrompt(agent, [], '  arranca  ');
+  assert.equal(bare.includes('# Conversa até agora'), false);
+  assert.equal(bare.startsWith('# Mensagem direta do utilizador'), true);
+  assert.equal(bare.trimEnd().endsWith('arranca'), true);
+  // blank bodies are skipped, never rendered as a dangling label
+  assert.equal(buildThreadPrompt(agent, [{ author: 'user', body: '   ' }], 'x').includes('# Conversa até agora'), false);
+  // an unnamed agent falls back to its id as the label
+  assert.equal(buildThreadPrompt({ id: 'coder', name: '  ' }, [{ author: 'coder', body: 'oi' }], 'x').includes('coder: oi'), true);
+});
+
+test('threadUnreadCount — counts only agent-authored rows with null readTs', () => {
+  assert.equal(
+    threadUnreadCount([
+      { author: 'coder', readTs: undefined }, // unread agent reply
+      { author: 'coder' }, // unread agent reply (absent key)
+      { author: 'coder', readTs: 5 }, // already opened
+      { author: 'user' }, // the user's own message is never "unread" to the user
+    ]),
+    2,
+  );
+  assert.equal(threadUnreadCount([]), 0);
+  assert.equal(threadUnreadCount([{ author: 'user' }, { author: 'user' }]), 0);
+});
+
+test('enqueueTurnItem — bounded at max, drops the OLDEST item and returns it', () => {
+  const q: TurnItem[] = [];
+  for (let i = 0; i < TURN_QUEUE_MAX; i++) assert.equal(enqueueTurnItem(q, { id: `TM-${i}`, text: `m${i}` }).dropped, null);
+  assert.equal(q.length, TURN_QUEUE_MAX);
+  const over = enqueueTurnItem(q, { id: 'TM-over', text: 'overflow' });
+  // the OLDEST comes back so the caller can mark it 'dropped' — never a silent drop
+  assert.deepEqual(over.dropped, { id: 'TM-0', text: 'm0' });
+  assert.equal(q.length, TURN_QUEUE_MAX); // bounded
+  assert.equal(q[q.length - 1]?.id, 'TM-over'); // FIFO preserved
+  assert.equal(q[0]?.id, 'TM-1');
+  // explicit max honoured
+  const q2: TurnItem[] = [];
+  assert.equal(enqueueTurnItem(q2, { id: 'a', text: 'a' }, 1).dropped, null);
+  assert.deepEqual(enqueueTurnItem(q2, { id: 'b', text: 'b' }, 1).dropped, { id: 'a', text: 'a' });
+  assert.deepEqual(q2, [{ id: 'b', text: 'b' }]);
+});
+
+test('coalesceTurnItems — joins non-blank texts with blank line; ids track kept entries only', () => {
+  assert.deepEqual(coalesceTurnItems([{ id: '1', text: 'a' }, { id: '2', text: 'b' }]), { text: 'a\n\nb', ids: ['1', '2'] });
+  // blank-only entries contribute neither text NOR id (nothing to mark executing)
+  assert.deepEqual(
+    coalesceTurnItems([{ id: '1', text: 'a' }, { id: '2', text: '   ' }, { id: '3', text: '' }, { id: '4', text: ' b ' }]),
+    { text: 'a\n\nb', ids: ['1', '4'] },
+  );
+  assert.deepEqual(coalesceTurnItems([]), { text: '', ids: [] });
+  assert.deepEqual(coalesceTurnItems([{ id: '1', text: '  ' }]), { text: '', ids: [] });
+  // the legacy string API still behaves (orchestrator migrates in stage 8)
+  assert.equal(coalesceTurns(['a', '', ' b ']), 'a\n\nb');
+});

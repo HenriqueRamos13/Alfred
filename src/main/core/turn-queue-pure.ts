@@ -26,3 +26,39 @@ export function enqueueTurn(queue: string[], text: string, max = TURN_QUEUE_MAX)
 export function coalesceTurns(texts: string[]): string {
   return texts.map((t) => t.trim()).filter((t) => t.length > 0).join('\n\n');
 }
+
+// ── identified turns (Phase 8 stage 7) ────────────────────────────────────────
+//
+// The status ladder (thread-pure.ts) needs to say WHICH stored message is queued /
+// executing / done / dropped, so the queue carries the persisted message id next to
+// the text. Same FIFO + same bound as the string API above — the string functions
+// stay exported and unchanged for the orchestrator's current call sites (it migrates
+// to the item API in stage 8).
+
+/** A pending turn plus the id of the row it was persisted as. */
+export interface TurnItem {
+  /** The persisted message id (`messages.id` or `agent_thread_messages.id`). */
+  id: string;
+  text: string;
+}
+
+/**
+ * Append a turn item. Bounded exactly like `enqueueTurn`: past `max` the OLDEST
+ * item is dropped and RETURNED, so the caller can both log the runaway and mark
+ * that message `dropped` on the ladder (a user message never vanishes silently).
+ */
+export function enqueueTurnItem(queue: TurnItem[], item: TurnItem, max = TURN_QUEUE_MAX): { dropped: TurnItem | null } {
+  queue.push(item);
+  if (queue.length > max) return { dropped: queue.shift() ?? null };
+  return { dropped: null };
+}
+
+/**
+ * Coalesce a batch of turn items into ONE prompt plus the ids that actually made it
+ * in. Blank-only texts contribute NEITHER text nor id: they are not part of the
+ * prompt, so the caller must not mark them executing/done on the ladder. Pure.
+ */
+export function coalesceTurnItems(items: readonly TurnItem[]): { text: string; ids: string[] } {
+  const kept = items.map((i) => ({ id: i.id, text: i.text.trim() })).filter((i) => i.text.length > 0);
+  return { text: kept.map((i) => i.text).join('\n\n'), ids: kept.map((i) => i.id) };
+}

@@ -15,6 +15,8 @@ import type { AgentActivity } from './agent-activity-pure.ts';
 // TeamAgentDetail carries the stored privilege role (team-pure owns the union; the
 // type-only import keeps that module's node-touching value imports out of here).
 import type { DelegationRole } from './team-pure.ts';
+// ChatMessage carries the unified user-message ladder status (Phase 8 stage 7).
+import type { UserMsgStatus } from './thread-pure.ts';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // JSON Schema (Anthropic tools format — a pragmatic subset)
@@ -450,6 +452,12 @@ export interface ChatMessage {
   /** Set on tool-result messages. */
   toolName?: string;
   toolUseId?: string;
+  /**
+   * Unified user-message ladder status (queued→delivered→read→executing→done|error,
+   * +dropped). Set on USER rows only; absent on assistant/tool rows and on every
+   * message persisted before the ladder existed. See core/thread-pure.ts.
+   */
+  status?: UserMsgStatus;
 }
 
 /** Events streamed from main → renderer over IPC (activity log + chat). */
