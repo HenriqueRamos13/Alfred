@@ -89,6 +89,13 @@ const api = {
   /** SPAWN kill-switch (freeze new fan-out) — persisted; read on mount. Default OFF. */
   getSpawnPaused: (): Promise<boolean> => ipcRenderer.invoke('alfred:getSpawnPaused'),
   setSpawnPaused: (on: boolean): Promise<boolean> => ipcRenderer.invoke('alfred:setSpawnPaused', on),
+  /** Spawn ceilings (maxConcurrentChildren / maxSpawnDepth) — persisted, clamped; read on mount. Defaults 3 / 2. */
+  getSpawnLimits: (): Promise<{ maxConcurrentChildren: number; maxSpawnDepth: number }> =>
+    ipcRenderer.invoke('alfred:getSpawnLimits'),
+  setSpawnLimits: (
+    patch: { maxConcurrentChildren?: number; maxSpawnDepth?: number },
+  ): Promise<{ maxConcurrentChildren: number; maxSpawnDepth: number }> =>
+    ipcRenderer.invoke('alfred:setSpawnLimits', patch),
   /** GRILL-ME (interview to lock the plan before acting) — persisted; read on mount. Default ON. */
   getGrillMe: (): Promise<boolean> => ipcRenderer.invoke('alfred:getGrillMe'),
   setGrillMe: (on: boolean): Promise<boolean> => ipcRenderer.invoke('alfred:setGrillMe', on),

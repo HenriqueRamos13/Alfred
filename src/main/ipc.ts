@@ -29,6 +29,7 @@ import type {
   WakeStatus,
   SttSettings,
 } from './core/types.ts';
+import type { SpawnLimits } from './core/team-pure.ts';
 import type { ProjectDetail } from './core/projects.ts';
 import type { KanbanCard } from './core/kanban-pure.ts';
 import type { InboxMessage } from './core/inbox-pure.ts';
@@ -73,6 +74,9 @@ export interface Orchestrator {
   /** SPAWN kill-switch (freeze new fan-out): read/toggle, persisted, default OFF. */
   getSpawnPaused(): boolean | Promise<boolean>;
   setSpawnPaused(on: boolean): boolean | Promise<boolean>;
+  /** Spawn ceilings (maxConcurrentChildren / maxSpawnDepth): read/patch, persisted, clamped. */
+  getSpawnLimits(): SpawnLimits | Promise<SpawnLimits>;
+  setSpawnLimits(patch: Partial<SpawnLimits>): SpawnLimits | Promise<SpawnLimits>;
   /** GRILL-ME (plan-clarity interview): read/toggle, persisted, default ON. */
   getGrillMe(): boolean | Promise<boolean>;
   setGrillMe(on: boolean): boolean | Promise<boolean>;
@@ -481,6 +485,20 @@ export function registerIpc(core: Orchestrator, emit: (e: StreamEvent) => void):
     } catch (err) {
       fail('set spawn paused', err);
       return false;
+    }
+  });
+  const SPAWN_LIMITS_DEFAULT: SpawnLimits = { maxConcurrentChildren: 3, maxSpawnDepth: 2 };
+  ipcMain.handle('alfred:getSpawnLimits', guard('get spawn limits', () => core.getSpawnLimits(), SPAWN_LIMITS_DEFAULT));
+  ipcMain.handle('alfred:setSpawnLimits', async (_e, patch: unknown) => {
+    try {
+      const p = (patch ?? {}) as Record<string, unknown>;
+      const clean: Partial<SpawnLimits> = {};
+      if (typeof p.maxConcurrentChildren === 'number') clean.maxConcurrentChildren = p.maxConcurrentChildren;
+      if (typeof p.maxSpawnDepth === 'number') clean.maxSpawnDepth = p.maxSpawnDepth;
+      return await core.setSpawnLimits(clean);
+    } catch (err) {
+      fail('set spawn limits', err);
+      return SPAWN_LIMITS_DEFAULT;
     }
   });
   ipcMain.handle('alfred:getGrillMe', guard('get grill me', () => core.getGrillMe(), true));

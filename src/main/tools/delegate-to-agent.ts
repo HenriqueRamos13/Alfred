@@ -31,8 +31,11 @@ import {
   blockedToolsForRole,
   restrictGrantForRole,
   canSpawn,
+  parseSpawnLimit,
   DEFAULT_MAX_SPAWN_DEPTH,
   DEFAULT_MAX_CONCURRENT_CHILDREN,
+  MAX_SPAWN_DEPTH_CEIL,
+  MAX_CONCURRENT_CHILDREN_CEIL,
   type DelegationRole,
   type SpawnLimits,
   type TeamAgent,
@@ -84,11 +87,19 @@ function exitChild(parentKey: string): void {
   else activeByParent.set(parentKey, n);
 }
 
-/** Spawn limits from env (defaults 2 / 3). */
-function spawnLimits(): SpawnLimits {
+/**
+ * Spawn limits: the persisted settings (Settings UI, live) win; each falls back to
+ * its .env override, then the DEFAULT_*. Raising the setting raises the real ceiling
+ * canSpawn enforces. Clamped to sane bounds (a corrupt row can't lift the guard).
+ */
+function spawnLimits(db: ToolCtx['db']): SpawnLimits {
+  const read = (key: string): string | undefined =>
+    (db.prepare('SELECT value FROM settings WHERE key = ?').get(key) as { value?: string } | undefined)?.value;
+  const envDepth = process.env.ALFRED_MAX_SPAWN_DEPTH;
+  const envChildren = process.env.ALFRED_MAX_CONCURRENT_CHILDREN;
   return {
-    maxSpawnDepth: Number(process.env.ALFRED_MAX_SPAWN_DEPTH) || DEFAULT_MAX_SPAWN_DEPTH,
-    maxConcurrentChildren: Number(process.env.ALFRED_MAX_CONCURRENT_CHILDREN) || DEFAULT_MAX_CONCURRENT_CHILDREN,
+    maxSpawnDepth: parseSpawnLimit(read('max_spawn_depth') ?? envDepth, DEFAULT_MAX_SPAWN_DEPTH, 1, MAX_SPAWN_DEPTH_CEIL),
+    maxConcurrentChildren: parseSpawnLimit(read('max_concurrent_children') ?? envChildren, DEFAULT_MAX_CONCURRENT_CHILDREN, 1, MAX_CONCURRENT_CHILDREN_CEIL),
   };
 }
 
@@ -195,7 +206,7 @@ export async function runRosterAgentAttended(
   // children ceiling. Applies to top-level and nested delegations alike.
   const depth = ctx.delegationDepth ?? 0;
   const parentKey = ctx.sessionId;
-  const decision = canSpawn(depth, activeChildren(parentKey), spawnLimits(), spawnPaused(ctx.db));
+  const decision = canSpawn(depth, activeChildren(parentKey), spawnLimits(ctx.db), spawnPaused(ctx.db));
   if (!decision.ok) return { ok: false, error: decision.reason, spawnRefused: true };
   // Reserve the slot SYNCHRONOUSLY, right after the check — before any `await`.
   // Otherwise parallel delegate_to_agent tool calls in one model step all read

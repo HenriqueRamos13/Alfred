@@ -394,6 +394,21 @@ export function restrictGrantForRole(role: DelegationRole, grant: readonly Capab
 export const DEFAULT_MAX_SPAWN_DEPTH = 2;
 /** Default max concurrent children a single parent may have in flight. */
 export const DEFAULT_MAX_CONCURRENT_CHILDREN = 3;
+/** Sane ceilings for the persisted spawn-limit settings (a trust-boundary guard). */
+export const MAX_CONCURRENT_CHILDREN_CEIL = 16;
+export const MAX_SPAWN_DEPTH_CEIL = 8;
+
+/**
+ * Parse a persisted spawn-limit setting (max children / max depth) into a clamped
+ * integer. Absent / blank / non-numeric → `def`; otherwise floored and clamped to
+ * [min, max]. Pure — the trust-boundary clamp behind getSpawnLimits/setSpawnLimits.
+ */
+export function parseSpawnLimit(raw: string | undefined | null, def: number, min: number, max: number): number {
+  if (raw == null || raw.trim() === '') return def;
+  const n = Number(raw);
+  if (!Number.isFinite(n)) return def;
+  return Math.min(max, Math.max(min, Math.floor(n)));
+}
 
 export interface SpawnLimits {
   maxSpawnDepth: number;

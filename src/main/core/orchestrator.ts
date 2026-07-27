@@ -121,8 +121,15 @@ import {
   deleteJob as deleteJobDb,
 } from './jobs.ts';
 import { listAgents, getAgent, deleteAgent, setAgentManager, createAgent, updateAgent, listKnowledgeNotes, readKnowledgeNote } from './team.ts';
-import type { TeamAgent } from './team-pure.ts';
-import { validateAgentSpec } from './team-pure.ts';
+import type { TeamAgent, SpawnLimits } from './team-pure.ts';
+import {
+  validateAgentSpec,
+  parseSpawnLimit,
+  DEFAULT_MAX_SPAWN_DEPTH,
+  DEFAULT_MAX_CONCURRENT_CHILDREN,
+  MAX_SPAWN_DEPTH_CEIL,
+  MAX_CONCURRENT_CHILDREN_CEIL,
+} from './team-pure.ts';
 import { pickCuratorSpec } from './curator.ts';
 import { buildOrgTree } from './team-format-pure.ts';
 import {
@@ -752,6 +759,14 @@ export interface OrchestratorHandle {
    */
   getSpawnPaused(): boolean;
   setSpawnPaused(on: boolean): boolean;
+  /**
+   * Spawn ceilings enforced by canSpawn: maxConcurrentChildren (children one
+   * orchestrator may run at once, default 3) and maxSpawnDepth (nested delegation
+   * depth, default 2). Read/patch, persisted, clamped. Raising a value raises the
+   * real ceiling. setSpawnLimits takes a partial patch and returns the full pair.
+   */
+  getSpawnLimits(): SpawnLimits;
+  setSpawnLimits(patch: Partial<SpawnLimits>): SpawnLimits;
   /** GRILL-ME (interview to lock the plan before acting): read/toggle, persisted, default ON. */
   getGrillMe(): boolean;
   setGrillMe(on: boolean): boolean;
@@ -1767,6 +1782,28 @@ export function createOrchestrator(opts: CreateOrchestratorOpts): OrchestratorHa
       setSetting(db, 'spawn_paused', on ? '1' : '0');
       emit({ kind: 'settings.changed', key: 'spawn_paused', value: on });
       return on;
+    },
+    getSpawnLimits() {
+      return {
+        maxConcurrentChildren: parseSpawnLimit(getSetting(db, 'max_concurrent_children'), DEFAULT_MAX_CONCURRENT_CHILDREN, 1, MAX_CONCURRENT_CHILDREN_CEIL),
+        maxSpawnDepth: parseSpawnLimit(getSetting(db, 'max_spawn_depth'), DEFAULT_MAX_SPAWN_DEPTH, 1, MAX_SPAWN_DEPTH_CEIL),
+      };
+    },
+    setSpawnLimits(patch) {
+      if (patch.maxConcurrentChildren !== undefined) {
+        const v = parseSpawnLimit(String(patch.maxConcurrentChildren), DEFAULT_MAX_CONCURRENT_CHILDREN, 1, MAX_CONCURRENT_CHILDREN_CEIL);
+        setSetting(db, 'max_concurrent_children', String(v));
+        emit({ kind: 'settings.changed', key: 'max_concurrent_children', value: v });
+      }
+      if (patch.maxSpawnDepth !== undefined) {
+        const v = parseSpawnLimit(String(patch.maxSpawnDepth), DEFAULT_MAX_SPAWN_DEPTH, 1, MAX_SPAWN_DEPTH_CEIL);
+        setSetting(db, 'max_spawn_depth', String(v));
+        emit({ kind: 'settings.changed', key: 'max_spawn_depth', value: v });
+      }
+      return {
+        maxConcurrentChildren: parseSpawnLimit(getSetting(db, 'max_concurrent_children'), DEFAULT_MAX_CONCURRENT_CHILDREN, 1, MAX_CONCURRENT_CHILDREN_CEIL),
+        maxSpawnDepth: parseSpawnLimit(getSetting(db, 'max_spawn_depth'), DEFAULT_MAX_SPAWN_DEPTH, 1, MAX_SPAWN_DEPTH_CEIL),
+      };
     },
     getGrillMe() {
       return grillMeEnabled(getSetting(db, 'grill_me_enabled'));

@@ -576,6 +576,8 @@ export type SettingKey =
   | 'low_cpu_enabled'
   | 'dangerous_mode'
   | 'spawn_paused'
+  | 'max_concurrent_children'
+  | 'max_spawn_depth'
   | 'send_delay_ms'
   | 'voice_config'
   | 'language'

@@ -102,7 +102,7 @@ interface LogRow {
 }
 
 /** Shipped version — shown in the corner HUD and the top-bar title. Bump on release. */
-const VERSION = '1.24.0';
+const VERSION = '1.25.0';
 
 /** STT settings defaults until the async read lands (mirrors audio-transform-pure). */
 const STT_DEFAULTS: SttSettings = { engine: 'local', hasKey: false, speed: 2.3, trimTailMs: 2000, model: 'gpt-4o-mini-transcribe' };
@@ -189,6 +189,9 @@ export default function App() {
   const [jobs, setJobs] = useState<Job[]>([]);
   const [dangerous, setDangerous] = useState(false);
   const [spawnPaused, setSpawnPaused] = useState(false); // SPAWN kill-switch (freeze new fan-out)
+  // Spawn ceilings (children per orchestrator / delegation depth) enforced by canSpawn. Defaults 3 / 2.
+  const [maxChildren, setMaxChildren] = useState(3);
+  const [maxDepth, setMaxDepth] = useState(2);
   const [grill, setGrill] = useState(true); // GRILL-ME defaults ON
   const [lowCpu, setLowCpuState] = useState(false); // LOW-CPU mode defaults OFF
   // Factory-reset modal: null = closed; the info object = open, listing what will be erased.
@@ -707,6 +710,8 @@ export default function App() {
     alfred.getDangerousMode().then(setDangerous).catch(() => {});
     // Reflect the persisted SPAWN kill-switch (default off).
     alfred.getSpawnPaused().then(setSpawnPaused).catch(() => {});
+    // Reflect the persisted spawn ceilings (children / depth; defaults 3 / 2).
+    alfred.getSpawnLimits().then((l) => { setMaxChildren(l.maxConcurrentChildren); setMaxDepth(l.maxSpawnDepth); }).catch(() => {});
     // Reflect the persisted heartbeat toggle (default off).
     alfred.getHeartbeat().then((h) => setHeartbeat(h.enabled)).catch(() => {});
     // Reflect the persisted GRILL-ME toggle (default on).
@@ -992,6 +997,8 @@ export default function App() {
             case 'low_cpu_enabled': setLowCpuState(!!e.value); break;
             case 'dangerous_mode': setDangerous(!!e.value); break;
             case 'spawn_paused': setSpawnPaused(!!e.value); break;
+            case 'max_concurrent_children': setMaxChildren(Number(e.value) || 3); break;
+            case 'max_spawn_depth': setMaxDepth(Number(e.value) || 2); break;
           }
           break;
         case 'conversation.reset':
@@ -1190,6 +1197,13 @@ export default function App() {
       tone: next ? 'red' : 'lime',
       msg: next ? '‖ SPAWN PAUSED — new delegations/studies refused (running children finish)' : 'spawn resumed — fan-out allowed again',
     });
+  };
+
+  // Persist a spawn-ceiling edit (children / depth). Optimistic; the clamped truth wins on resolve.
+  const setSpawnLimit = (patch: { maxConcurrentChildren?: number; maxSpawnDepth?: number }) => {
+    if (patch.maxConcurrentChildren !== undefined) setMaxChildren(patch.maxConcurrentChildren);
+    if (patch.maxSpawnDepth !== undefined) setMaxDepth(patch.maxSpawnDepth);
+    alfred.setSpawnLimits(patch).then((l) => { setMaxChildren(l.maxConcurrentChildren); setMaxDepth(l.maxSpawnDepth); }).catch(() => {});
   };
 
   const toggleHeartbeat = () => {
@@ -1659,6 +1673,9 @@ export default function App() {
               grill={grill}
               lowCpu={lowCpu}
               spawnPaused={spawnPaused}
+              maxChildren={maxChildren}
+              maxDepth={maxDepth}
+              onSetSpawnLimit={setSpawnLimit}
               heartbeat={heartbeat}
               widgetScripts={widgetScripts}
               dangerous={dangerous}
@@ -2247,6 +2264,9 @@ function SettingsCard({
   grill,
   lowCpu,
   spawnPaused,
+  maxChildren,
+  maxDepth,
+  onSetSpawnLimit,
   heartbeat,
   widgetScripts,
   dangerous,
@@ -2278,6 +2298,9 @@ function SettingsCard({
   grill: boolean;
   lowCpu: boolean;
   spawnPaused: boolean;
+  maxChildren: number;
+  maxDepth: number;
+  onSetSpawnLimit: (patch: { maxConcurrentChildren?: number; maxSpawnDepth?: number }) => void;
   heartbeat: boolean;
   widgetScripts: boolean;
   dangerous: boolean;
@@ -2627,6 +2650,45 @@ function SettingsCard({
         >
           ⟲ RESET APPROVALS
         </button>
+      </div>
+
+      <div className="settings-group">
+        <div className="settings-group-head">EQUIPA · GOVERNANÇA</div>
+        <label className="settings-num" title="Máximo de filhos que UM orquestrador pode ter a correr ao mesmo tempo (canSpawn). Subir aumenta o paralelismo — e o custo/carga.">
+          <span className="settings-num-k">Filhos concorrentes por orquestrador</span>
+          <span className="settings-num-field">
+            <input
+              className="settings-num-input no-drag"
+              type="number"
+              min={1}
+              max={16}
+              step={1}
+              value={maxChildren}
+              onChange={(e) => {
+                const n = Number(e.target.value);
+                if (Number.isFinite(n)) onSetSpawnLimit({ maxConcurrentChildren: Math.round(n) });
+              }}
+            />
+          </span>
+        </label>
+        <label className="settings-num" title="Profundidade máxima de delegação encadeada (um filho que delega noutro). canSpawn recusa acima deste limite.">
+          <span className="settings-num-k">Profundidade máxima de delegação</span>
+          <span className="settings-num-field">
+            <input
+              className="settings-num-input no-drag"
+              type="number"
+              min={1}
+              max={8}
+              step={1}
+              value={maxDepth}
+              onChange={(e) => {
+                const n = Number(e.target.value);
+                if (Number.isFinite(n)) onSetSpawnLimit({ maxSpawnDepth: Math.round(n) });
+              }}
+            />
+          </span>
+        </label>
+        <div className="settings-note">Mais filhos / mais profundidade = mais custo e carga em paralelo.</div>
       </div>
 
       <div className="settings-group">

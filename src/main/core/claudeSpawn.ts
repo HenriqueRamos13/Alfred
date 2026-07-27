@@ -22,8 +22,26 @@ import { spawn } from 'node:child_process';
 import { mcpCliArgs } from './mcpConfig.ts';
 import { scrubbedEnv } from './env-scoping-pure.ts';
 
-const TIMEOUT_MS = 30 * 60_000;
+/** Hard SIGKILL cap for a `claude -p` child (ms). Default 1h; override with
+ * ALFRED_CHILD_TIMEOUT_MS. The MCP per-tool-call timeout aligns to this (see
+ * resolveMcpToolTimeout), so a long delegation can run up to this bound. */
+const TIMEOUT_MS = ((): number => {
+  const n = Number(process.env.ALFRED_CHILD_TIMEOUT_MS);
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : 60 * 60_000;
+})();
 const MAX_STDOUT = 16 * 1024 * 1024;
+
+/**
+ * MCP per-tool-call timeout (ms) for the `claude -p` child, as a string for the env.
+ * The Claude Code CLI defaults MCP_TOOL_TIMEOUT to 300000 (5 min) — that is what cuts
+ * a long delegate_to_agent sub-turn short. We align it to Alfred's real SIGKILL cap
+ * (TIMEOUT_MS, default 1h) so a long delegation isn't killed at 5 min. A valid positive
+ * ALFRED_MCP_TOOL_TIMEOUT_MS override wins; anything absent/invalid/≤0 → TIMEOUT_MS.
+ * Pure (does NOT touch MCP_TIMEOUT, which is the server-startup timeout). */
+export function resolveMcpToolTimeout(env: NodeJS.ProcessEnv): string {
+  const n = Number(env.ALFRED_MCP_TOOL_TIMEOUT_MS);
+  return String(Number.isFinite(n) && n > 0 ? Math.floor(n) : TIMEOUT_MS);
+}
 
 export interface ClaudeCliResult {
   stdout: string;
@@ -84,7 +102,12 @@ export function dangerousArgs(dangerous: boolean, extraSystem?: string): string[
  * The MCP bridge token travels via `--mcp-config`, not env, so this never breaks it.
  */
 function subscriptionEnv(): NodeJS.ProcessEnv {
-  return scrubbedEnv(process.env, ['ANTHROPIC_BASE_URL', 'ANTHROPIC_MODEL']);
+  const env = scrubbedEnv(process.env, ['ANTHROPIC_BASE_URL', 'ANTHROPIC_MODEL']);
+  // Lift the MCP per-tool-call cap (CLI default 5 min) to Alfred's real SIGKILL cap so
+  // long delegate_to_agent sub-turns aren't cut at 5 min. `??=` never overrides a value
+  // the user already set (scrubbedEnv propagates MCP_TOOL_TIMEOUT — it isn't a credential).
+  env.MCP_TOOL_TIMEOUT ??= resolveMcpToolTimeout(process.env);
+  return env;
 }
 
 export function spawnClaudeCli(

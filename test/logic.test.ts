@@ -42,7 +42,7 @@ import { shell } from '../src/main/tools/shell.ts';
 import { filesystem } from '../src/main/tools/filesystem.ts';
 import { browser } from '../src/main/tools/browser.ts';
 import { delegate } from '../src/main/tools/delegate.ts';
-import { dangerousArgs, DANGEROUS_SYSTEM_PROMPT, TERSE_SYSTEM_PROMPT } from '../src/main/core/claudeSpawn.ts';
+import { dangerousArgs, DANGEROUS_SYSTEM_PROMPT, TERSE_SYSTEM_PROMPT, resolveMcpToolTimeout } from '../src/main/core/claudeSpawn.ts';
 import { gmailConfigured } from '../src/main/tools/gmail-config.ts';
 import {
   dayKey,
@@ -1233,6 +1233,19 @@ test('dangerousArgs — the terse system prompt reaches claude -p in BOTH modes 
   assert.ok(off.includes('--permission-mode') && off.includes('acceptEdits'));
 });
 
+test('resolveMcpToolTimeout — defaults to the 1h SIGKILL cap; a valid positive override wins', () => {
+  const ONE_HOUR = String(60 * 60_000); // TIMEOUT_MS default (ALFRED_CHILD_TIMEOUT_MS unset in tests)
+  // absent / blank / non-numeric / ≤0 → the SIGKILL cap (aligns MCP tool timeout to it)
+  assert.equal(resolveMcpToolTimeout({}), ONE_HOUR);
+  assert.equal(resolveMcpToolTimeout({ ALFRED_MCP_TOOL_TIMEOUT_MS: '' }), ONE_HOUR);
+  assert.equal(resolveMcpToolTimeout({ ALFRED_MCP_TOOL_TIMEOUT_MS: 'nope' }), ONE_HOUR);
+  assert.equal(resolveMcpToolTimeout({ ALFRED_MCP_TOOL_TIMEOUT_MS: '0' }), ONE_HOUR);
+  assert.equal(resolveMcpToolTimeout({ ALFRED_MCP_TOOL_TIMEOUT_MS: '-5' }), ONE_HOUR);
+  // a valid positive override wins, floored to an integer string of ms
+  assert.equal(resolveMcpToolTimeout({ ALFRED_MCP_TOOL_TIMEOUT_MS: '600000' }), '600000');
+  assert.equal(resolveMcpToolTimeout({ ALFRED_MCP_TOOL_TIMEOUT_MS: '90000.7' }), '90000');
+});
+
 // ── governance edge cases ────────────────────────────────────────────────────
 
 test('fullTrifecta — true only when all three flags are set', () => {
@@ -1786,6 +1799,7 @@ import {
   blockedToolsForRole,
   restrictGrantForRole,
   canSpawn,
+  parseSpawnLimit,
   wouldCycle,
   orgDepth,
   DEFAULT_MAX_SPAWN_DEPTH,
@@ -3893,6 +3907,22 @@ test('canSpawn — the kill-switch (spawn_paused) refuses ANY new spawn, before 
   if (!paused.ok) assert.match(paused.reason, /pausa|kill-switch|PAUSE SPAWN/i);
   // not paused with room → allowed
   assert.equal(canSpawn(0, 0, limits, false).ok, true);
+});
+
+test('parseSpawnLimit — absent/invalid → default; else floored and clamped to [min, max]', () => {
+  // absent / blank / non-numeric → the default
+  assert.equal(parseSpawnLimit(undefined, 3, 1, 16), 3);
+  assert.equal(parseSpawnLimit(null, 3, 1, 16), 3);
+  assert.equal(parseSpawnLimit('   ', 3, 1, 16), 3);
+  assert.equal(parseSpawnLimit('abc', 2, 1, 8), 2);
+  // valid values are floored to an integer
+  assert.equal(parseSpawnLimit('5', 3, 1, 16), 5);
+  assert.equal(parseSpawnLimit('4.9', 3, 1, 16), 4);
+  // clamp: below min floors to min, above max caps to max (a corrupt row can't lift the guard)
+  assert.equal(parseSpawnLimit('0', 3, 1, 16), 1);
+  assert.equal(parseSpawnLimit('-7', 3, 1, 16), 1);
+  assert.equal(parseSpawnLimit('999', 3, 1, 16), 16);
+  assert.equal(parseSpawnLimit('50', 2, 1, 8), 8);
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
