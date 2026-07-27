@@ -34,6 +34,7 @@ import { randomUUID } from 'node:crypto';
 import { unlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { openaiPlay } from './openai-tts.ts';
 import { resolveConfigValue } from './settings-pure.ts';
 import type { VoiceConfig } from './types.ts';
 
@@ -45,7 +46,10 @@ const DEFAULT_ELEVEN_VOICE = 'JTMaHm6sHVI3NZgPaWDz'; // default ElevenLabs voice
 type Dtype = 'q8' | 'q4' | 'fp16' | 'fp32';
 const DEFAULT_DTYPE: Dtype = 'fp32';
 
-type Engine = 'elevenlabs' | 'kokoro' | 'say';
+type Engine = 'elevenlabs' | 'kokoro' | 'openai' | 'say';
+
+const DEFAULT_OPENAI_VOICE = 'alloy';
+const DEFAULT_OPENAI_MODEL = 'gpt-4o-mini-tts';
 
 /** Runtime override for the engine, set by the orchestrator from the persisted
  * `elevenlabs_enabled` toggle (tts.ts itself has no DB). When set it wins over
@@ -73,7 +77,9 @@ export function setVoiceConfig(c: VoiceConfig | undefined): void {
  */
 export function resolveEngine(override: 'elevenlabs' | null, envEngine: string | undefined): Engine {
   if (override === 'elevenlabs') return 'elevenlabs';
-  return envEngine?.trim() === 'kokoro' ? 'kokoro' : 'say';
+  const e = envEngine?.trim();
+  if (e === 'openai') return 'openai';
+  return e === 'kokoro' ? 'kokoro' : 'say';
 }
 
 /** PURE — the fallback gate: ElevenLabs needs BOTH a key and a voice id (non-blank),
@@ -270,6 +276,15 @@ async function synthAndPlay(text: string, live: () => boolean): Promise<void> {
   const engine = getEngine();
   if (engine === 'say') return sayPlay(text, live);
   if (engine === 'elevenlabs') return elevenPlay(text, live);
+  if (engine === 'openai') {
+    return openaiPlay(text, live, {
+      apiKey: process.env.OPENAI_API_KEY?.trim(),
+      model: resolveConfigValue(voiceCfg.openaiModel, process.env.ALFRED_TTS_OPENAI_MODEL, DEFAULT_OPENAI_MODEL),
+      voice: resolveConfigValue(voiceCfg.voice, process.env.ALFRED_TTS_VOICE, DEFAULT_OPENAI_VOICE),
+      play: (file) => runPlayer('afplay', [file], live, text),
+      fallback: () => sayPlay(text, live),
+    });
+  }
 
   const model = await getModel();
   if (!live()) return;

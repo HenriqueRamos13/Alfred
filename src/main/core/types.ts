@@ -594,6 +594,8 @@ export interface VoiceConfig {
   rate?: string;
   /** ElevenLabs voice id (public identifier, not a secret). */
   elevenVoiceId?: string;
+  /** OpenAI TTS model (gpt-4o-mini-tts | tts-1 | tts-1-hd); blank → default. */
+  openaiModel?: string;
 }
 
 /**

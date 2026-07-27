@@ -49,7 +49,7 @@ export function resolveConfigValue(
 }
 
 /** The TTS fields the settings card can override (all optional strings). */
-const VOICE_KEYS = ['engine', 'voice', 'rate', 'elevenVoiceId'] as const;
+const VOICE_KEYS = ['engine', 'voice', 'rate', 'elevenVoiceId', 'openaiModel'] as const;
 
 /**
  * Per-field validity for a voice_config value (already trimmed, non-blank). A

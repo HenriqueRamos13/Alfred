@@ -94,7 +94,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { confirmMatches, factoryResetPaths, factoryResetTables } from '../src/main/core/reset.ts';
 import { grillMeEnabled, lowCpuEnabled, shouldDrawFrame, resolveConfigValue, parseVoiceConfig } from '../src/main/core/settings-pure.ts';
-import { parseSayVoices, voicesForEngine, labelForVoice, KOKORO_VOICES } from '../src/main/core/voice-list-pure.ts';
+import { parseSayVoices, voicesForEngine, labelForVoice, KOKORO_VOICES, OPENAI_VOICES } from '../src/main/core/voice-list-pure.ts';
 import {
   isLanguage,
   resolveLanguage,
@@ -500,6 +500,15 @@ test('KOKORO_VOICES + voicesForEngine — right catalog per engine', () => {
   assert.deepEqual(voicesForEngine('', say), say); // empty/default → say voices
   assert.deepEqual(voicesForEngine('kokoro', say), KOKORO_VOICES);
   assert.deepEqual(voicesForEngine('elevenlabs', say), []);
+  assert.deepEqual(voicesForEngine('openai', say), OPENAI_VOICES);
+});
+
+test('OPENAI_VOICES — the 13 gpt-4o TTS voices, lowercase ids', () => {
+  assert.equal(OPENAI_VOICES.length, 13);
+  for (const id of ['alloy', 'ash', 'ballad', 'coral', 'echo', 'fable', 'nova', 'onyx', 'sage', 'shimmer', 'verse', 'marin', 'cedar']) {
+    assert.ok(OPENAI_VOICES.some((v) => v.id === id), `missing ${id}`);
+  }
+  assert.ok(OPENAI_VOICES.every((v) => v.id === v.id.toLowerCase() && v.name && v.name[0] === v.name[0].toUpperCase()));
 });
 
 test('labelForVoice — descriptive "<name> — <language (region)>"', () => {
@@ -691,6 +700,9 @@ test('resolveEngine — override wins, else env picks kokoro, else say', () => {
   assert.equal(resolveEngine(null, '  kokoro  '), 'kokoro'); // trimmed
   assert.equal(resolveEngine(null, undefined), 'say'); // default
   assert.equal(resolveEngine(null, 'anything'), 'say');
+  assert.equal(resolveEngine(null, 'openai'), 'openai');
+  assert.equal(resolveEngine(null, '  openai  '), 'openai'); // trimmed
+  assert.equal(resolveEngine('elevenlabs', 'openai'), 'elevenlabs'); // override still wins
 });
 
 test('elevenlabsConfigured — needs a non-blank key AND voice id', () => {

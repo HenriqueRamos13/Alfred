@@ -102,7 +102,7 @@ interface LogRow {
 }
 
 /** Shipped version — shown in the corner HUD and the top-bar title. Bump on release. */
-const VERSION = '1.22.0';
+const VERSION = '1.23.0';
 
 /** STT settings defaults until the async read lands (mirrors audio-transform-pure). */
 const STT_DEFAULTS: SttSettings = { engine: 'local', hasKey: false, speed: 2.3, trimTailMs: 2000, model: 'gpt-4o-mini-transcribe' };
@@ -2447,6 +2447,7 @@ function SettingsCard({
             >
               <option value="say">macOS say (vozes do sistema)</option>
               <option value="kokoro">Kokoro (offline, inglês)</option>
+              <option value="openai">OpenAI (gpt)</option>
             </select>
           </span>
         </label>
@@ -2485,7 +2486,29 @@ function SettingsCard({
           </label>
         )}
 
-        {!elevenlabs && voices.length === 0 && (
+        {!elevenlabs && voiceCfg.engine === 'openai' && (
+          <>
+            <label className="settings-num" title="Modelo OpenAI TTS. gpt-4o-mini-tts é o recomendado; tts-1 tem menor latência; tts-1-hd é o de maior qualidade.">
+              <span className="settings-num-k">Modelo</span>
+              <span className="settings-num-field">
+                <select
+                  className="settings-num-input no-drag"
+                  value={voiceCfg.openaiModel || 'gpt-4o-mini-tts'}
+                  onChange={(e) => onSetVoice({ openaiModel: e.target.value })}
+                >
+                  <option value="gpt-4o-mini-tts">gpt-4o-mini-tts (recomendado)</option>
+                  <option value="tts-1">tts-1 (baixa latência)</option>
+                  <option value="tts-1-hd">tts-1-hd (alta qualidade)</option>
+                </select>
+              </span>
+            </label>
+            <div className="settings-note">
+              Vozes otimizadas para inglês; pt-BR sai com sotaque anglo. Precisa de OPENAI_API_KEY no .env — sem ela, volta ao say.
+            </div>
+          </>
+        )}
+
+        {!elevenlabs && listEngine !== 'openai' && voices.length === 0 && (
           <div className="settings-note">
             {listEngine === 'kokoro'
               ? 'Sem vozes Kokoro listadas.'
@@ -2493,7 +2516,7 @@ function SettingsCard({
           </div>
         )}
 
-        {!elevenlabs && listEngine !== 'kokoro' && (
+        {!elevenlabs && listEngine === 'say' && (
           <label className="settings-num" title="Ritmo de fala do say em palavras/min (só say). Vazio = default. (ALFRED_TTS_RATE)">
             <span className="settings-num-k">Ritmo</span>
             <span className="settings-num-field">

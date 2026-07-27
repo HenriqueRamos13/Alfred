@@ -71,10 +71,34 @@ export const KOKORO_VOICES: VoiceOption[] = [
   { id: 'bm_lewis', name: 'Lewis', locale: 'en_GB', gender: 'male' },
 ];
 
+/**
+ * Static OpenAI TTS catalog (gpt-4o-mini-tts / tts-1 / tts-1-hd). The 13 built-in
+ * voices are multilingual but tuned for English — pt-BR comes out with an anglo
+ * accent (a deliberate user choice). Ids are the lowercase API names; locale is
+ * left blank so the dropdown shows just the capitalised name. Fixed by the API.
+ */
+export const OPENAI_VOICES: VoiceOption[] = [
+  { id: 'alloy', name: 'Alloy', locale: '' },
+  { id: 'ash', name: 'Ash', locale: '' },
+  { id: 'ballad', name: 'Ballad', locale: '' },
+  { id: 'coral', name: 'Coral', locale: '' },
+  { id: 'echo', name: 'Echo', locale: '' },
+  { id: 'fable', name: 'Fable', locale: '' },
+  { id: 'nova', name: 'Nova', locale: '' },
+  { id: 'onyx', name: 'Onyx', locale: '' },
+  { id: 'sage', name: 'Sage', locale: '' },
+  { id: 'shimmer', name: 'Shimmer', locale: '' },
+  { id: 'verse', name: 'Verse', locale: '' },
+  { id: 'marin', name: 'Marin', locale: '' },
+  { id: 'cedar', name: 'Cedar', locale: '' },
+];
+
 /** The right catalog for an engine: say → the live system voices, kokoro → the
- * static list, elevenlabs → [] (the UI uses a free-text voice-id field). Pure. */
+ * static list, openai → the 13 gpt voices, elevenlabs → [] (free-text voice-id
+ * field). Pure. */
 export function voicesForEngine(engine: string, sayVoices: VoiceOption[]): VoiceOption[] {
   if (engine === 'kokoro') return KOKORO_VOICES;
+  if (engine === 'openai') return OPENAI_VOICES;
   if (engine === 'elevenlabs') return [];
   return sayVoices; // 'say' and the empty/default engine
 }

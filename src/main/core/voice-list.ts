@@ -6,7 +6,7 @@
  * timeout) yields [] so the Settings selector just shows no system voices.
  */
 import { spawn } from 'node:child_process';
-import { KOKORO_VOICES, parseSayVoices, type VoiceOption } from './voice-list-pure.ts';
+import { KOKORO_VOICES, OPENAI_VOICES, parseSayVoices, type VoiceOption } from './voice-list-pure.ts';
 
 /** How long to wait for `say -v '?'` before giving up (ms). */
 const SAY_TIMEOUT_MS = 4000;
@@ -44,6 +44,7 @@ function saySample(): Promise<string> {
  */
 export async function listVoices(engine: string): Promise<VoiceOption[]> {
   if (engine === 'kokoro') return KOKORO_VOICES;
+  if (engine === 'openai') return OPENAI_VOICES;
   if (engine === 'elevenlabs') return [];
   const raw = await saySample().catch(() => '');
   return parseSayVoices(raw);
