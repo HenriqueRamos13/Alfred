@@ -195,6 +195,9 @@ export interface HeartbeatAction {
  * can NEVER fire "unlimited". Nudges are spaced by the poke interval (idle counts
  * from the later of the last activity and the last poke), so a sweep that runs more
  * often than the interval does not burst. Pure — the runner persists + emits.
+ *
+ * P7: cards on a PAUSED project (slug in `pausedSlugs`) are skipped entirely — a
+ * parked project earns no nudges/escalations until the user resumes it.
  */
 export function heartbeatTick(
   cards: readonly HeartbeatCard[],
@@ -202,9 +205,11 @@ export function heartbeatTick(
   now: number,
   cfg: HeartbeatConfig,
   state: Readonly<Record<string, NudgeState>> = {},
+  pausedSlugs: ReadonlySet<string> = new Set(),
 ): HeartbeatAction[] {
   const out: HeartbeatAction[] = [];
   for (const card of cards) {
+    if (pausedSlugs.has(card.projectSlug)) continue; // PARADO — no wakes on a paused project
     if (!ACTIVE_LANES.has(card.column)) continue;
     const assignee = (card.assigneeId ?? '').trim();
     if (!assignee) continue; // targeted only — an unowned card has nobody to wake

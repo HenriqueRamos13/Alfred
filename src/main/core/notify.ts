@@ -27,6 +27,7 @@ import {
 import { lifecycleRecipients, type KanbanCard, type LifecycleEvent } from './kanban-pure.ts';
 import { listCards, listCardsByColumns, patchCard } from './kanban.ts';
 import { listAgents } from './team.ts';
+import { pausedProjectSlugs } from './projects.ts';
 import type { StreamEvent } from './types.ts';
 
 type DB = import('better-sqlite3').Database;
@@ -194,7 +195,8 @@ export function runHeartbeatTick(db: DB, opts: HeartbeatRunOpts = {}): number {
   if (cards.length === 0) return 0;
   const agents = listAgents(db);
   const state = nudgeStateByCard(db, cards.map((c) => c.id));
-  const actions = heartbeatTick(cards, agents, now, cfg, state);
+  // P7 "PARAR": a paused project earns no nudges/escalations — skip its cards.
+  const actions = heartbeatTick(cards, agents, now, cfg, state, pausedProjectSlugs(db));
   if (actions.length === 0) return 0;
   for (const a of actions) {
     const text =

@@ -56,7 +56,10 @@ CREATE TABLE IF NOT EXISTS projects (
   name     TEXT NOT NULL,
   path     TEXT NOT NULL,
   summary  TEXT NOT NULL DEFAULT '',
-  updated  INTEGER NOT NULL
+  updated  INTEGER NOT NULL,
+  -- P7 "PARAR": 1 while the user has the project stopped → no agent may work it
+  -- (delegation refuses, heartbeat skips it). The user is never blocked.
+  paused   INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS accounts (
@@ -363,6 +366,11 @@ export function openDb(dbPath: string): AlfredDb {
     (c) => c.name === 'study',
   );
   if (!hasStudy) db.exec('ALTER TABLE scheduled_jobs ADD COLUMN study TEXT');
+  // Idempotent migration: `projects.paused` (P7 "PARAR") for indexes created before it existed.
+  const hasPaused = (db.prepare('PRAGMA table_info(projects)').all() as { name: string }[]).some(
+    (c) => c.name === 'paused',
+  );
+  if (!hasPaused) db.exec('ALTER TABLE projects ADD COLUMN paused INTEGER NOT NULL DEFAULT 0');
   // Idempotent migration: `messages.status` (unified user-message ladder, Phase 8
   // stage 7) for transcripts written before it existed. NULL on every legacy row and
   // on assistant/tool rows — only USER rows walk the ladder, and rowToStored drops a

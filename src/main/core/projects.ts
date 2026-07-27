@@ -9,6 +9,7 @@
 import { readdir, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { ProjectManifest, ProjectRecord } from './types.ts';
+import { pausedSlugSet } from './projects-pure.ts';
 
 type DB = import('better-sqlite3').Database;
 
@@ -158,11 +159,32 @@ async function fileTree(root: string): Promise<string[]> {
 export interface ProjectDetail {
   manifest: ProjectManifest;
   files: string[];
+  /** P7 "PARAR": the user has this project stopped → agents are suspended on it. */
+  paused: boolean;
+}
+
+// ── P7 "PARAR" — per-project stop (get/set + the paused-slug set) ────────────────
+
+/** Is this project stopped (no agent may work it)? Unknown slug → false. */
+export function getProjectPaused(db: DB, slug: string): boolean {
+  const row = db.prepare('SELECT paused FROM projects WHERE slug = ?').get(slug) as { paused?: number } | undefined;
+  return !!row?.paused;
+}
+
+/** Stop (on=true) or resume (on=false) a project. No-op on an unknown slug. */
+export function setProjectPaused(db: DB, slug: string, on: boolean): void {
+  db.prepare('UPDATE projects SET paused = ? WHERE slug = ?').run(on ? 1 : 0, slug);
+}
+
+/** The set of currently paused project slugs (drives the heartbeat skip). */
+export function pausedProjectSlugs(db: DB): Set<string> {
+  const rows = db.prepare('SELECT slug, paused FROM projects').all() as { slug: string; paused: number }[];
+  return pausedSlugSet(rows);
 }
 
 export async function getProject(db: DB, workspace: string, slug: string): Promise<ProjectDetail | null> {
-  const row = db.prepare('SELECT slug, name, path, summary, updated FROM projects WHERE slug = ?').get(slug) as
-    | ProjectRecord
+  const row = db.prepare('SELECT slug, name, path, summary, updated, paused FROM projects WHERE slug = ?').get(slug) as
+    | (ProjectRecord & { paused?: number })
     | undefined;
   const path = row?.path ?? join(workspace, 'projects', slug);
 
@@ -184,5 +206,5 @@ export async function getProject(db: DB, workspace: string, slug: string): Promi
     };
   }
 
-  return { manifest, files: await fileTree(path) };
+  return { manifest, files: await fileTree(path), paused: !!row?.paused };
 }

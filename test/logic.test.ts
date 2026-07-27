@@ -54,7 +54,7 @@ import {
   isLoop,
 } from '../src/main/core/budget.ts';
 import { slugify } from '../src/main/core/projects.ts';
-import { unknownProjectError } from '../src/main/core/projects-pure.ts';
+import { unknownProjectError, isProjectWorkBlocked, pausedSlugSet } from '../src/main/core/projects-pure.ts';
 import {
   nextRun,
   budgetDecision,
@@ -3373,6 +3373,24 @@ test('unknownProjectError — rejects a phantom board, allows a known slug (P3)'
   assert.equal(unknownProjectError('', known), 'unknown project ""');
 });
 
+test('isProjectWorkBlocked — P7: an agent is blocked on a paused project, the user never is', () => {
+  assert.equal(isProjectWorkBlocked(true, 'agent'), true);   // paused → agents blocked
+  assert.equal(isProjectWorkBlocked(false, 'agent'), false); // running → agents work
+  assert.equal(isProjectWorkBlocked(true, 'user'), false);   // user keeps working even when paused
+  assert.equal(isProjectWorkBlocked(false, 'user'), false);
+});
+
+test('pausedSlugSet — collects only the paused slugs (tolerates 0/1/bool/null)', () => {
+  const rows = [
+    { slug: 'a', paused: 1 },
+    { slug: 'b', paused: 0 },
+    { slug: 'c', paused: true },
+    { slug: 'd', paused: null },
+    { slug: 'e' },
+  ];
+  assert.deepEqual([...pausedSlugSet(rows)].sort(), ['a', 'c']);
+});
+
 // ── team on-demand learning (Phase 5, stage 3): study-note plan + index topic ──
 
 test('studyNoteSlug — slug from topic, same topic collides to the same note', () => {
@@ -4879,6 +4897,19 @@ test('escalationTarget — parent or null at the top', () => {
   assert.equal(escalationTarget('lead', org), 'cto');
   assert.equal(escalationTarget('cto', org), null);
   assert.equal(escalationTarget('ghost', org), null);
+});
+
+test('heartbeatTick — P7: cards on a PAUSED project earn no wakes', () => {
+  const cards = [openCard({ id: 'C-1', projectSlug: 'p' }), openCard({ id: 'C-2', projectSlug: 'q' })];
+  // With q paused, only p's card is nudged.
+  const a = heartbeatTick(cards, org, 2000, HB, {}, new Set(['q']));
+  assert.equal(a.length, 1);
+  assert.equal(a[0].cardId, 'C-1');
+  // Pause both → nothing at all, even at the escalation cap.
+  assert.deepEqual(
+    heartbeatTick(cards, org, 9_999_999, HB, { 'C-1': { count: 3, lastTs: 0, escalated: false } }, new Set(['p', 'q'])),
+    [],
+  );
 });
 
 test('dependencyWakes — wakes downstream assignees; unblock only when ALL deps done', () => {

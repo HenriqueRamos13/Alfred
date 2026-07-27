@@ -195,6 +195,10 @@ export interface Orchestrator {
   getProject(slug: string): ProjectDetail | null | Promise<ProjectDetail | null>;
   /** Every kanban card on a project's board. */
   listCards(projectSlug: string): KanbanCard[] | Promise<KanbanCard[]>;
+  /** P7 "PARAR": is this project stopped? */
+  getProjectPaused(slug: string): boolean | Promise<boolean>;
+  /** P7 "PARAR": stop/resume a project (emits project.changed). */
+  setProjectPaused(slug: string, on: boolean): void | Promise<void>;
   /** The user's direct board op (drag/edit/delete) — see the orchestrator method. */
   kanban(op: string, args: Record<string, unknown>): { ok: boolean; error?: string } | Promise<{ ok: boolean; error?: string }>;
   // ── Human inbox (Phase 7 stage 3). ──
@@ -709,6 +713,26 @@ export function registerIpc(core: Orchestrator, emit: (e: StreamEvent) => void):
     } catch (err) {
       fail('list cards', err);
       return [];
+    }
+  });
+  // ── P7 "PARAR" — per-project stop. Read + toggle. ──
+  ipcMain.handle('alfred:getProjectPaused', async (_e, slug: unknown): Promise<boolean> => {
+    if (typeof slug !== 'string' || !slug) return false;
+    try {
+      return await core.getProjectPaused(slug);
+    } catch (err) {
+      fail('get project paused', err);
+      return false;
+    }
+  });
+  ipcMain.handle('alfred:setProjectPaused', async (_e, slug: unknown, on: unknown): Promise<boolean> => {
+    if (typeof slug !== 'string' || !slug) return false;
+    try {
+      await core.setProjectPaused(slug, !!on);
+      return true;
+    } catch (err) {
+      fail('set project paused', err);
+      return false;
     }
   });
   // The user's direct board op. Trust boundary: op is a whitelisted string; args

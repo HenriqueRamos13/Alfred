@@ -25,7 +25,8 @@ import { randomUUID } from 'node:crypto';
 import { streamText, tool, jsonSchema, stepCountIs } from 'ai';
 import type { ToolSet } from 'ai';
 import { getAgent, loadAgentContext } from '../core/team.ts';
-import { getProject } from '../core/projects.ts';
+import { getProject, getProjectPaused } from '../core/projects.ts';
+import { isProjectWorkBlocked } from '../core/projects-pure.ts';
 import {
   resolveTeamModel,
   agentBudgetDecision,
@@ -212,6 +213,15 @@ export async function runRosterAgentAttended(
   // depth (0 = top-level, attended Alfred). The child runs at depth+1. Refuse —
   // EXPLICITLY, never silently — when paused, too deep, or over the concurrent
   // children ceiling. Applies to top-level and nested delegations alike.
+  // P7 "PARAR" (fail-closed): a project the user has STOPPED lets no agent work on
+  // it. Refuse EXPLICITLY before the spawn slot is even reserved — covers both the
+  // claude-cli and the in-process API paths, and every caller (delegate_to_agent,
+  // a project-anchored thread turn). The user's own card edits go through IPC, not
+  // here, so this never blocks the user.
+  const anchoredSlug = opts?.projectSlug?.trim();
+  if (anchoredSlug && isProjectWorkBlocked(getProjectPaused(ctx.db, anchoredSlug), 'agent')) {
+    return { ok: false, error: `project ${anchoredSlug} is paused — resume it to let agents work` };
+  }
   const depth = ctx.delegationDepth ?? 0;
   const parentKey = ctx.sessionId;
   const decision = canSpawn(depth, activeChildren(parentKey), spawnLimits(ctx.db), spawnPaused(ctx.db));

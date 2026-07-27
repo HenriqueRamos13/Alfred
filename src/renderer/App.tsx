@@ -102,7 +102,7 @@ interface LogRow {
 }
 
 /** Shipped version — shown in the corner HUD and the top-bar title. Bump on release. */
-const VERSION = '1.27.0';
+const VERSION = '1.28.0';
 
 /** STT settings defaults until the async read lands (mirrors audio-transform-pure). */
 const STT_DEFAULTS: SttSettings = { engine: 'local', hasKey: false, speed: 2.3, trimTailMs: 2000, model: 'gpt-4o-mini-transcribe' };
@@ -867,6 +867,13 @@ export default function App() {
           // A wake fired (lifecycle event, dependency, inbox reply, heartbeat) —
           // refresh the open project's Activity feed + board nudge indicator.
           if (openProjectRef.current) alfred.listNotifications({ projectSlug: openProjectRef.current }).then(setNotifications).catch(() => {});
+          break;
+        case 'project.changed':
+          // P7 "PARAR": the project was paused/resumed — refetch its detail so the
+          // toggle + PARADO badge stay live (works across windows too).
+          if (openProjectRef.current && e.slug === openProjectRef.current) {
+            alfred.getProject(e.slug).then(setProjectDetail).catch(() => {});
+          }
           break;
         case 'team.changed':
           // Roster / hierarchy changed (create/delete/set_manager) — refresh the Org
@@ -2026,6 +2033,7 @@ export default function App() {
           onAnswerInbox={answerInbox}
           onSpeak={alfred.speakText}
           onMarkInboxRead={alfred.markInboxRead}
+          onTogglePaused={(on) => { if (openProjectSlug) alfred.setProjectPaused(openProjectSlug, on); }}
           onNewAgent={() => setAgentFormSpec({})}
           onClose={closeProject}
         />

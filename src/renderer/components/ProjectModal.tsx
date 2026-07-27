@@ -44,6 +44,8 @@ export interface ProjectModalProps {
   onAnswerInbox: (id: string, action: InboxAction, text?: string) => Promise<{ ok: boolean; error?: string }>;
   onSpeak: (text: string) => void;
   onMarkInboxRead: (id: string) => void;
+  /** P7 "PARAR": stop (on=true) / resume (on=false) the whole project. */
+  onTogglePaused: (on: boolean) => void;
   /** Open the agent-creation form (Team tab "+ Agent" button). */
   onNewAgent?: () => void;
   onClose: () => void;
@@ -66,7 +68,7 @@ function initials(id: string | null): string {
   return id.replace(/[^a-z0-9]/gi, '').slice(0, 2).toUpperCase() || '·';
 }
 
-export function ProjectModal({ detail, cards, agents, inbox, notifications, onKanban, onAnswerInbox, onSpeak, onMarkInboxRead, onNewAgent, onClose }: ProjectModalProps) {
+export function ProjectModal({ detail, cards, agents, inbox, notifications, onKanban, onAnswerInbox, onSpeak, onMarkInboxRead, onTogglePaused, onNewAgent, onClose }: ProjectModalProps) {
   const [tab, setTab] = useState<Tab>('board');
   const [selected, setSelected] = useState<string | null>(null);
   const [dragId, setDragId] = useState<string | null>(null);
@@ -112,6 +114,7 @@ export function ProjectModal({ detail, cards, agents, inbox, notifications, onKa
   };
 
   const doneCount = cards.filter((c) => c.column === 'done').length;
+  const paused = !!detail?.paused;
 
   return (
     <div className="overlay" ref={overlayRef} onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
@@ -124,8 +127,36 @@ export function ProjectModal({ detail, cards, agents, inbox, notifications, onKa
             {m?.stack ? ` · ${m.stack}` : ''}
           </span>
           <span className="pm-status">{(m?.status ?? 'unknown').toUpperCase()}</span>
+          {paused && (
+            <span
+              className="pm-status"
+              title="agentes suspensos neste projeto"
+              style={{ color: 'var(--red)', borderColor: 'var(--red)', fontWeight: 700 }}
+            >
+              ⏸ PARADO
+            </span>
+          )}
+          <button
+            type="button"
+            className="pm-btn no-drag"
+            title={paused ? 'Retomar — os agentes voltam a poder trabalhar' : 'Parar — nenhum agente trabalha até retomares'}
+            onClick={() => onTogglePaused(!paused)}
+            style={{
+              fontWeight: 700,
+              borderColor: paused ? 'var(--grn)' : 'var(--red)',
+              color: paused ? 'var(--grn)' : 'var(--red)',
+            }}
+          >
+            {paused ? '▶ RETOMAR' : '⏸ PARAR PROJETO'}
+          </button>
           <button type="button" className="pm-x no-drag" title="Close" onClick={onClose}>✕</button>
         </div>
+
+        {paused && (
+          <div className="pm-error" style={{ color: 'var(--red)', borderColor: 'var(--red)' }}>
+            ⏸ Projeto PARADO — nenhum agente trabalha nele. Podes continuar a editar/mover cards; retoma para libertar os agentes.
+          </div>
+        )}
 
         <div className="pm-tabs">
           {(['overview', 'board', 'inbox', 'org', 'team', 'activity'] as Tab[]).map((t) => (

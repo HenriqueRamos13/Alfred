@@ -57,7 +57,13 @@ import { runCurator } from './curator.ts';
 import { runAutoReview } from './auto-review.ts';
 import { createSecrets } from './secrets.ts';
 import { createSecretSource } from './secret-source.ts';
-import { getProject, listProjects, type ProjectDetail } from './projects.ts';
+import {
+  getProject,
+  listProjects,
+  getProjectPaused as readProjectPaused,
+  setProjectPaused as writeProjectPaused,
+  type ProjectDetail,
+} from './projects.ts';
 import {
   createCard,
   listCards as listKanbanCards,
@@ -941,6 +947,10 @@ export interface OrchestratorHandle {
   getProject(slug: string): Promise<ProjectDetail | null>;
   /** Every kanban card on a project's board (Board tab / live refresh). */
   listCards(projectSlug: string): KanbanCard[];
+  /** P7 "PARAR": is this project stopped (agents suspended on it)? */
+  getProjectPaused(slug: string): boolean;
+  /** P7 "PARAR": stop/resume a project. Emits project.changed so every window updates. */
+  setProjectPaused(slug: string, on: boolean): void;
   /**
    * The USER's direct board manipulation from the UI (drag/edit/delete). Routes
    * to core/kanban with createdBy='user', bypassing tool governance (a user
@@ -2340,6 +2350,13 @@ export function createOrchestrator(opts: CreateOrchestratorOpts): OrchestratorHa
     },
     listCards(projectSlug) {
       return listKanbanCards(db, projectSlug);
+    },
+    getProjectPaused(slug) {
+      return readProjectPaused(db, slug);
+    },
+    setProjectPaused(slug, on) {
+      writeProjectPaused(db, slug, on);
+      emit({ kind: 'project.changed', slug });
     },
     kanban(op, args) {
       const id = typeof args.id === 'string' ? args.id : '';

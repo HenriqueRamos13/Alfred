@@ -124,6 +124,10 @@ const api = {
   getProject: (slug: string): Promise<ProjectDetail | null> => ipcRenderer.invoke('alfred:getProject', slug),
   /** Every kanban card on a project's board (Board tab; re-fetched on kanban.changed). */
   listCards: (projectSlug: string): Promise<KanbanCard[]> => ipcRenderer.invoke('alfred:listCards', projectSlug),
+  /** P7 "PARAR": is this project stopped (agents suspended)? */
+  getProjectPaused: (slug: string): Promise<boolean> => ipcRenderer.invoke('alfred:getProjectPaused', slug),
+  /** P7 "PARAR": stop/resume a project (emits project.changed → live badge). */
+  setProjectPaused: (slug: string, on: boolean): Promise<boolean> => ipcRenderer.invoke('alfred:setProjectPaused', slug, on),
   /** The user's direct board op (drag/edit/delete) — resolves {ok, error?} (+ card on success). */
   kanban: (op: string, args: Record<string, unknown>): Promise<{ ok: boolean; error?: string; card?: KanbanCard; reasons?: string[] }> =>
     ipcRenderer.invoke('alfred:kanban', op, args),

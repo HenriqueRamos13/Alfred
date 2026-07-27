@@ -521,6 +521,9 @@ export type StreamEvent =
   // A kanban card in `projectSlug`'s board was created/updated/moved/deleted
   // (Phase 7). The open project modal listens and re-fetches that board's cards.
   | { kind: 'kanban.changed'; projectSlug: string }
+  // A project's own state changed (P7 "PARAR": paused/resumed). The open modal
+  // re-fetches its detail so the toggle + PARADO badge stay live across windows.
+  | { kind: 'project.changed'; slug: string }
   // An inbox message was raised (agent ask_user) or answered/read/superseded
   // (Phase 7 stage 3). The UI re-fetches the inbox list + the unread badge.
   | { kind: 'inbox.changed' }
