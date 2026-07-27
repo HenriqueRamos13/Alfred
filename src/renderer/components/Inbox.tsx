@@ -23,6 +23,7 @@ import {
   type InboxAction,
   type InboxMessage,
 } from '../../main/core/inbox-pure.ts';
+import { buildBatchAnswer } from '../../main/core/inbox-multi-pure.ts';
 import { openThreadAgentId, type ThreadInfo, type ThreadMessage } from '../../main/core/thread-pure.ts';
 import type { TeamAgentInfo } from '../../main/core/types.ts';
 import { ThreadsPane, ThreadView } from './AgentThreads.tsx';
@@ -89,6 +90,8 @@ export function InboxView({
 }: InboxViewProps) {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [reply, setReply] = useState('');
+  // P5 multi-question drafts, keyed by question id (only used when selected.questions).
+  const [answers, setAnswers] = useState<Record<string, string>>({});
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   const [tab, setTab] = useState<'pedidos' | 'conversas'>('pedidos');
@@ -112,6 +115,7 @@ export function InboxView({
     if (selected && selected.readTs == null) onMarkRead(selected.id);
     // Reset the draft when switching messages.
     setReply('');
+    setAnswers({});
     setError('');
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selected?.id]);
@@ -124,6 +128,17 @@ export function InboxView({
     setBusy(false);
     if (!res.ok) setError(res.error ?? 'inbox error');
     else setReply('');
+  };
+
+  // P5: serialise every per-question draft into one JSON answer and submit once.
+  const answerAll = async () => {
+    if (!selected) return;
+    setBusy(true);
+    setError('');
+    const res = await onAnswer(selected.id, 'respond', buildBatchAnswer(answers));
+    setBusy(false);
+    if (!res.ok) setError(res.error ?? 'inbox error');
+    else setAnswers({});
   };
 
   // PEDIDOS | CONVERSAS. Rendered only with the conversation props wired, and reused
@@ -250,7 +265,26 @@ export function InboxView({
 
             <div className="ib-body">{selected.body || '—'}</div>
 
-            {selected.status === 'pending' ? (
+            {selected.status === 'pending' && selected.questions && selected.questions.length > 0 ? (
+              <div className="ib-reply ib-multi">
+                <div className="ib-reply-note">{selected.questions.length} perguntas — responde todas e envia de uma vez ↩</div>
+                {selected.questions.map((q) => (
+                  <div key={q.id} className="ib-qcard">
+                    <div className="ib-qprompt">{q.prompt}</div>
+                    <textarea
+                      className="no-drag"
+                      value={answers[q.id] ?? ''}
+                      onChange={(e) => setAnswers((a) => ({ ...a, [q.id]: e.target.value }))}
+                      placeholder="A tua resposta…"
+                    />
+                  </div>
+                ))}
+                {error && <div className="ib-error">⚠ {error}</div>}
+                <div className="ib-actions">
+                  <button type="button" className="ib-act acc no-drag" disabled={busy} onClick={answerAll} title="Envia todas as respostas de uma vez; o agente retoma numa só operação">↩ Responder tudo</button>
+                </div>
+              </div>
+            ) : selected.status === 'pending' ? (
               <div className="ib-reply">
                 <div className="ib-reply-note">Interação tipada — a resposta re-acorda o agente ↩ (rejeitar exige motivo)</div>
                 <textarea

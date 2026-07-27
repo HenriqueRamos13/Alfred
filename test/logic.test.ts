@@ -4668,7 +4668,14 @@ import {
   dedupeByIdempotency,
   unreadCount,
   isInboxKind,
+  validateQuestions,
 } from '../src/main/core/inbox-pure.ts';
+import {
+  buildBatchAnswer,
+  parseBatchAnswer,
+  encodeBody,
+  decodeBody,
+} from '../src/main/core/inbox-multi-pure.ts';
 
 test('validateAsk — kind must be one of the three, subject required', () => {
   assert.equal((validateAsk({ subject: 'x' }) as { ok: false; error: string }).error.startsWith('kind must be'), true);
@@ -4692,6 +4699,54 @@ test('validateAsk — normalises optional fields (empty → null, body defaults 
       idempotencyKey: 'k1',
     });
   }
+});
+
+test('validateQuestions — non-empty, capped, id+prompt required, unique ids (P5)', () => {
+  assert.equal((validateQuestions('nope') as { ok: false; error: string }).error, 'questions must be an array');
+  assert.equal((validateQuestions([]) as { ok: false; error: string }).error, 'questions must not be empty');
+  assert.equal((validateQuestions(Array.from({ length: 21 }, (_, i) => ({ id: `q${i}`, prompt: 'p' }))) as { ok: false; error: string }).error, 'questions capped at 20');
+  assert.equal((validateQuestions([{ id: '', prompt: 'p' }]) as { ok: false; error: string }).error, 'each question needs a non-empty id');
+  assert.equal((validateQuestions([{ id: 'a', prompt: '  ' }]) as { ok: false; error: string }).error, 'each question needs a non-empty prompt');
+  assert.equal((validateQuestions([{ id: 'a', prompt: 'p' }, { id: 'a', prompt: 'q' }]) as { ok: false; error: string }).error, 'duplicate question id: a');
+  const ok = validateQuestions([{ id: ' a ', prompt: ' hi ' }, { id: 'b', prompt: 'yo' }]);
+  assert.deepEqual(ok, { ok: true, questions: [{ id: 'a', prompt: 'hi' }, { id: 'b', prompt: 'yo' }] });
+});
+
+test('validateAsk — questions are optional (absent → today\'s exact spec) and validated when present (P5)', () => {
+  // Retro-compat: no questions key → spec has NO questions field (byte-identical to before).
+  const bare = validateAsk({ kind: 'ask_user_questions', subject: 'x' });
+  assert.equal(bare.ok, true);
+  if (bare.ok) assert.equal('questions' in bare.spec, false);
+  // Present + valid → normalised onto the spec.
+  const withQ = validateAsk({ kind: 'ask_user_questions', subject: 'x', questions: [{ id: 'q1', prompt: 'Which region?' }] });
+  assert.equal(withQ.ok, true);
+  if (withQ.ok) assert.deepEqual(withQ.spec.questions, [{ id: 'q1', prompt: 'Which region?' }]);
+  // Present + invalid → the ask is rejected (bubbles the validateQuestions error).
+  assert.equal((validateAsk({ kind: 'ask_user_questions', subject: 'x', questions: [] }) as { ok: false; error: string }).error, 'questions must not be empty');
+});
+
+test('buildBatchAnswer / parseBatchAnswer — round-trip + tolerant of junk (P5)', () => {
+  const a = { q1: 'yes', q2: 'eu-west' };
+  assert.deepEqual(parseBatchAnswer(buildBatchAnswer(a)), a);
+  // tolerant: non-JSON / null / array → {}
+  assert.deepEqual(parseBatchAnswer('not json'), {});
+  assert.deepEqual(parseBatchAnswer(null), {});
+  assert.deepEqual(parseBatchAnswer('[1,2]'), {});
+  // coerces non-string values to string
+  assert.deepEqual(parseBatchAnswer('{"q1":3}'), { q1: '3' });
+});
+
+test('encodeBody / decodeBody — envelope round-trips; plain body passes through (P5, retro-compat)', () => {
+  // No questions → body verbatim, decode is identity.
+  assert.equal(encodeBody('hello', undefined), 'hello');
+  assert.deepEqual(decodeBody('hello'), { body: 'hello' });
+  // Old rows whose body is plain text (even JSON-looking) never mis-decode.
+  assert.deepEqual(decodeBody('{"x":1}'), { body: '{"x":1}' });
+  // With questions → envelope, and decode splits it back.
+  const qs = [{ id: 'q1', prompt: 'Which region?' }];
+  const enc = encodeBody('preamble', qs);
+  assert.notEqual(enc, 'preamble');
+  assert.deepEqual(decodeBody(enc), { body: 'preamble', questions: qs });
 });
 
 test('answerTransition — accept/edit/respond → answered; only pending is answerable', () => {

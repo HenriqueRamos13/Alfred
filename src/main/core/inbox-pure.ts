@@ -36,6 +36,41 @@ export function isInboxAction(v: unknown): v is InboxAction {
   return typeof v === 'string' && (INBOX_ACTIONS as readonly string[]).includes(v);
 }
 
+/** One structured question in a multi-question ask (P5). id is stable, unique per ask. */
+export interface InboxQuestion {
+  id: string;
+  prompt: string;
+}
+
+/** Cap so a runaway agent can't post a wall of prompts. */
+export const MAX_INBOX_QUESTIONS = 20;
+
+/**
+ * Validate an untrusted questions array (P5): non-empty, ≤ cap, each item has a
+ * non-empty id + prompt, ids unique. Pure/total — validateAsk calls it only when the
+ * field is present, so a keyless ask keeps today's exact shape (retro-compatible).
+ */
+export function validateQuestions(
+  v: unknown,
+): { ok: true; questions: InboxQuestion[] } | { ok: false; error: string } {
+  if (!Array.isArray(v)) return { ok: false, error: 'questions must be an array' };
+  if (v.length === 0) return { ok: false, error: 'questions must not be empty' };
+  if (v.length > MAX_INBOX_QUESTIONS) return { ok: false, error: `questions capped at ${MAX_INBOX_QUESTIONS}` };
+  const ids = new Set<string>();
+  const out: InboxQuestion[] = [];
+  for (const q of v) {
+    const rec = q as { id?: unknown; prompt?: unknown };
+    const id = typeof rec?.id === 'string' ? rec.id.trim() : '';
+    const prompt = typeof rec?.prompt === 'string' ? rec.prompt.trim() : '';
+    if (!id) return { ok: false, error: 'each question needs a non-empty id' };
+    if (!prompt) return { ok: false, error: 'each question needs a non-empty prompt' };
+    if (ids.has(id)) return { ok: false, error: `duplicate question id: ${id}` };
+    ids.add(id);
+    out.push({ id, prompt });
+  }
+  return { ok: true, questions: out };
+}
+
 export interface InboxMessage {
   id: string;
   /** The agent that raised it (TRUSTED — set by the runner from ctx, not the model). */
@@ -50,6 +85,8 @@ export interface InboxMessage {
   /** Dedupe key so a retried ask never duplicates (see dedupeByIdempotency). */
   idempotencyKey: string | null;
   status: InboxStatus;
+  /** Structured multi-question ask (P5). Absent → single free-text ask (today's shape). */
+  questions?: InboxQuestion[];
   /** The typed action the user took (null while pending/superseded). */
   action: InboxAction | null;
   /** The user's answer / edited args / reject reason (null while pending). */
@@ -70,6 +107,8 @@ export interface AskInput {
   projectSlug?: unknown;
   cardId?: unknown;
   idempotencyKey?: unknown;
+  /** Optional structured questions (P5). Validated by validateQuestions when present. */
+  questions?: unknown;
 }
 
 /** Normalised, validated ask (id/status/timestamps + fromAgentId assigned by the IO). */
@@ -80,6 +119,8 @@ export interface ValidAskSpec {
   projectSlug: string | null;
   cardId: string | null;
   idempotencyKey: string | null;
+  /** Present only when the ask carried valid questions (P5) — else omitted (retro-compat). */
+  questions?: InboxQuestion[];
 }
 
 /** Trimmed string → null when empty. */
@@ -97,6 +138,12 @@ export function validateAsk(input: AskInput): { ok: true; spec: ValidAskSpec } |
   if (!isInboxKind(input.kind)) return { ok: false, error: `kind must be one of: ${INBOX_KINDS.join(', ')}` };
   const subject = typeof input.subject === 'string' ? input.subject.trim() : '';
   if (!subject) return { ok: false, error: 'subject is required' };
+  let questions: InboxQuestion[] | undefined;
+  if (input.questions !== undefined) {
+    const q = validateQuestions(input.questions);
+    if (!q.ok) return q;
+    questions = q.questions;
+  }
   return {
     ok: true,
     spec: {
@@ -106,6 +153,8 @@ export function validateAsk(input: AskInput): { ok: true; spec: ValidAskSpec } |
       projectSlug: nullable(input.projectSlug),
       cardId: nullable(input.cardId),
       idempotencyKey: nullable(input.idempotencyKey),
+      // Omit the key entirely when absent so a keyless ask keeps its exact shape.
+      ...(questions ? { questions } : {}),
     },
   };
 }

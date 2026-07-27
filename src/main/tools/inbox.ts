@@ -25,6 +25,8 @@ interface Args {
   kind?: string;
   subject?: string;
   body?: string;
+  /** ask_user: structured multi-question ask (P5) — all answered in one round-trip. */
+  questions?: { id: string; prompt: string }[];
   projectSlug?: string;
   cardId?: string;
   idempotencyKey?: string;
@@ -55,6 +57,19 @@ export const inbox: Tool<Args> = {
       },
       subject: { type: 'string', description: 'ask_user: a short one-line summary.' },
       body: { type: 'string', description: 'ask_user: the full message / question / proposal.' },
+      questions: {
+        type: 'array',
+        description:
+          'ask_user: OPTIONAL structured questions — send ALL your questions in ONE ask; the user answers them together and you resume once (avoid 1 question = 1 round-trip). Each: {id, prompt}, unique ids, max 20.',
+        items: {
+          type: 'object',
+          properties: {
+            id: { type: 'string', description: 'stable unique id you key the answer by.' },
+            prompt: { type: 'string', description: 'the question text shown to the user.' },
+          },
+          required: ['id', 'prompt'],
+        },
+      },
       projectSlug: { type: 'string', description: 'ask_user: the project this relates to (board filter).' },
       cardId: { type: 'string', description: 'ask_user: the card to checkpoint (awaiting_human) until answered.' },
       idempotencyKey: { type: 'string', description: 'ask_user: dedupe key so a retried ask never duplicates.' },
@@ -84,6 +99,7 @@ export const inbox: Tool<Args> = {
           kind: a.kind,
           subject: a.subject,
           body: a.body,
+          questions: a.questions,
           // Anchor: default to the turn's project when the model omits one.
           projectSlug: a.projectSlug || ctx.projectSlug,
           cardId: a.cardId,

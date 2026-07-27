@@ -19,6 +19,7 @@ import {
   type InboxAction,
   type InboxMessage,
 } from './inbox-pure.ts';
+import { encodeBody, decodeBody } from './inbox-multi-pure.ts';
 import { unknownProjectError } from './projects-pure.ts';
 
 type DB = import('better-sqlite3').Database;
@@ -41,6 +42,8 @@ interface Row {
 }
 
 function rowToMessage(r: Row): InboxMessage {
+  // P5: the body column may carry a questions envelope — split it back out.
+  const decoded = decodeBody(r.body ?? '');
   return {
     id: r.id,
     fromAgentId: r.from_agent_id,
@@ -48,7 +51,8 @@ function rowToMessage(r: Row): InboxMessage {
     cardId: r.card_id ?? null,
     kind: r.kind as InboxMessage['kind'],
     subject: r.subject,
-    body: r.body ?? '',
+    body: decoded.body,
+    ...(decoded.questions ? { questions: decoded.questions } : {}),
     idempotencyKey: r.idempotency_key ?? null,
     status: r.status as InboxMessage['status'],
     action: (r.action as InboxAction | null) ?? null,
@@ -134,7 +138,8 @@ export function createAsk(db: DB, fromAgentId: string, input: AskInput): InboxRe
     cardId: s.cardId,
     kind: s.kind,
     subject: s.subject,
-    body: s.body,
+    // P5: fold any structured questions into the body column (no new column).
+    body: encodeBody(s.body, s.questions),
     idempotencyKey: s.idempotencyKey,
     now,
   });
