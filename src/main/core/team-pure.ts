@@ -566,6 +566,40 @@ export interface ProjectContextInfo {
   ownerAgentId?: string;
 }
 
+/**
+ * An agent's project memberships (the "big picture" it always carries, distinct
+ * from the single anchored `# Current project`): projects it OWNS + projects with
+ * open cards assigned to it. Computed by projectsForAgent (core/projects.ts).
+ */
+export interface AgentMemberships {
+  owned: { slug: string; name: string }[];
+  assigned: { slug: string; name: string; openCards: number }[];
+}
+
+/**
+ * The `# Your projects` section: what this agent owns + where it has open cards, so
+ * a turn never answers "no project" when it in fact owns one. Pure/testable format;
+ * projectsForAgent supplies the (IO-read) data. Empty owned+assigned → an explicit
+ * "not assigned" line rather than silence.
+ */
+export function membershipsBlock(m: AgentMemberships): string {
+  const lines = ['# Your projects'];
+  for (const p of m.owned) {
+    lines.push(`You OWN: ${p.name} (${p.slug}) — as owner you run it end-to-end and delegate.`);
+  }
+  if (m.assigned.length) {
+    lines.push('Open cards assigned to you:');
+    for (const p of m.assigned) {
+      lines.push(`- ${p.name} (${p.slug}): ${p.openCards} open card${p.openCards === 1 ? '' : 's'}`);
+    }
+  } else if (m.owned.length) {
+    lines.push('Open cards assigned to you: none right now.');
+  } else {
+    lines.push('You are not currently assigned to any project.');
+  }
+  return lines.join('\n');
+}
+
 /** The `# Current project: …` header block (Phase 3), when the turn is anchored to one. */
 function projectBlock(p: ProjectContextInfo): string {
   const meta = [p.stack && `stack ${p.stack}`, p.status && `status ${p.status}`, p.ownerAgentId && `owner ${p.ownerAgentId}`]
@@ -585,7 +619,7 @@ export function buildAgentContext(
   agent: Pick<TeamAgent, 'name' | 'role' | 'model'>,
   indexText: string,
   notes: readonly AgentNote[],
-  opts: { maxNotesChars?: number; perNoteChars?: number; project?: ProjectContextInfo } = {},
+  opts: { maxNotesChars?: number; perNoteChars?: number; project?: ProjectContextInfo; memberships?: AgentMemberships } = {},
 ): string {
   const perNoteChars = opts.perNoteChars ?? 600;
   const maxNotesChars = opts.maxNotesChars ?? 4000;
@@ -597,6 +631,9 @@ export function buildAgentContext(
       'Complete the delegated task using your role and knowledge below, then report the result concisely.',
     `# Your role\n${agent.role.trim() || '_No specialty set yet._'}`,
   );
+  // Overview of what this agent owns / is assigned (co-exists with the anchored
+  // current-project block above: memberships = the big picture, project = this turn).
+  if (opts.memberships) parts.push(membershipsBlock(opts.memberships));
   if (indexText.trim()) {
     parts.push(`# Team index — who knows what (shared, read-only)\n${indexText.trim()}`);
   }

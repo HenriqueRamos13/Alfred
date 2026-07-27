@@ -103,7 +103,7 @@ interface LogRow {
 }
 
 /** Shipped version — shown in the corner HUD and the top-bar title. Bump on release. */
-const VERSION = '1.29.0';
+const VERSION = '1.30.0';
 
 /** STT settings defaults until the async read lands (mirrors audio-transform-pure). */
 const STT_DEFAULTS: SttSettings = { engine: 'local', hasKey: false, speed: 2.3, trimTailMs: 2000, model: 'gpt-4o-mini-transcribe' };

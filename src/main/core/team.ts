@@ -15,7 +15,7 @@
 
 import { mkdir, writeFile, readFile, readdir, stat } from 'node:fs/promises';
 import { join } from 'node:path';
-import { agentIdFromName, buildAgentsIndex, buildAgentContext, parseGrant, composeStudyNote, composeRoleNote, studyNoteSlug, addTopicToIndex, topicsFromKnowledge, noteMeta, validateAgentPatch, wouldCycle, orgDepth, DELEGATION_ROLES, DEFAULT_DELEGATION_ROLE, DEFAULT_MAX_SPAWN_DEPTH, type AgentNote, type AgentSpec, type AgentUpdateInput, type DelegationRole, type KnowledgeFileMeta, type TeamAgent } from './team-pure.ts';
+import { agentIdFromName, buildAgentsIndex, buildAgentContext, parseGrant, composeStudyNote, composeRoleNote, studyNoteSlug, addTopicToIndex, topicsFromKnowledge, noteMeta, validateAgentPatch, wouldCycle, orgDepth, DELEGATION_ROLES, DEFAULT_DELEGATION_ROLE, DEFAULT_MAX_SPAWN_DEPTH, type AgentMemberships, type AgentNote, type AgentSpec, type AgentUpdateInput, type DelegationRole, type KnowledgeFileMeta, type TeamAgent } from './team-pure.ts';
 import { dayKey } from './jobs-pure.ts';
 import type { AgentKnowledgeNote, ProjectManifest } from './types.ts';
 
@@ -250,6 +250,7 @@ export async function loadAgentContext(
   workspace: string,
   agent: TeamAgent,
   project?: ProjectManifest | null,
+  memberships?: AgentMemberships,
 ): Promise<string> {
   const indexText = await readFile(join(workspace, 'agents', 'index.md'), 'utf8').catch(() => '');
   const dir = join(workspace, 'agents', agent.id, 'knowledge');
@@ -266,7 +267,10 @@ export async function loadAgentContext(
   }
   // The ProjectManifest is a superset of ProjectContextInfo (buildAgentContext
   // reads only name/slug/stack/status/summary/ownerAgentId).
-  return buildAgentContext(agent, indexText, notes, project ? { project } : {});
+  return buildAgentContext(agent, indexText, notes, {
+    ...(project ? { project } : {}),
+    ...(memberships ? { memberships } : {}),
+  });
 }
 
 /**

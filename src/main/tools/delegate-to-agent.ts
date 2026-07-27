@@ -25,7 +25,7 @@ import { randomUUID } from 'node:crypto';
 import { streamText, tool, jsonSchema, stepCountIs } from 'ai';
 import type { ToolSet } from 'ai';
 import { getAgent, loadAgentContext } from '../core/team.ts';
-import { getProject, getProjectPaused } from '../core/projects.ts';
+import { getProject, getProjectPaused, projectsForAgent } from '../core/projects.ts';
 import { isProjectWorkBlocked } from '../core/projects-pure.ts';
 import {
   resolveTeamModel,
@@ -241,7 +241,11 @@ export async function runRosterAgentAttended(
     // agent's context, and thread the slug so sub-tools default to its board/inbox.
     const projectSlug = opts?.projectSlug?.trim() || undefined;
     const project = projectSlug ? (await getProject(ctx.db, ctx.workspace, projectSlug))?.manifest ?? null : null;
-    const context = await loadAgentContext(ctx.workspace, agent, project);
+    // Big-picture memberships (owned + assigned-with-open-cards): every attended
+    // turn — delegate_to_agent AND a user↔agent thread turn (threads.ts routes
+    // through here) — so the agent knows its projects instead of answering "none".
+    const memberships = await projectsForAgent(ctx.db, ctx.workspace, agent.id).catch(() => undefined);
+    const context = await loadAgentContext(ctx.workspace, agent, project, memberships);
 
     // A NESTED spawn (this call itself runs inside a delegated child, depth ≥ 1)
     // is UNATTENDED — no human watches a fan-out — so the child runs FAIL-CLOSED

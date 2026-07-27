@@ -9,6 +9,7 @@
 import { readdir, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { ProjectManifest, ProjectRecord } from './types.ts';
+import type { AgentMemberships } from './team-pure.ts';
 import { pausedSlugSet } from './projects-pure.ts';
 
 type DB = import('better-sqlite3').Database;
@@ -207,4 +208,39 @@ export async function getProject(db: DB, workspace: string, slug: string): Promi
   }
 
   return { manifest, files: await fileTree(path), paused: !!row?.paused };
+}
+
+/**
+ * Reverse lookup: which projects does an agent belong to? OWNED = projects whose
+ * PROJECT.md names it as ownerAgentId; ASSIGNED = projects where it holds open
+ * (not done/failed) kanban cards, with the count. Names resolve via the projects
+ * index; an orphan card slug (no project row) or a project with a missing/unreadable
+ * manifest is IGNORED, never fabricated. Never throws — a bad manifest degrades to
+ * "not owned". Feeds buildAgentContext's `# Your projects` section so a turn never
+ * answers "no project" when it actually owns one.
+ */
+export async function projectsForAgent(db: DB, workspace: string, agentId: string): Promise<AgentMemberships> {
+  const projects = listProjects(db);
+  const nameBySlug = new Map(projects.map((p) => [p.slug, p.name] as const));
+
+  const owned: AgentMemberships['owned'] = [];
+  for (const p of projects) {
+    const detail = await getProject(db, workspace, p.slug).catch(() => null);
+    if (detail?.manifest.ownerAgentId === agentId) owned.push({ slug: p.slug, name: p.name });
+  }
+
+  const rows = db
+    .prepare(
+      `SELECT project_slug AS slug, COUNT(*) AS n FROM kanban_cards
+        WHERE assignee_id = ? AND "column" NOT IN ('done', 'failed')
+        GROUP BY project_slug`,
+    )
+    .all(agentId) as { slug: string; n: number }[];
+  const assigned: AgentMemberships['assigned'] = [];
+  for (const r of rows) {
+    const name = nameBySlug.get(r.slug);
+    if (name === undefined) continue; // orphan slug — no such project, ignore
+    assigned.push({ slug: r.slug, name, openCards: r.n });
+  }
+  return { owned, assigned };
 }

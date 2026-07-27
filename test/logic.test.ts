@@ -1789,6 +1789,7 @@ import {
   composeRoleNote,
   buildAgentsIndex,
   buildAgentContext,
+  membershipsBlock,
   parseGrant,
   resolveTeamModel,
   studyNoteSlug,
@@ -3364,6 +3365,55 @@ test('buildAgentContext — anchors the current project as the FIRST section (P3
   const bare = buildAgentContext(agent, '', []);
   assert.ok(!bare.includes('Current project'));
   assert.match(bare, /You are Coder/);
+});
+
+test('membershipsBlock — owned only: names ownership, no open cards', () => {
+  const s = membershipsBlock({ owned: [{ slug: 'archcanvas', name: 'ArchCanvas' }], assigned: [] });
+  assert.match(s, /^# Your projects/);
+  assert.match(s, /You OWN: ArchCanvas \(archcanvas\) — as owner you run it end-to-end and delegate\./);
+  assert.match(s, /Open cards assigned to you: none right now\./);
+  assert.ok(!s.includes('not currently assigned'));
+});
+
+test('membershipsBlock — assigned with counts (singular/plural)', () => {
+  const s = membershipsBlock({
+    owned: [],
+    assigned: [
+      { slug: 'nimbus', name: 'Nimbus', openCards: 3 },
+      { slug: 'atlas', name: 'Atlas', openCards: 1 },
+    ],
+  });
+  assert.match(s, /Open cards assigned to you:/);
+  assert.match(s, /- Nimbus \(nimbus\): 3 open cards/);
+  assert.match(s, /- Atlas \(atlas\): 1 open card\b/);
+  assert.ok(!/1 open cards/.test(s), 'singular for a single card');
+});
+
+test('membershipsBlock — empty: explicit not-assigned line, never silent', () => {
+  const s = membershipsBlock({ owned: [], assigned: [] });
+  assert.match(s, /You are not currently assigned to any project\./);
+});
+
+test('buildAgentContext — injects # Your projects and co-exists with # Current project', () => {
+  const agent = { name: 'Coder', role: 'TS', model: 'claude-opus-4-8' };
+  const memberships = { owned: [{ slug: 'archcanvas', name: 'ArchCanvas' }], assigned: [] };
+  // memberships alone (no anchored project)
+  const ctx = buildAgentContext(agent, '', [], { memberships });
+  assert.match(ctx, /# Your projects/);
+  assert.match(ctx, /You OWN: ArchCanvas/);
+  assert.ok(!ctx.includes('# Current project'));
+
+  // co-existence: both the anchored project block AND the memberships overview
+  const both = buildAgentContext(agent, '', [], {
+    memberships,
+    project: { name: 'Nimbus', slug: 'nimbus', status: 'active' },
+  });
+  assert.ok(both.includes('# Current project: Nimbus'));
+  assert.ok(both.includes('# Your projects'));
+  assert.ok(both.indexOf('# Current project') < both.indexOf('# Your projects'), 'current project leads');
+
+  // no memberships → no phantom section (existing callers unaffected)
+  assert.ok(!buildAgentContext(agent, '', []).includes('# Your projects'));
 });
 
 test('unknownProjectError — rejects a phantom board, allows a known slug (P3)', () => {
