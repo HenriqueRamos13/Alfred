@@ -20,6 +20,7 @@ import type {
   VoiceConfig,
   WakeStatus,
 } from '../main/core/types.ts';
+import type { VoiceOption } from '../main/core/voice-list-pure.ts';
 import type { BrainInfo } from '../main/core/providers.ts';
 import type { FactoryResetInfo } from '../main/core/orchestrator.ts';
 import type { ProjectDetail } from '../main/core/projects.ts';
@@ -194,6 +195,8 @@ const api = {
   /** TTS voice knobs (engine/voice/rate/eleven voice id) — persisted; .env is the default. Read on mount. */
   getVoiceConfig: (): Promise<VoiceConfig> => ipcRenderer.invoke('alfred:getVoiceConfig'),
   setVoiceConfig: (patch: VoiceConfig): Promise<VoiceConfig> => ipcRenderer.invoke('alfred:setVoiceConfig', patch),
+  /** Selectable voices for an engine ('say' → live macOS voices, 'kokoro' → static, 'elevenlabs' → []). */
+  listVoices: (engine: string): Promise<VoiceOption[]> => ipcRenderer.invoke('alfred:listVoices', engine),
   /** Auto-send (submit dictation on stt.final) toggle — persisted; read on mount. */
   getAutosend: (): Promise<boolean> => ipcRenderer.invoke('alfred:getAutosend'),
   setAutosend: (on: boolean): Promise<boolean> => ipcRenderer.invoke('alfred:setAutosend', on),

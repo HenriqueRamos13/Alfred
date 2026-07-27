@@ -94,6 +94,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { confirmMatches, factoryResetPaths, factoryResetTables } from '../src/main/core/reset.ts';
 import { grillMeEnabled, lowCpuEnabled, shouldDrawFrame, resolveConfigValue, parseVoiceConfig } from '../src/main/core/settings-pure.ts';
+import { parseSayVoices, voicesForEngine, labelForVoice, KOKORO_VOICES } from '../src/main/core/voice-list-pure.ts';
 import {
   isLanguage,
   resolveLanguage,
@@ -451,6 +452,50 @@ test('parseVoiceConfig — validates rate (positive int) and elevenVoiceId (alph
   assert.deepEqual(parseVoiceConfig(JSON.stringify({ elevenVoiceId: 'a/b' })), {});
   // free-form fields keep inner spaces/parens (say voice names like "Felipe (Enhanced)").
   assert.deepEqual(parseVoiceConfig(JSON.stringify({ voice: 'Felipe (Enhanced)' })), { voice: 'Felipe (Enhanced)' });
+});
+
+// ── voice-list-pure (Settings VOICE selector) ───────────────────────────────────
+
+test('parseSayVoices — name with spaces/parens, full/short locale, sample', () => {
+  const raw = [
+    'Luciana            pt_BR    # Olá, o meu nome é Luciana.',
+    'Felipe (Enhanced)  pt_BR    # Oi, eu sou o Felipe.',
+    'Samantha           en_US    # Hello, my name is Samantha.',
+    'Eddy (English (UK)) en_GB   # Hi, I am Eddy.',
+    'Fred               en       # I sure like being inside this fancy computer.',
+  ].join('\n');
+  assert.deepEqual(parseSayVoices(raw), [
+    { id: 'Luciana', name: 'Luciana', locale: 'pt_BR', sample: 'Olá, o meu nome é Luciana.' },
+    { id: 'Felipe (Enhanced)', name: 'Felipe (Enhanced)', locale: 'pt_BR', sample: 'Oi, eu sou o Felipe.' },
+    { id: 'Samantha', name: 'Samantha', locale: 'en_US', sample: 'Hello, my name is Samantha.' },
+    { id: 'Eddy (English (UK))', name: 'Eddy (English (UK))', locale: 'en_GB', sample: 'Hi, I am Eddy.' },
+    { id: 'Fred', name: 'Fred', locale: 'en', sample: 'I sure like being inside this fancy computer.' },
+  ]);
+});
+
+test('parseSayVoices — skips blank/malformed lines, tolerates missing sample', () => {
+  const raw = ['', '   ', 'no_locale_here just words', 'pt_BR', 'Alex   en_US'].join('\n');
+  // "no_locale_here..." has no locale token; a bare "pt_BR" has nothing before it;
+  // "Alex   en_US" has no `#` sample → sample undefined.
+  assert.deepEqual(parseSayVoices(raw), [{ id: 'Alex', name: 'Alex', locale: 'en_US', sample: undefined }]);
+  assert.deepEqual(parseSayVoices(''), []);
+});
+
+test('KOKORO_VOICES + voicesForEngine — right catalog per engine', () => {
+  assert.ok(KOKORO_VOICES.some((v) => v.id === 'af_heart' && v.gender === 'female' && v.locale === 'en_US'));
+  assert.ok(KOKORO_VOICES.some((v) => v.id === 'bm_george' && v.gender === 'male' && v.locale === 'en_GB'));
+  const say = [{ id: 'Luciana', name: 'Luciana', locale: 'pt_BR' }];
+  assert.deepEqual(voicesForEngine('say', say), say);
+  assert.deepEqual(voicesForEngine('', say), say); // empty/default → say voices
+  assert.deepEqual(voicesForEngine('kokoro', say), KOKORO_VOICES);
+  assert.deepEqual(voicesForEngine('elevenlabs', say), []);
+});
+
+test('labelForVoice — descriptive "<name> — <language (region)>"', () => {
+  assert.equal(labelForVoice({ id: 'Samantha', name: 'Samantha', locale: 'en_US' }), 'Samantha — English (US)');
+  assert.equal(labelForVoice({ id: 'Luciana', name: 'Luciana', locale: 'pt_BR' }), 'Luciana — Português (BR)');
+  assert.equal(labelForVoice({ id: 'Fred', name: 'Fred', locale: 'en' }), 'Fred — English');
+  assert.equal(labelForVoice({ id: 'X', name: 'X', locale: 'xx_YY' }), 'X — xx (YY)'); // unknown lang → code
 });
 
 // ── providers / brain selection ────────────────────────────────────────────────

@@ -10,6 +10,8 @@
  */
 import { app, BrowserWindow, ipcMain } from 'electron';
 import { hideAllWindows, toggleAllWindows } from './windows.ts';
+import { listVoices } from './core/voice-list.ts';
+import type { VoiceOption } from './core/voice-list-pure.ts';
 import type {
   ApprovalDecision,
   ProjectRecord,
@@ -360,6 +362,17 @@ export function registerIpc(core: Orchestrator, emit: (e: StreamEvent) => void):
     } catch (err) {
       fail('set voice config', err);
       return {} as VoiceConfig;
+    }
+  });
+
+  // Voice catalog for the Settings selector — main-only (spawns macOS `say`);
+  // degrades to [] off-Mac / on failure so the dropdown just shows no voices.
+  ipcMain.handle('alfred:listVoices', async (_e, engine: unknown) => {
+    try {
+      return await listVoices(typeof engine === 'string' ? engine : '');
+    } catch (err) {
+      fail('list voices', err);
+      return [] as VoiceOption[];
     }
   });
 

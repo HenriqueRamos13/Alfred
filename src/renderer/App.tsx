@@ -53,6 +53,7 @@ import { confirmMatches } from '../main/core/reset-pure.ts';
 import { ACCENT_NAMES, resolveAccent, type AccentName } from '../main/core/accent-pure.ts';
 import { LANGUAGES, isLanguage, type Language } from '../main/core/language-pure.ts';
 import { parseVoiceConfig } from '../main/core/settings-pure.ts';
+import { labelForVoice, type VoiceOption } from '../main/core/voice-list-pure.ts';
 import type { FactoryResetInfo } from '../main/core/orchestrator.ts';
 import type {
   AgentStatus,
@@ -100,7 +101,7 @@ interface LogRow {
 }
 
 /** Shipped version — shown in the corner HUD and the top-bar title. Bump on release. */
-const VERSION = '1.19.0';
+const VERSION = '1.21.0';
 
 const MAX_LOG = 80;
 const MAX_ALERTS = 12;
@@ -2247,6 +2248,27 @@ function SettingsCard({
   onToggleDangerous: () => void;
   onResetApprovals: () => void;
 }) {
+  // Which engine's voices to list. The ElevenLabs toggle overrides the base
+  // engine (it picks the cloud voice); a blank engine means the default ('say').
+  const listEngine = elevenlabs ? 'elevenlabs' : voiceCfg.engine || 'say';
+  const [voices, setVoices] = useState<VoiceOption[]>([]);
+  useEffect(() => {
+    let alive = true;
+    alfred
+      .listVoices(listEngine)
+      .then((v) => alive && setVoices(v))
+      .catch(() => alive && setVoices([]));
+    return () => {
+      alive = false;
+    };
+  }, [listEngine]);
+  // Show the saved voice even if it's not in the current engine's catalog (e.g.
+  // a say name left over after switching to kokoro) so the dropdown never blanks.
+  const savedVoice = voiceCfg.voice ?? '';
+  const voiceOptions =
+    savedVoice && !voices.some((v) => v.id === savedVoice)
+      ? [{ id: savedVoice, name: savedVoice, locale: '' }, ...voices]
+      : voices;
   return (
     <div className="settings-prefs">
       <div className="settings-group">
@@ -2307,64 +2329,84 @@ function SettingsCard({
           <span className="settings-pref-v">{tts ? 'ON' : 'OFF'} · no cabeçalho</span>
         </div>
 
-        <label className="settings-num" title="Motor TTS base. say (macOS, tem pt-BR) ou kokoro (offline, só inglês). ElevenLabs é o toggle acima. Vazio = usa o .env (ALFRED_TTS_ENGINE).">
-          <span className="settings-num-k">Motor TTS</span>
+        <label className="settings-num" title="Motor de voz. say usa as vozes do macOS (tem pt-BR). Kokoro corre offline (só inglês). ElevenLabs (toggle acima) é a voz na nuvem. Vazio = usa o .env (ALFRED_TTS_ENGINE).">
+          <span className="settings-num-k">Motor</span>
           <span className="settings-num-field">
             <select
               className="settings-num-input no-drag"
-              value={voiceCfg.engine ?? ''}
+              value={voiceCfg.engine || 'say'}
+              disabled={elevenlabs}
               onChange={(e) => onSetVoice({ engine: e.target.value })}
             >
-              <option value="">.env / default</option>
-              <option value="say">say (macOS · pt-BR)</option>
-              <option value="kokoro">kokoro (offline · EN)</option>
+              <option value="say">macOS say (vozes do sistema)</option>
+              <option value="kokoro">Kokoro (offline, inglês)</option>
             </select>
           </span>
         </label>
-        <label className="settings-num" title="Nome da voz (say, ex.: “Felipe (Enhanced)”) ou id da voz (kokoro, ex.: af_heart). Vazio = default do motor / .env (ALFRED_TTS_VOICE).">
-          <span className="settings-num-k">Voz</span>
-          <span className="settings-num-field">
-            <input
-              className="settings-num-input no-drag"
-              type="text"
-              placeholder=".env / default"
-              value={voiceCfg.voice ?? ''}
-              onChange={(e) => onDraftVoice({ voice: e.target.value })}
-              onBlur={(e) => onSetVoice({ voice: e.target.value })}
-            />
-          </span>
-        </label>
-        <label className="settings-num" title="Ritmo de fala do say em palavras/min (só say). Vazio = default. (ALFRED_TTS_RATE)">
-          <span className="settings-num-k">Ritmo (say)</span>
-          <span className="settings-num-field">
-            <input
-              className="settings-num-input no-drag"
-              type="number"
-              min={80}
-              step={10}
-              placeholder="—"
-              value={voiceCfg.rate ?? ''}
-              onChange={(e) => onDraftVoice({ rate: e.target.value })}
-              onBlur={(e) => onSetVoice({ rate: e.target.value })}
-            />
-            <span className="settings-num-unit">wpm</span>
-          </span>
-        </label>
-        <label className="settings-num" title="Id da voz ElevenLabs (identificador público, não é segredo). A chave ELEVENLABS_API_KEY fica no .env. Vazio = default.">
-          <span className="settings-num-k">Voz ElevenLabs (id)</span>
-          <span className="settings-num-field">
-            <input
-              className="settings-num-input no-drag"
-              type="text"
-              placeholder=".env / default"
-              value={voiceCfg.elevenVoiceId ?? ''}
-              onChange={(e) => onDraftVoice({ elevenVoiceId: e.target.value })}
-              onBlur={(e) => onSetVoice({ elevenVoiceId: e.target.value })}
-            />
-          </span>
-        </label>
+
+        {elevenlabs ? (
+          <label className="settings-num" title="Id da voz ElevenLabs (identificador público, não é segredo) — copia-o da tua conta ElevenLabs. A chave ELEVENLABS_API_KEY fica no .env. Vazio = default.">
+            <span className="settings-num-k">Voice ID (ElevenLabs)</span>
+            <span className="settings-num-field">
+              <input
+                className="settings-num-input no-drag"
+                type="text"
+                placeholder=".env / default"
+                value={voiceCfg.elevenVoiceId ?? ''}
+                onChange={(e) => onDraftVoice({ elevenVoiceId: e.target.value })}
+                onBlur={(e) => onSetVoice({ elevenVoiceId: e.target.value })}
+              />
+            </span>
+          </label>
+        ) : (
+          <label className="settings-num" title="Escolhe a voz. As vozes say são as instaladas no teu Mac; as Kokoro são fixas (inglês). Vazio = default do motor / .env (ALFRED_TTS_VOICE).">
+            <span className="settings-num-k">Voz</span>
+            <span className="settings-num-field">
+              <select
+                className="settings-num-input no-drag"
+                value={savedVoice}
+                onChange={(e) => onSetVoice({ voice: e.target.value })}
+              >
+                <option value="">Voz padrão do motor</option>
+                {voiceOptions.map((v) => (
+                  <option key={v.id} value={v.id}>
+                    {v.locale ? labelForVoice(v) : v.name}
+                  </option>
+                ))}
+              </select>
+            </span>
+          </label>
+        )}
+
+        {!elevenlabs && voices.length === 0 && (
+          <div className="settings-note">
+            {listEngine === 'kokoro'
+              ? 'Sem vozes Kokoro listadas.'
+              : 'Nenhuma voz do sistema encontrada (o say do macOS só existe no Mac). Escreve o nome via .env se precisares.'}
+          </div>
+        )}
+
+        {!elevenlabs && listEngine !== 'kokoro' && (
+          <label className="settings-num" title="Ritmo de fala do say em palavras/min (só say). Vazio = default. (ALFRED_TTS_RATE)">
+            <span className="settings-num-k">Ritmo</span>
+            <span className="settings-num-field">
+              <input
+                className="settings-num-input no-drag"
+                type="number"
+                min={80}
+                step={10}
+                placeholder="—"
+                value={voiceCfg.rate ?? ''}
+                onChange={(e) => onDraftVoice({ rate: e.target.value })}
+                onBlur={(e) => onSetVoice({ rate: e.target.value })}
+              />
+              <span className="settings-num-unit">wpm</span>
+            </span>
+          </label>
+        )}
+
         <div className="settings-note">
-          Vazio = usa o default do .env. Locale STT (ALFRED_STT_LOCALE) e a chave ElevenLabs continuam no .env.
+          Estas opções substituem as ALFRED_TTS_* do .env — deixa em branco para usar o default. A chave ELEVENLABS_API_KEY e o locale STT (ALFRED_STT_LOCALE) continuam no .env.
         </div>
       </div>
 
