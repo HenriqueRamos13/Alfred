@@ -557,19 +557,46 @@ function clip(text: string, max: number): string {
  * reads ONLY the agent's own folder and feeds the notes here, which is what
  * keeps one agent from ever seeing another's private notes.
  */
+export interface ProjectContextInfo {
+  name: string;
+  slug: string;
+  stack?: string;
+  status?: string;
+  summary?: string;
+  ownerAgentId?: string;
+}
+
+/** The `# Current project: …` header block (Phase 3), when the turn is anchored to one. */
+function projectBlock(p: ProjectContextInfo): string {
+  const meta = [p.stack && `stack ${p.stack}`, p.status && `status ${p.status}`, p.ownerAgentId && `owner ${p.ownerAgentId}`]
+    .filter(Boolean)
+    .join(' · ');
+  return [
+    `# Current project: ${p.name} (slug=${p.slug})`,
+    meta,
+    p.summary?.trim() ? p.summary.trim() : '',
+    'Anchor this project: scope your work to it, and address its board/inbox by this slug.',
+  ]
+    .filter(Boolean)
+    .join('\n');
+}
+
 export function buildAgentContext(
   agent: Pick<TeamAgent, 'name' | 'role' | 'model'>,
   indexText: string,
   notes: readonly AgentNote[],
-  opts: { maxNotesChars?: number; perNoteChars?: number } = {},
+  opts: { maxNotesChars?: number; perNoteChars?: number; project?: ProjectContextInfo } = {},
 ): string {
   const perNoteChars = opts.perNoteChars ?? 600;
   const maxNotesChars = opts.maxNotesChars ?? 4000;
-  const parts: string[] = [
+  const parts: string[] = [];
+  // The current-project block is the FIRST section when the turn is anchored.
+  if (opts.project) parts.push(projectBlock(opts.project));
+  parts.push(
     `You are ${agent.name}, a specialist agent on Alfred's team (model ${agent.model}). ` +
       'Complete the delegated task using your role and knowledge below, then report the result concisely.',
     `# Your role\n${agent.role.trim() || '_No specialty set yet._'}`,
-  ];
+  );
   if (indexText.trim()) {
     parts.push(`# Team index — who knows what (shared, read-only)\n${indexText.trim()}`);
   }

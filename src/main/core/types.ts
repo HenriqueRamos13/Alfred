@@ -638,6 +638,9 @@ export interface ProjectManifest {
   created: string;
   keyFiles: string[];
   decisions: string[];
+  /** Roster agent that OWNS this project (top of its org, e.g. the CEO). Alfred
+   * delegates the project's objective to this agent instead of doing the work. */
+  ownerAgentId?: string;
 }
 
 /** Row in the sqlite `projects` index (manifest is canonical, this is the index). */
@@ -728,6 +731,13 @@ export interface ToolCtx {
    * (fail-closed) child, and to pass depth+1 down to its own child.
    */
   delegationDepth?: number;
+  /**
+   * The project slug this turn is anchored to (Phase 3 isolation). Set by the
+   * delegate runner from the delegation's projectSlug so a sub-tool (kanban,
+   * inbox) that omits an explicit project DEFAULTS to this one instead of an
+   * empty/phantom board. Absent → the top-level Alfred turn (no anchored project).
+   */
+  projectSlug?: string;
   /**
    * The roster agent whose DELEGATED turn is running (Phase 7 stage 3), for tools
    * that gate on agent identity — the `inbox` tool checks canMessageUserResolved

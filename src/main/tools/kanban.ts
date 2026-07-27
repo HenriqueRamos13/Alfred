@@ -125,10 +125,13 @@ export const kanban: Tool<Args> = {
 
   async execute(a, ctx) {
     try {
+      // Anchor: when the model omits a project, default to the turn's project
+      // (ctx.projectSlug, set by the delegate runner) instead of an empty board.
+      const anchoredSlug = a.projectSlug || ctx.projectSlug;
       // Reads
       if (a.op === 'list_cards') {
-        if (!a.projectSlug) return { ok: false, error: 'projectSlug is required for list_cards' };
-        return { ok: true, result: { cards: listCards(ctx.db, a.projectSlug) } };
+        if (!anchoredSlug) return { ok: false, error: 'projectSlug is required for list_cards' };
+        return { ok: true, result: { cards: listCards(ctx.db, anchoredSlug) } };
       }
       if (a.op === 'get_card') {
         if (!a.id) return { ok: false, error: 'id is required for get_card' };
@@ -139,11 +142,11 @@ export const kanban: Tool<Args> = {
 
       // Writes — each returns a CardResult and (on success) emits kanban.changed.
       let res: CardResult;
-      let slug = a.projectSlug ?? '';
+      let slug = anchoredSlug ?? '';
       switch (a.op) {
         case 'create_card':
           res = createCard(ctx.db, {
-            projectSlug: a.projectSlug,
+            projectSlug: anchoredSlug,
             title: a.title,
             body: a.body,
             column: a.column,

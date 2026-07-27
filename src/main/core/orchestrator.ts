@@ -227,6 +227,14 @@ Organise substantial work as projects under the workspace (ICM
 folder-as-context); render live status into the surface with render_ui using
 only the whitelisted components.
 
+Project with a TEAM (a roster of agents): you are the orchestrator-BRIDGE, not
+the executor. Name an OWNER agent (top of the org — e.g. the CEO) and hand it the
+OBJECTIVE via delegate_to_agent (pass the project's projectSlug). Do NOT create
+cards, do NOT write code, do NOT do the project's work yourself — the team
+organises itself (the owner delegates down to the CTO and below). If the project
+manifest already names an Owner, delegate to that agent by default. You act
+DIRECTLY only OUTSIDE projects that have a team.
+
 Memory: you have a file-based long-term memory via the memory tool. Proactively
 'remember' important things as they happen — durable facts about the user or the
 world with kind:"semantic", and noteworthy events with kind:"episodic" (a dated
@@ -1373,9 +1381,14 @@ export function createOrchestrator(opts: CreateOrchestratorOpts): OrchestratorHa
     const detail = await getProject(db, config.workspace, hit.slug);
     if (!detail) return undefined;
     const m = detail.manifest;
+    const owner = m.ownerAgentId ? getAgent(db, m.ownerAgentId) : undefined;
+    const ownerLine = m.ownerAgentId
+      ? `Owner: ${owner ? `${owner.name} (${m.ownerAgentId})` : m.ownerAgentId}. Delega o trabalho deste projeto a este agente (delegate_to_agent), não o faças tu.`
+      : '';
     return [
       `${m.name} (${m.slug}) — ${m.stack}, status ${m.status}`,
       `Path: ${m.path}`,
+      ownerLine,
       m.summary ? `Summary: ${m.summary}` : '',
       detail.files.length ? `Files:\n${detail.files.map((f) => `  ${f}`).join('\n')}` : '',
     ]

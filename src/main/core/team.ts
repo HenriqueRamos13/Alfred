@@ -17,7 +17,7 @@ import { mkdir, writeFile, readFile, readdir, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { agentIdFromName, buildAgentsIndex, buildAgentContext, parseGrant, composeStudyNote, composeRoleNote, studyNoteSlug, addTopicToIndex, topicsFromKnowledge, noteMeta, validateAgentPatch, wouldCycle, orgDepth, DELEGATION_ROLES, DEFAULT_DELEGATION_ROLE, DEFAULT_MAX_SPAWN_DEPTH, type AgentNote, type AgentSpec, type AgentUpdateInput, type DelegationRole, type KnowledgeFileMeta, type TeamAgent } from './team-pure.ts';
 import { dayKey } from './jobs-pure.ts';
-import type { AgentKnowledgeNote } from './types.ts';
+import type { AgentKnowledgeNote, ProjectManifest } from './types.ts';
 
 type DB = import('better-sqlite3').Database;
 
@@ -246,7 +246,11 @@ export function setAgentManager(db: DB, agentId: string, parentId: string | null
  * folder — the isolation boundary) fed to the pure buildAgentContext. Missing
  * files degrade to empty, never throw.
  */
-export async function loadAgentContext(workspace: string, agent: TeamAgent): Promise<string> {
+export async function loadAgentContext(
+  workspace: string,
+  agent: TeamAgent,
+  project?: ProjectManifest | null,
+): Promise<string> {
   const indexText = await readFile(join(workspace, 'agents', 'index.md'), 'utf8').catch(() => '');
   const dir = join(workspace, 'agents', agent.id, 'knowledge');
   let files: string[] = [];
@@ -260,7 +264,9 @@ export async function loadAgentContext(workspace: string, agent: TeamAgent): Pro
     const body = await readFile(join(dir, f), 'utf8').catch(() => '');
     if (body.trim()) notes.push({ title: f.replace(/\.md$/, ''), body });
   }
-  return buildAgentContext(agent, indexText, notes);
+  // The ProjectManifest is a superset of ProjectContextInfo (buildAgentContext
+  // reads only name/slug/stack/status/summary/ownerAgentId).
+  return buildAgentContext(agent, indexText, notes, project ? { project } : {});
 }
 
 /**

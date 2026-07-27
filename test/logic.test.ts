@@ -54,6 +54,7 @@ import {
   isLoop,
 } from '../src/main/core/budget.ts';
 import { slugify } from '../src/main/core/projects.ts';
+import { unknownProjectError } from '../src/main/core/projects-pure.ts';
 import {
   nextRun,
   budgetDecision,
@@ -3345,6 +3346,31 @@ test('buildAgentContext — role + shared index + own notes, capped, no other-ag
   // empty role + no notes still yields a usable system string
   const bare = buildAgentContext({ ...agent, role: '' }, '', []);
   assert.match(bare, /No specialty set yet|Coder/);
+});
+
+test('buildAgentContext — anchors the current project as the FIRST section (P3)', () => {
+  const agent = { name: 'Coder', role: 'TS', model: 'claude-opus-4-8' };
+  const ctx = buildAgentContext(agent, '', [], {
+    project: { name: 'Nimbus', slug: 'nimbus', stack: 'Next.js', status: 'active', summary: 'A cloud thing', ownerAgentId: 'ceo' },
+  });
+  // the project block leads the context (before the "You are …" intro)
+  assert.ok(ctx.startsWith('# Current project: Nimbus (slug=nimbus)'), ctx.slice(0, 60));
+  assert.ok(ctx.indexOf('Current project') < ctx.indexOf('You are Coder'));
+  assert.match(ctx, /Next\.js/);
+  assert.match(ctx, /owner ceo/);
+  assert.match(ctx, /A cloud thing/);
+  // no project → no phantom block, still a usable string
+  const bare = buildAgentContext(agent, '', []);
+  assert.ok(!bare.includes('Current project'));
+  assert.match(bare, /You are Coder/);
+});
+
+test('unknownProjectError — rejects a phantom board, allows a known slug (P3)', () => {
+  const known = ['nimbus', 'atlas'];
+  assert.equal(unknownProjectError('nimbus', known), null);
+  assert.equal(unknownProjectError('atlas', new Set(known)), null);
+  assert.equal(unknownProjectError('ghost', known), 'unknown project "ghost"');
+  assert.equal(unknownProjectError('', known), 'unknown project ""');
 });
 
 // ── team on-demand learning (Phase 5, stage 3): study-note plan + index topic ──

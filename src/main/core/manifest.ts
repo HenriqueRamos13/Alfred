@@ -55,7 +55,7 @@ To save context, a small CORE set (filesystem, shell, system, memory, ui_layout)
 So if you need e.g. gmail/browser/schedule and don't see it, tool_search for it, then tool_call it. When the toolset is small the tools are all exposed directly and no bridge appears.
 
 # Routing (task → what to load)
-- New app/project → skills/create-project/SKILL.md + the \`project\` tool (folder-as-context)
+- New app/project → skills/create-project/SKILL.md + the \`project\` tool (folder-as-context). If a TEAM exists (a roster of agents), you are the orchestrator-BRIDGE: name an OWNER (create with ownerAgentId) and delegate the objective to it via delegate_to_agent (with projectSlug) — DEFAULT, not optional; don't build it yourself.
 - Deploy / release → skills/deploy-runbook/SKILL.md
 - Web research / scraping → \`browser\`, then \`memory\` op:note to keep findings
 - Mac status / control → \`system\`

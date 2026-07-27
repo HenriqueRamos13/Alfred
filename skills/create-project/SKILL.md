@@ -22,10 +22,17 @@ context and status are persistent and re-loadable.
    { "op": "create", "name": "Todo App", "stack": "Next.js", "summary": "Personal task tracker" }
    ```
    This scaffolds the folder + `.alfred/PROJECT.md` and indexes it. It is **T1**
-   (reversible workspace write) — no approval.
+   (reversible workspace write) — no approval. If a TEAM (roster of agents) will
+   run this project, pass `ownerAgentId` (the agent that OWNS it, top of the org)
+   so the manifest records the owner.
 3. **Build inside the project folder** — use `filesystem`/`shell` with paths
    relative to the workspace (they resolve there). Keep the manifest's key files
    and decisions current as you go.
+   - **If the project has a TEAM, this step is DELEGATED, not done by you.** You
+     are the orchestrator-bridge: hand the OBJECTIVE to the owner agent via
+     `delegate_to_agent` (pass the project's `projectSlug` and, if set, target the
+     manifest's owner). The owner delegates down (CTO and below); the team creates
+     its own cards. Don't create cards or write the code yourself.
 4. **Show status** — render a live view with `render_ui` (e.g. a `Panel` with a
    `ProjectList` or `DataTable`) so the user sees progress on the surface.
 5. **Delegate chunky work if useful** — a large multi-file scaffold can go to

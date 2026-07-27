@@ -9,6 +9,7 @@ interface Args {
   slug?: string;
   stack?: string;
   summary?: string;
+  ownerAgentId?: string;
 }
 
 export const project: Tool<Args> = {
@@ -25,6 +26,7 @@ export const project: Tool<Args> = {
       slug: { type: 'string', description: 'op=get: project slug.' },
       stack: { type: 'string', description: 'op=create: tech stack (e.g. "Next.js").' },
       summary: { type: 'string', description: 'op=create: one-line summary.' },
+      ownerAgentId: { type: 'string', description: 'op=create: roster agent that OWNS the project (Alfred delegates its objective to this agent).' },
     },
     required: ['op'],
   },
@@ -41,6 +43,7 @@ export const project: Tool<Args> = {
             name: a.name,
             stack: a.stack ?? '',
             summary: a.summary ?? '',
+            ownerAgentId: a.ownerAgentId,
           });
           return { ok: true, result: manifest };
         }

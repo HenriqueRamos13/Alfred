@@ -19,6 +19,7 @@ import {
   type InboxAction,
   type InboxMessage,
 } from './inbox-pure.ts';
+import { unknownProjectError } from './projects-pure.ts';
 
 type DB = import('better-sqlite3').Database;
 
@@ -110,6 +111,12 @@ export function createAsk(db: DB, fromAgentId: string, input: AskInput): InboxRe
   const v = validateAsk(input);
   if (!v.ok) return v;
   const s = v.spec;
+  // A project-scoped ask must name a real project (never a phantom board).
+  if (s.projectSlug) {
+    const known = new Set((db.prepare('SELECT slug FROM projects').all() as { slug: string }[]).map((r) => r.slug));
+    const bad = unknownProjectError(s.projectSlug, known);
+    if (bad) return { ok: false, error: bad };
+  }
   if (s.idempotencyKey) {
     const dup = dedupeByIdempotency(listInbox(db, { agentId: agent }), s.idempotencyKey);
     if (dup) return { ok: true, message: dup, deduped: true };

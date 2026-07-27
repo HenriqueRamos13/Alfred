@@ -25,6 +25,7 @@ import { randomUUID } from 'node:crypto';
 import { streamText, tool, jsonSchema, stepCountIs } from 'ai';
 import type { ToolSet } from 'ai';
 import { getAgent, loadAgentContext } from '../core/team.ts';
+import { getProject } from '../core/projects.ts';
 import {
   resolveTeamModel,
   agentBudgetDecision,
@@ -65,6 +66,7 @@ interface Args {
   agentId: string;
   task: string;
   model?: string;
+  projectSlug?: string;
 }
 
 /**
@@ -140,6 +142,10 @@ export const delegateToAgent: Tool<Args> = {
         type: 'string',
         description: 'Optional model override — must be in the agent\'s provider catalog, else the agent\'s configured model is used.',
       },
+      projectSlug: {
+        type: 'string',
+        description: 'Optional project to anchor the turn to: its PROJECT.md is loaded into the agent\'s context and becomes the default board/inbox for its kanban/inbox calls.',
+      },
     },
     required: ['agentId', 'task'],
   },
@@ -154,7 +160,7 @@ export const delegateToAgent: Tool<Args> = {
     const agent = getAgent(ctx.db, a.agentId);
     if (!agent) return { ok: false, error: `no roster agent with id "${a.agentId}" (create one with the team tool, or op=list to see them)` };
 
-    const out = await runRosterAgentAttended(ctx, agent, a.task.trim(), { model: a.model });
+    const out = await runRosterAgentAttended(ctx, agent, a.task.trim(), { model: a.model, projectSlug: a.projectSlug });
     // The spawn gate refused BEFORE any work happened: surface it as a blocked TOOL
     // call in the activity log (the runner itself has no tool identity — the thread
     // path reports the same refusal as a message status instead).
@@ -171,6 +177,8 @@ export const delegateToAgent: Tool<Args> = {
 export interface RosterRunOpts {
   /** Model override — validated against the agent's provider catalog (else its own). */
   model?: string;
+  /** Project to anchor the turn to (Phase 3): loads PROJECT.md into context + defaults sub-tool boards. */
+  projectSlug?: string;
   /** Live token sink (thread streaming). API brains only; claude-cli streams nothing. */
   onDelta?: (text: string) => void;
 }
@@ -219,7 +227,11 @@ export async function runRosterAgentAttended(
   const endWork = beginActivity(ctx.emit, agent.id, 'working', truncateLabel(task));
   try {
     const model = resolveTeamModel(opts?.model, agent);
-    const context = await loadAgentContext(ctx.workspace, agent);
+    // Anchor to a project (Phase 3): load its manifest so PROJECT.md heads the
+    // agent's context, and thread the slug so sub-tools default to its board/inbox.
+    const projectSlug = opts?.projectSlug?.trim() || undefined;
+    const project = projectSlug ? (await getProject(ctx.db, ctx.workspace, projectSlug))?.manifest ?? null : null;
+    const context = await loadAgentContext(ctx.workspace, agent, project);
 
     // A NESTED spawn (this call itself runs inside a delegated child, depth ≥ 1)
     // is UNATTENDED — no human watches a fan-out — so the child runs FAIL-CLOSED
@@ -237,6 +249,7 @@ export async function runRosterAgentAttended(
       canMessageUser: agent.canMessageUser ?? false,
       delegationDepth: depth + 1,
       dailyTokenBudget: agent.dailyTokenBudget,
+      projectSlug,
       system: context,
       task,
       unattended: nested ? { dangerous: isDangerous(ctx.db), queue: () => {} } : undefined,
@@ -277,6 +290,8 @@ export interface AgentTurnSpec {
   /** This runner's delegation depth (child of a delegate call). Threaded to its own sub-tools. Default 0. */
   delegationDepth?: number;
   dailyTokenBudget?: number;
+  /** Project this turn is anchored to — set on the sub-tool ctx so kanban/inbox default to it. */
+  projectSlug?: string;
   system: string;
   task: string;
   /**
@@ -379,6 +394,9 @@ export async function runAgentTurn(ctx: ToolCtx, spec: AgentTurnSpec): Promise<A
   const baseCtx: ToolCtx = {
     ...ctx,
     delegationDepth,
+    // Anchor the turn's default project (Phase 3): kanban/inbox use this when the
+    // model omits an explicit projectSlug. Absent → inherit whatever ctx carried.
+    projectSlug: spec.projectSlug ?? ctx.projectSlug,
     caller: { agentId, delegationRole, canMessageUser: spec.canMessageUser ?? false },
     // Live activity (Phase 8 stage 4): brackets the HUMAN wait of a T2/T3 approval
     // so the roster card shows WHO is blocked on the user, not just "working".

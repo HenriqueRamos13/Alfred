@@ -33,6 +33,7 @@ function serializeManifest(m: ProjectManifest): string {
     `- **Stack:** ${m.stack}`,
     `- **Status:** ${m.status}`,
     `- **Created:** ${m.created}`,
+    ...(m.ownerAgentId ? [`- **Owner:** ${m.ownerAgentId}`] : []),
     '',
     '## Summary',
     '',
@@ -66,6 +67,7 @@ function section(md: string, heading: string): string[] {
 function parseManifest(md: string): ProjectManifest {
   const nameMatch = md.match(/^#\s+(.+)$/m);
   const summaryMatch = md.match(/##\s+Summary\s*\n([\s\S]*?)(?:\n##\s|$)/i);
+  const owner = field(md, 'Owner');
   return {
     name: nameMatch ? nameMatch[1].trim() : field(md, 'Slug'),
     slug: field(md, 'Slug'),
@@ -76,6 +78,7 @@ function parseManifest(md: string): ProjectManifest {
     summary: (summaryMatch?.[1] ?? '').trim().replace(/^_none_$/, ''),
     keyFiles: section(md, 'Key Files'),
     decisions: section(md, 'Decisions'),
+    ...(owner ? { ownerAgentId: owner } : {}),
   };
 }
 
@@ -88,6 +91,8 @@ export interface CreateProjectInput {
   stack?: string;
   summary?: string;
   status?: string;
+  /** Roster agent that owns the project (top of the org). Round-trips via PROJECT.md. */
+  ownerAgentId?: string;
 }
 
 export async function createProject(db: DB, workspace: string, input: CreateProjectInput): Promise<ProjectManifest> {
@@ -105,6 +110,7 @@ export async function createProject(db: DB, workspace: string, input: CreateProj
     created: new Date().toISOString(),
     keyFiles: [],
     decisions: [],
+    ...(input.ownerAgentId ? { ownerAgentId: input.ownerAgentId } : {}),
   };
 
   await mkdir(join(path, '.alfred'), { recursive: true });

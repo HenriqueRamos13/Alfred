@@ -84,7 +84,8 @@ export const inbox: Tool<Args> = {
           kind: a.kind,
           subject: a.subject,
           body: a.body,
-          projectSlug: a.projectSlug,
+          // Anchor: default to the turn's project when the model omits one.
+          projectSlug: a.projectSlug || ctx.projectSlug,
           cardId: a.cardId,
           idempotencyKey: a.idempotencyKey,
         });

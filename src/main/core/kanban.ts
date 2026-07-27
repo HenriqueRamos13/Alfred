@@ -23,8 +23,14 @@ import {
   type KanbanCard,
   type LifecycleEvent,
 } from './kanban-pure.ts';
+import { unknownProjectError } from './projects-pure.ts';
 
 type DB = import('better-sqlite3').Database;
+
+/** Slugs of the projects that actually exist (the projects index). */
+function knownProjectSlugs(db: DB): Set<string> {
+  return new Set((db.prepare('SELECT slug FROM projects').all() as { slug: string }[]).map((r) => r.slug));
+}
 
 interface Row {
   id: string;
@@ -132,6 +138,9 @@ export function createCard(db: DB, input: CardInput): CardResult {
   const v = validateCardInput(input);
   if (!v.ok) return v;
   const s = v.spec;
+  // Refuse a phantom board: the slug must name a real project (never auto-create one).
+  const badProject = unknownProjectError(s.projectSlug, knownProjectSlugs(db));
+  if (badProject) return { ok: false, error: badProject };
   // Same Done-gate as patchCard: creating a card straight into `done` must clear
   // the gate too, else create_card is a hole around the no-hallucinated-completion
   // invariant (an agent could open a card already "done" with no artifact/DoD).
