@@ -139,6 +139,12 @@ export interface CostSnapshot {
   overUsdBudget: boolean;
   /** True when the active brain's spend is billed externally (claude-code): no US$ estimate. */
   external?: boolean;
+  /** Estimated voice (cloud TTS/STT) spend, USD. Additive — local engines cost $0.
+   * Absent when no voice cost accounting is wired. All figures are ESTIMATES. */
+  voice?: {
+    today: { sttUsd: number; ttsUsd: number };
+    session: { sttUsd: number; ttsUsd: number };
+  };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

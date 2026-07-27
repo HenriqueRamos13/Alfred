@@ -789,6 +789,8 @@ body.low-cpu .scanline { display: none; }
 .cost-models { display: flex; flex-direction: column; gap: 5px; font-family: var(--font-mono); font-size: 11px; color: var(--muted); }
 .cost-model-row { display: flex; justify-content: space-between; gap: 8px; }
 .cost-model-row > span:last-child { color: var(--acc); }
+.cost-voice { display: flex; flex-direction: column; gap: 5px; margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--line, rgba(255,255,255,0.08)); font-family: var(--font-mono); font-size: 11px; color: var(--muted); }
+.cost-voice-head { font-size: 9.5px; letter-spacing: 0.5px; color: var(--dim); }
 .cost-limit {
   margin-top: 12px;
   width: 100%;

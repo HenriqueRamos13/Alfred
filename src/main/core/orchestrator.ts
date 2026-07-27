@@ -138,7 +138,8 @@ import {
 import { agentTokensToday } from './budget.ts';
 import { parseTopicsFromIndex } from './team-format-pure.ts';
 import { getActivity } from './agent-activity.ts';
-import { grillMeEnabled, lowCpuEnabled, parseVoiceConfig } from './settings-pure.ts';
+import { grillMeEnabled, lowCpuEnabled, parseVoiceConfig, resolveConfigValue } from './settings-pure.ts';
+import { billedSttSeconds, sttCostUsd, ttsCostUsd } from './voice-pricing-pure.ts';
 import { parseSendDelay } from './send-delay-pure.ts';
 import { isAccent, DEFAULT_ACCENT, type AccentName } from './accent-pure.ts';
 import {
@@ -972,10 +973,26 @@ export function createOrchestrator(opts: CreateOrchestratorOpts): OrchestratorHa
   const { config, db } = opts;
   const sessionId = randomUUID();
 
+  // ── Voice (cloud TTS/STT) cost accounting ──────────────────────────────────
+  // Session totals live in memory; today's totals are persisted (day-keyed, same
+  // reset-on-new-day pattern as budget.ts) so the cost card survives a restart.
+  // Local engines (say/kokoro) are free and never recorded. All figures ESTIMATE.
+  const voiceSession = { sttUsd: 0, ttsUsd: 0 };
+  const voiceToday = (): { sttUsd: number; ttsUsd: number } => {
+    if (getSetting(db, 'voice_cost_day') !== dayKey()) return { sttUsd: 0, ttsUsd: 0 };
+    return { sttUsd: Number(getSetting(db, 'voice_cost_stt')) || 0, ttsUsd: Number(getSetting(db, 'voice_cost_tts')) || 0 };
+  };
+  const voiceTotals = (): NonNullable<CostSnapshot['voice']> => ({ today: voiceToday(), session: { ...voiceSession } });
+  /** Attach the current voice totals to any cost snapshot before it leaves. */
+  const withVoice = (s: CostSnapshot): CostSnapshot => ({ ...s, voice: voiceTotals() });
+
   // Single persistence choke point: every chat.message (assistant, from either
   // brain path) is stored before it streams to the UI. A failed write must not
   // break the turn.
   const emit = (event: StreamEvent): void => {
+    // Enrich every cost snapshot (from any path — turn tracker, external, re-emit)
+    // with voice spend so the card never loses the TTS/STT section on an LLM step.
+    if (event.kind === 'cost') event = { kind: 'cost', snapshot: withVoice(event.snapshot) };
     if (event.kind === 'chat.message') {
       try {
         insertMessage(db, event.message);
@@ -985,7 +1002,7 @@ export function createOrchestrator(opts: CreateOrchestratorOpts): OrchestratorHa
       // Speak assistant replies when voice output is on (covers both brain
       // paths — this is the single point every chat.message flows through).
       if (event.message.role === 'assistant' && getSetting(db, 'tts_enabled') === '1') {
-        tts.speak(event.message.content);
+        speakAndBill(event.message.content);
       }
     }
     opts.emit(event);
@@ -1127,10 +1144,14 @@ export function createOrchestrator(opts: CreateOrchestratorOpts): OrchestratorHa
     const ac = new AbortController();
     cloudCapture = ac;
     const wav = join(tmpdir(), `alfred-cmd-${randomUUID()}.wav`);
+    const cfg = cloudSttCfg();
     try {
       const rec = await stt.recordCommand(wav, sttLocale(), ac.signal);
-      const text = await cloudStt.processAndTranscribe(wav, { ...cloudSttCfg(), durationSec: rec.seconds, signal: ac.signal });
+      const text = await cloudStt.processAndTranscribe(wav, { ...cfg, durationSec: rec.seconds, signal: ac.signal });
       if (ac.signal.aborted) return;
+      // Cloud STT only (local Apple engine is free): bill the transcription. Trim +
+      // speed-up cut the billed seconds (see billedSttSeconds); cfg.trimTailSec is in seconds.
+      recordVoiceCost('stt', sttCostUsd(billedSttSeconds(rec.seconds, cfg.trimTailSec * 1000, cfg.speed), cfg.model));
       if (!(withIntent && handleVoiceIntent(text))) emit({ kind: 'stt.final', sessionId, text });
       startWake();
     } catch (err) {
@@ -1358,6 +1379,49 @@ export function createOrchestrator(opts: CreateOrchestratorOpts): OrchestratorHa
     return { name: DEFAULT_MAIN_NAME, provider, model: DEFAULT_MODEL[provider] };
   };
   const getAgentConfig = (): AgentConfigMap => parseAgentConfig(getSetting(db, 'agent_config'), mainAgentDefault());
+
+  /** The current base cost snapshot (LLM), pre-`withVoice`. Shared by getCost + the
+   * voice re-emit. claude-cli spend is external (subscription) — mirror that shape. */
+  const currentCostSnapshot = (): CostSnapshot => {
+    const main = getAgentConfig().main;
+    return main.provider === 'claude-cli'
+      ? externalCostSnapshot(config.dailyTokenBudget, main.model)
+      : costTracker.costSnapshot(providerToBrain(main.provider), main.model);
+  };
+
+  /** Add estimated voice cost to session + today (persisted, day-reset) and re-emit
+   * the cost snapshot (`emit` attaches the voice field). No-op for free/zero cost. */
+  const recordVoiceCost = (kind: 'stt' | 'tts', usd: number): void => {
+    if (!(usd > 0)) return;
+    const today = voiceToday(); // already day-reset
+    if (kind === 'stt') {
+      voiceSession.sttUsd += usd;
+      today.sttUsd += usd;
+    } else {
+      voiceSession.ttsUsd += usd;
+      today.ttsUsd += usd;
+    }
+    setSetting(db, 'voice_cost_day', dayKey());
+    setSetting(db, 'voice_cost_stt', String(today.sttUsd));
+    setSetting(db, 'voice_cost_tts', String(today.ttsUsd));
+    emit({ kind: 'cost', snapshot: currentCostSnapshot() });
+  };
+
+  /** Speak an assistant/utterance line AND bill the estimated cloud TTS cost at the
+   * point of call (read-only view of the live engine/model; local engines → $0). */
+  const speakAndBill = (text: string): void => {
+    tts.speak(text);
+    const chars = text.trim().length;
+    if (!chars) return;
+    const vc = parseVoiceConfig(getSetting(db, 'voice_config'));
+    const engine = tts.resolveEngine(
+      getSetting(db, 'elevenlabs_enabled') === '1' ? 'elevenlabs' : null,
+      resolveConfigValue(vc.engine, process.env.ALFRED_TTS_ENGINE, ''),
+    );
+    const model = resolveConfigValue(vc.openaiModel, process.env.ALFRED_TTS_OPENAI_MODEL, 'gpt-4o-mini-tts');
+    recordVoiceCost('tts', ttsCostUsd(engine, model, chars));
+  };
+
   const setAgentConfig = (id: AgentId, patch: Partial<AgentConfig>): AgentConfigMap => {
     const cur = getAgentConfig();
     const next: AgentConfigMap = { ...cur, [id]: coerceAgent({ ...cur[id], ...patch }, cur[id]) };
@@ -1878,10 +1942,7 @@ export function createOrchestrator(opts: CreateOrchestratorOpts): OrchestratorHa
       setSetting(db, 'viewport', `${Math.round(w)}x${Math.round(h)}`);
     },
     getCost() {
-      const main = getAgentConfig().main;
-      // claude-cli spend is external (subscription) — mirror the turn-path shape.
-      if (main.provider === 'claude-cli') return externalCostSnapshot(config.dailyTokenBudget, main.model);
-      return costTracker.costSnapshot(providerToBrain(main.provider), main.model);
+      return withVoice(currentCostSnapshot());
     },
     getTts() {
       return getSetting(db, 'tts_enabled') === '1';
@@ -2276,7 +2337,7 @@ export function createOrchestrator(opts: CreateOrchestratorOpts): OrchestratorHa
     },
     speakText(text) {
       const t = (text ?? '').trim();
-      if (t) tts.speak(t);
+      if (t) speakAndBill(t);
     },
     listInbox(filter) {
       return listInboxMessages(db, filter);

@@ -102,7 +102,7 @@ interface LogRow {
 }
 
 /** Shipped version — shown in the corner HUD and the top-bar title. Bump on release. */
-const VERSION = '1.23.0';
+const VERSION = '1.24.0';
 
 /** STT settings defaults until the async read lands (mirrors audio-transform-pure). */
 const STT_DEFAULTS: SttSettings = { engine: 'local', hasKey: false, speed: 2.3, trimTailMs: 2000, model: 'gpt-4o-mini-transcribe' };
@@ -1572,6 +1572,21 @@ export default function App() {
               {cost.byModel.some((m) => m.unknownPrice) && (
                 <div className="cost-note">* sem preço em ficha — US$ estimado como 0</div>
               )}
+              <div className="cost-voice">
+                <div className="cost-voice-head">TTS / STT ~est.</div>
+                <div className="cost-model-row">
+                  <span>sessão</span>
+                  <span>
+                    STT {usd(cost.voice?.session.sttUsd ?? 0)} · TTS {usd(cost.voice?.session.ttsUsd ?? 0)}
+                  </span>
+                </div>
+                <div className="cost-model-row">
+                  <span>hoje</span>
+                  <span>
+                    STT {usd(cost.voice?.today.sttUsd ?? 0)} · TTS {usd(cost.voice?.today.ttsUsd ?? 0)}
+                  </span>
+                </div>
+              </div>
               <div className="cost-limit">◉ KILL-SWITCH @ {cost.dailyTokenCap.toLocaleString()} tok/dia</div>
               {cost.overUsdBudget && (
                 <div className="cost-note" style={{ color: 'var(--amb)' }}>

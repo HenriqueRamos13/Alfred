@@ -115,6 +115,7 @@ import {
   DEFAULT_STT_TRIM_TAIL_MS,
   DEFAULT_STT_MODEL,
 } from '../src/main/core/audio-transform-pure.ts';
+import { billedSttSeconds, sttCostUsd, ttsCostUsd } from '../src/main/core/voice-pricing-pure.ts';
 import { enqueueTurn, TURN_QUEUE_MAX, coalesceTurns } from '../src/main/core/turn-queue-pure.ts';
 import { primaryAction } from '../src/main/core/command-bar-pure.ts';
 import {
@@ -5260,4 +5261,46 @@ test('parseSttSpeed / parseSttTrimTailMs — clamp junk to safe defaults', () =>
   assert.equal(parseSttTrimTailMs(undefined), DEFAULT_STT_TRIM_TAIL_MS);
   assert.equal(parseSttTrimTailMs('-5'), DEFAULT_STT_TRIM_TAIL_MS);
   assert.equal(DEFAULT_STT_MODEL, 'gpt-4o-mini-transcribe');
+});
+
+// ── Voice (TTS/STT) cost estimation pure logic (voice-pricing-pure.ts) ────────
+
+test('billedSttSeconds — trim + speed-up both cut billed seconds', () => {
+  // 10s recorded, 2s tail trimmed = 8s kept, then /2.3 speed-up.
+  assert.ok(Math.abs(billedSttSeconds(10, 2000, 2.3) - 8 / 2.3) < 1e-9);
+  // The 2.3x speed-up REDUCES the cost vs 1x on the same kept audio.
+  assert.ok(billedSttSeconds(10, 2000, 2.3) < billedSttSeconds(10, 2000, 1));
+  // No trim, no speed-up → the whole recording.
+  assert.equal(billedSttSeconds(8, 0, 1), 8);
+  // Trim longer than the clip floors at 0 (never negative).
+  assert.equal(billedSttSeconds(1, 5000, 1), 0);
+  // Non-positive / junk speed treated as 1x (no divide-by-zero).
+  assert.equal(billedSttSeconds(8, 0, 0), 8);
+  assert.equal(billedSttSeconds(8, 0, -3), 8);
+});
+
+test('sttCostUsd — per-minute rate, unknown model → 0', () => {
+  // 60s at gpt-4o-mini-transcribe ($0.003/min) = $0.003.
+  assert.ok(Math.abs(sttCostUsd(60, 'gpt-4o-mini-transcribe') - 0.003) < 1e-12);
+  // whisper-1 is 2x the mini rate.
+  assert.ok(Math.abs(sttCostUsd(60, 'whisper-1') - 0.006) < 1e-12);
+  assert.equal(sttCostUsd(0, 'gpt-4o-mini-transcribe'), 0);
+  assert.equal(sttCostUsd(60, 'nope'), 0); // unknown → no fabricated cost
+  // The 2.3x speed-up flows through to a lower cost end-to-end.
+  const fast = sttCostUsd(billedSttSeconds(60, 0, 2.3), 'gpt-4o-mini-transcribe');
+  const slow = sttCostUsd(billedSttSeconds(60, 0, 1), 'gpt-4o-mini-transcribe');
+  assert.ok(fast < slow);
+});
+
+test('ttsCostUsd — local free, openai per-model, elevenlabs flat', () => {
+  // Local engines are always free regardless of model/chars.
+  assert.equal(ttsCostUsd('say', 'anything', 100_000), 0);
+  assert.equal(ttsCostUsd('kokoro', 'af_heart', 100_000), 0);
+  // OpenAI: 1M chars at gpt-4o-mini-tts ($15/1M) = $15; tts-1-hd is 2x.
+  assert.ok(Math.abs(ttsCostUsd('openai', 'gpt-4o-mini-tts', 1_000_000) - 15) < 1e-9);
+  assert.ok(Math.abs(ttsCostUsd('openai', 'tts-1-hd', 1_000_000) - 30) < 1e-9);
+  assert.equal(ttsCostUsd('openai', 'unknown-model', 1_000_000), 0); // unknown openai model → 0
+  // ElevenLabs flat ~$100/1M regardless of model.
+  assert.ok(Math.abs(ttsCostUsd('elevenlabs', '', 1_000_000) - 100) < 1e-9);
+  assert.equal(ttsCostUsd('openai', 'gpt-4o-mini-tts', 0), 0);
 });
