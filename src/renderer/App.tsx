@@ -73,6 +73,7 @@ import type {
   UiNode,
   VoiceConfig,
   WakeStatus,
+  SttSettings,
 } from '../main/core/types.ts';
 import type { KanbanCard } from '../main/core/kanban-pure.ts';
 import type { ProjectDetail } from '../main/core/projects.ts';
@@ -101,7 +102,10 @@ interface LogRow {
 }
 
 /** Shipped version — shown in the corner HUD and the top-bar title. Bump on release. */
-const VERSION = '1.21.0';
+const VERSION = '1.22.0';
+
+/** STT settings defaults until the async read lands (mirrors audio-transform-pure). */
+const STT_DEFAULTS: SttSettings = { engine: 'local', hasKey: false, speed: 2.3, trimTailMs: 2000, model: 'gpt-4o-mini-transcribe' };
 
 const MAX_LOG = 80;
 const MAX_ALERTS = 12;
@@ -204,6 +208,8 @@ export default function App() {
   // live toggle + submit fn via refs (below).
   const [autosend, setAutosend] = useState(false);
   const autosendRef = useRef(false);
+  // STT engine + cloud knobs (local Apple on-device / OpenAI cloud). Default local.
+  const [stt, setStt] = useState<SttSettings>(STT_DEFAULTS);
   // Send-delay / edit window: a submitted message (typed OR voice/auto-send, which
   // route through the same onSubmit) is held as an editable PENDING bubble for
   // sendDelayMs before it reaches the AI, so a transcription slip can be caught.
@@ -723,6 +729,8 @@ export default function App() {
     alfred.getVoiceConfig().then(setVoiceCfg).catch(() => {});
     // Reflect the persisted auto-send toggle (default off).
     alfred.getAutosend().then(setAutosend).catch(() => {});
+    // Reflect the persisted STT engine + cloud knobs (default local Apple on-device).
+    alfred.getSttSettings().then(setStt).catch(() => {});
     // Reflect the persisted send-delay / edit window (default 2000ms).
     alfred.getSendDelay().then(setSendDelayMs).catch(() => {});
     // Reflect the persisted wake-word toggle (default on when the STT binary exists).
@@ -966,6 +974,14 @@ export default function App() {
             case 'tts_enabled': setTts(!!e.value); break;
             case 'wakeword_enabled': setWake(!!e.value); break;
             case 'autosend_enabled': setAutosend(!!e.value); break;
+            // Any STT setting changed in another window → re-read the whole projection
+            // (hasKey + resolved engine are computed in main, not carried in the event).
+            case 'stt_engine':
+            case 'stt_speed':
+            case 'stt_trim_tail_ms':
+            case 'stt_model':
+              alfred.getSttSettings().then(setStt).catch(() => {});
+              break;
             case 'send_delay_ms': setSendDelayMs(Number(e.value) || 0); break;
             case 'elevenlabs_enabled': setElevenlabs(!!e.value); break;
             // Skip while a local field is mid-edit so a sibling window's change
@@ -1303,6 +1319,15 @@ export default function App() {
     });
   };
 
+  const setSttPref = (patch: Partial<Omit<SttSettings, 'hasKey'>>) => {
+    setStt((s) => ({ ...s, ...patch })); // optimistic
+    alfred.setSttSettings(patch).then(setStt).catch(() => {
+      alfred.getSttSettings().then(setStt).catch(() => {});
+    });
+    if (patch.engine)
+      pushLog({ tag: 'SETTINGS', tone: patch.engine === 'openai' ? 'amber' : 'lime', msg: `transcrição → ${patch.engine === 'openai' ? 'OpenAI (nuvem)' : 'local (Apple)'}` });
+  };
+
   const setVoicePref = (patch: VoiceConfig) => {
     editingVoiceRef.current = false; // draft committed — remote broadcasts may apply again
     setVoiceCfg((c) => ({ ...c, ...patch })); // optimistic
@@ -1606,6 +1631,8 @@ export default function App() {
               onPickAccent={pickAccent}
               language={language}
               onPickLanguage={pickLanguage}
+              stt={stt}
+              onSetStt={setSttPref}
               autosend={autosend}
               elevenlabs={elevenlabs}
               voiceCfg={voiceCfg}
@@ -2195,6 +2222,8 @@ function SettingsCard({
   onPickAccent,
   language,
   onPickLanguage,
+  stt,
+  onSetStt,
   autosend,
   elevenlabs,
   voiceCfg,
@@ -2224,6 +2253,8 @@ function SettingsCard({
   onPickAccent: (name: AccentName) => void;
   language: Language;
   onPickLanguage: (lang: Language) => void;
+  stt: SttSettings;
+  onSetStt: (patch: Partial<Omit<SttSettings, 'hasKey'>>) => void;
   autosend: boolean;
   elevenlabs: boolean;
   voiceCfg: VoiceConfig;
@@ -2308,6 +2339,82 @@ function SettingsCard({
           </span>
         </label>
         <div className="settings-note">Aplica-se ao vivo: resposta do agente e locale de voz. Override por .env (ALFRED_STT_LOCALE) mantém prioridade.</div>
+      </div>
+
+      <div className="settings-group">
+        <div className="settings-group-head">TRANSCRIÇÃO</div>
+        <label className="settings-num" title="Onde o comando (após “Alfred”) é transcrito. Local: Apple on-device, privado, sem custo. OpenAI: grava, acelera e envia o áudio à nuvem — precisa de OPENAI_API_KEY.">
+          <span className="settings-num-k">Motor de transcrição</span>
+          <span className="settings-num-field">
+            <select
+              className="settings-num-input no-drag"
+              value={stt.engine}
+              onChange={(e) => onSetStt({ engine: e.target.value === 'openai' ? 'openai' : 'local' })}
+            >
+              <option value="local">Local — Apple, privado</option>
+              <option value="openai">OpenAI — nuvem</option>
+            </select>
+          </span>
+        </label>
+        {stt.engine === 'openai' && !stt.hasKey && (
+          <div className="settings-note" style={{ color: 'var(--warn, #e6a700)' }}>
+            ⚠ Falta OPENAI_API_KEY no .env — sem ela, a transcrição continua local (Apple).
+          </div>
+        )}
+        {stt.engine === 'openai' && (
+          <>
+            <label className="settings-num" title="Modelo de transcrição da OpenAI. gpt-4o-mini-transcribe é barato e transcreve bem mesmo com o áudio acelerado.">
+              <span className="settings-num-k">Modelo</span>
+              <span className="settings-num-field">
+                <input
+                  className="settings-num-input no-drag"
+                  type="text"
+                  placeholder="gpt-4o-mini-transcribe"
+                  defaultValue={stt.model}
+                  onBlur={(e) => onSetStt({ model: e.target.value })}
+                />
+              </span>
+            </label>
+            <label className="settings-num" title="Aceleração do áudio antes de enviar (atempo do ffmpeg). Mais rápido = menos segundos faturados. 2.3x é o default; o gpt-4o transcreve bem assim.">
+              <span className="settings-num-k">Velocidade</span>
+              <span className="settings-num-field">
+                <input
+                  className="settings-num-input no-drag"
+                  type="number"
+                  min={0.5}
+                  max={4}
+                  step={0.1}
+                  value={stt.speed}
+                  onChange={(e) => {
+                    const v = Number(e.target.value);
+                    onSetStt({ speed: Number.isFinite(v) && v > 0 ? v : 2.3 });
+                  }}
+                />
+                <span className="settings-num-unit">x</span>
+              </span>
+            </label>
+            <label className="settings-num" title="Corta os últimos N segundos (silêncio de cauda) antes de enviar, para não faturar silêncio.">
+              <span className="settings-num-k">Corte de cauda</span>
+              <span className="settings-num-field">
+                <input
+                  className="settings-num-input no-drag"
+                  type="number"
+                  min={0}
+                  step={0.5}
+                  value={stt.trimTailMs / 1000}
+                  onChange={(e) => {
+                    const s = Number(e.target.value);
+                    onSetStt({ trimTailMs: Number.isFinite(s) && s > 0 ? Math.round(s * 1000) : 0 });
+                  }}
+                />
+                <span className="settings-num-unit">s</span>
+              </span>
+            </label>
+            <div className="settings-note">
+              A deteção de “Alfred” continua local. Só o comando é gravado, acelerado ({stt.speed}x) e enviado à OpenAI — precisa de OPENAI_API_KEY e de ffmpeg. Falha de rede/ffmpeg → volta ao local.
+            </div>
+          </>
+        )}
       </div>
 
       <div className="settings-group">

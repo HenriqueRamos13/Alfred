@@ -97,6 +97,20 @@ elif ! xcrun --sdk macosx swiftc native/alfred-stt.swift -o native/alfred-stt \
   stt_voice_warning
 fi
 
+# 4c. ffmpeg — ONLY needed for the OPTIONAL cloud STT engine (OpenAI), which
+#     trims + speeds up the recorded command before upload. The default STT is
+#     local (Apple, on-device) and needs no ffmpeg, so this is best-effort: warn,
+#     never abort. brew is optional too — skip cleanly if it isn't installed.
+if ! command -v ffmpeg >/dev/null 2>&1; then
+  if command -v brew >/dev/null 2>&1; then
+    say "Installing ffmpeg (optional — only used by the cloud STT engine)"
+    brew install ffmpeg || echo "⚠  ffmpeg install failed — cloud STT stays disabled; local voice input is unaffected." >&2
+  else
+    echo "ℹ  ffmpeg not found and Homebrew isn't installed. It's only needed for the OPTIONAL" >&2
+    echo "   OpenAI STT engine; install it later with 'brew install ffmpeg' if you want cloud transcription." >&2
+  fi
+fi
+
 # 5. Environment file.
 if [[ ! -f .env ]]; then
   say "Creating .env from template — edit it and add your keys"

@@ -119,3 +119,53 @@ export function startListening(
 export function stopListening(): void {
   proc?.kill('SIGINT');
 }
+
+/**
+ * Cloud STT: record ONE command to `wavPath` via the helper's `--record` mode
+ * (same mic tap as --wake/normal), resolving with the file + its duration when the
+ * helper stops on silence (VAD) or SIGINT. The child is tracked as `proc` so a
+ * push-to-talk stopListening() / kill switch reaches it too (single mic owner).
+ *
+ * Rejects when the binary is missing, no audio was captured, or the caller aborts
+ * — the orchestrator turns a reject into the local-engine fallback (never crash).
+ */
+export function recordCommand(
+  wavPath: string,
+  preferredLocale?: string,
+  signal?: AbortSignal,
+): Promise<{ path: string; seconds: number }> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) return reject(new Error('recording aborted'));
+    const bin = findSttBinary();
+    if (!bin) return reject(new Error('voice input helper not found — run ./setup.sh to compile it (native/alfred-stt).'));
+
+    const locale = resolveSttLocale(preferredLocale, process.env.ALFRED_STT_LOCALE);
+    const child = spawn(bin, ['--record', wavPath, '--locale', locale], { stdio: ['pipe', 'pipe', 'pipe'] });
+    proc = child;
+
+    const onAbort = (): void => void child.kill('SIGINT');
+    signal?.addEventListener('abort', onAbort, { once: true });
+    let recorded: { path: string; seconds: number } | null = null;
+
+    readJsonLines(child.stdout, (msg) => {
+      if (typeof msg.recorded === 'string') {
+        recorded = { path: msg.recorded, seconds: typeof msg.seconds === 'number' ? msg.seconds : 0 };
+      }
+    });
+    child.stderr.on('data', (d: Buffer) => console.error('[alfred] stt record:', d.toString().trim()));
+
+    const cleanup = (): void => signal?.removeEventListener('abort', onAbort);
+    child.on('error', (err) => {
+      if (proc === child) proc = null;
+      cleanup();
+      reject(err instanceof Error ? err : new Error(String(err)));
+    });
+    child.on('close', () => {
+      if (proc === child) proc = null;
+      cleanup();
+      if (signal?.aborted) return reject(new Error('recording aborted'));
+      if (recorded && recorded.seconds > 0) resolve(recorded);
+      else reject(new Error('recording produced no audio'));
+    });
+  });
+}

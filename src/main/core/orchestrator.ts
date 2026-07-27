@@ -16,7 +16,8 @@
  */
 
 import { randomUUID } from 'node:crypto';
-import { rm, readFile } from 'node:fs/promises';
+import { rm, readFile, unlink } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { streamText, generateText, tool, jsonSchema, stepCountIs } from 'ai';
 import type { LanguageModel, ToolSet } from 'ai';
@@ -162,6 +163,15 @@ import { spawnClaudeCli, dangerousArgs } from './claudeSpawn.ts';
 import * as tts from './tts.ts';
 import * as stt from './stt.ts';
 import * as wakeword from './wakeword.ts';
+import * as cloudStt from './cloud-stt.ts';
+import {
+  resolveSttEngine,
+  openaiLangHint,
+  parseSttSpeed,
+  parseSttTrimTailMs,
+  DEFAULT_STT_MODEL,
+} from './audio-transform-pure.ts';
+import type { SttSettings } from './types.ts';
 import { tools, createBrowserHandle, isCoreTool } from '../tools/index.ts';
 import {
   shouldDefer,
@@ -815,6 +825,9 @@ export interface OrchestratorHandle {
   /** Auto-send (submit dictation on stt.final, no "Alfred enviar"): read/toggle, persisted, default OFF. */
   getAutosend(): boolean;
   setAutosend(on: boolean): boolean;
+  /** STT engine + cloud knobs (engine local|openai, speed, trim, model): read/patch, persisted. */
+  getSttSettings(): SttSettings;
+  setSttSettings(patch: Partial<Omit<SttSettings, 'hasKey'>>): SttSettings;
   /**
    * Send-delay / edit window (ms): a submitted message is held as an editable
    * pending bubble for this long before it reaches the AI, so a transcription
@@ -1061,6 +1074,75 @@ export function createOrchestrator(opts: CreateOrchestratorOpts): OrchestratorHa
     wakeword.startWakeword(wakeEmit, sessionId, sttLocale());
   };
 
+  // ── Cloud STT (opt-in; default local = Apple on-device, private) ────────────
+  // When the engine is OpenAI, the post-wake command (and the manual mic) is
+  // RECORDED via the helper's --record mode, its silent tail cut + audio sped up
+  // with ffmpeg (fewer billed seconds), then transcribed by OpenAI — never by
+  // default and never without a key. Any failure (no ffmpeg / network / no audio)
+  // logs and FALLS BACK to the local on-device session; it must never crash.
+  const hasOpenAIKey = (): boolean => !!process.env.OPENAI_API_KEY?.trim();
+  const cloudEngine = (): boolean => resolveSttEngine(getSetting(db, 'stt_engine'), hasOpenAIKey()) === 'openai';
+  const cloudSttCfg = (): cloudStt.CloudSttConfig => ({
+    apiKey: (process.env.OPENAI_API_KEY ?? '').trim(),
+    model: getSetting(db, 'stt_model')?.trim() || DEFAULT_STT_MODEL,
+    language: openaiLangHint(resolveLanguage(getSetting(db, 'language'), process.env.ALFRED_LANGUAGE)),
+    speed: parseSttSpeed(getSetting(db, 'stt_speed')),
+    trimTailSec: parseSttTrimTailMs(getSetting(db, 'stt_trim_tail_ms')) / 1000,
+  });
+  // The in-flight cloud capture (the emergency kill switch aborts it — no stray
+  // transcription or stt.final after a stop).
+  let cloudCapture: AbortController | null = null;
+
+  /** Projection of the STT settings for the card (engine is fail-closed to local
+   * without a key; hasKey drives the "needs OPENAI_API_KEY" warning). */
+  const readSttSettings = (): SttSettings => ({
+    engine: resolveSttEngine(getSetting(db, 'stt_engine'), hasOpenAIKey()),
+    hasKey: hasOpenAIKey(),
+    speed: parseSttSpeed(getSetting(db, 'stt_speed')),
+    trimTailMs: parseSttTrimTailMs(getSetting(db, 'stt_trim_tail_ms')),
+    model: getSetting(db, 'stt_model')?.trim() || DEFAULT_STT_MODEL,
+  });
+
+  /** Local on-device capture of ONE command (the fallback + the default path). */
+  const startLocalCapture = (withIntent: boolean): void => {
+    stt.startListening(
+      (e) => {
+        if (withIntent && e.kind === 'stt.final' && handleVoiceIntent(e.text)) {
+          startWake();
+          return;
+        }
+        emit(e);
+        if (e.kind === 'stt.final') startWake();
+      },
+      sessionId,
+      sttLocale(),
+    );
+  };
+
+  /** Cloud capture of ONE command: record → ffmpeg → OpenAI → stt.final, then
+   * re-arm wake. On failure, fall back to the local session (which re-arms itself);
+   * on abort (kill switch) stay silent. `withIntent` runs the voice-command parser
+   * on the transcript (wake path), off for the plain-dictation mic button. */
+  const captureCloud = async (withIntent: boolean): Promise<void> => {
+    const ac = new AbortController();
+    cloudCapture = ac;
+    const wav = join(tmpdir(), `alfred-cmd-${randomUUID()}.wav`);
+    try {
+      const rec = await stt.recordCommand(wav, sttLocale(), ac.signal);
+      const text = await cloudStt.processAndTranscribe(wav, { ...cloudSttCfg(), durationSec: rec.seconds, signal: ac.signal });
+      if (ac.signal.aborted) return;
+      if (!(withIntent && handleVoiceIntent(text))) emit({ kind: 'stt.final', sessionId, text });
+      startWake();
+    } catch (err) {
+      if (ac.signal.aborted) return; // emergency stop → silent, no fallback
+      console.error('[alfred] cloud STT failed — falling back to local on-device:', err instanceof Error ? err.message : String(err));
+      startLocalCapture(withIntent);
+    } finally {
+      if (cloudCapture === ac) cloudCapture = null;
+      void unlink(wav).catch(() => {});
+    }
+  };
+
   // Wake commands: a {final} from the wake helper is first checked for an ACTION
   // intent (esconder/mostrar/enviar). Only 'dictate' falls through to fill the
   // input (the existing behaviour); everything else is consumed here.
@@ -1080,12 +1162,27 @@ export function createOrchestrator(opts: CreateOrchestratorOpts): OrchestratorHa
         tts.stop(); // stop TTS + unmute now (no tail) so the command isn't suppressed
         console.info('[alfred] wake barge-in — user interrupted TTS');
         emit({ ...e, bargeIn: true }); // renderer enters listening + logs the interruption
+        // Cloud engine: the wake helper won't transcribe the command — free the
+        // mic and capture it via OpenAI (the local path keeps the helper running).
+        if (cloudEngine()) {
+          wakeword.stopWakeword();
+          void captureCloud(true);
+        }
         return;
       }
       return; // his own-name echo → drop, don't self-interrupt
     }
     // Half-duplex anti-echo: partials/finals while speaking are his own voice.
     if (wakeword.suppressWhileSpeaking(e, speaking)) return;
+    // Cloud engine: on the wake word, stop the helper (it would transcribe
+    // on-device) and record the command for OpenAI instead. Wake DETECTION stays
+    // local; only the command capture goes cloud.
+    if (cloudEngine() && e.kind === 'wake.detected') {
+      emit(e); // UI enters "listening"
+      wakeword.stopWakeword();
+      void captureCloud(true);
+      return;
+    }
     if (e.kind === 'stt.final' && handleVoiceIntent(e.text)) return;
     emit(e);
   };
@@ -1576,6 +1673,7 @@ export function createOrchestrator(opts: CreateOrchestratorOpts): OrchestratorHa
       // stt.final that stopping the manual session emits.
       wakeSuppressed = true;
       wakeword.stopWakeword();
+      cloudCapture?.abort(); // cancel any in-flight cloud record/transcription — no stray final
       stt.stopListening();
     },
     cancel() {
@@ -1854,6 +1952,34 @@ export function createOrchestrator(opts: CreateOrchestratorOpts): OrchestratorHa
       emit({ kind: 'settings.changed', key: 'autosend_enabled', value: on });
       return on;
     },
+    getSttSettings() {
+      return readSttSettings();
+    },
+    setSttSettings(patch) {
+      // Trust boundary: only 'openai' is stored as cloud (else 'local'); speed/trim
+      // are re-parsed through the pure clamps; a blank model reverts to the default.
+      if (patch.engine !== undefined) {
+        const engine = patch.engine === 'openai' ? 'openai' : 'local';
+        setSetting(db, 'stt_engine', engine);
+        emit({ kind: 'settings.changed', key: 'stt_engine', value: engine });
+      }
+      if (patch.speed !== undefined) {
+        const v = String(parseSttSpeed(String(patch.speed)));
+        setSetting(db, 'stt_speed', v);
+        emit({ kind: 'settings.changed', key: 'stt_speed', value: v });
+      }
+      if (patch.trimTailMs !== undefined) {
+        const v = String(parseSttTrimTailMs(String(patch.trimTailMs)));
+        setSetting(db, 'stt_trim_tail_ms', v);
+        emit({ kind: 'settings.changed', key: 'stt_trim_tail_ms', value: v });
+      }
+      if (patch.model !== undefined) {
+        const v = patch.model.trim() || DEFAULT_STT_MODEL;
+        setSetting(db, 'stt_model', v);
+        emit({ kind: 'settings.changed', key: 'stt_model', value: v });
+      }
+      return readSttSettings();
+    },
     getSendDelay() {
       return parseSendDelay(getSetting(db, 'send_delay_ms'));
     },
@@ -1881,12 +2007,14 @@ export function createOrchestrator(opts: CreateOrchestratorOpts): OrchestratorHa
       // wrapped emit below — the wake helper's finals do not, so no double-start).
       wakeSuppressed = false;
       wakeword.stopWakeword();
-      stt.startListening((e) => {
-        emit(e);
-        if (e.kind === 'stt.final') startWake();
-      }, sessionId, sttLocale());
+      // Cloud engine: record + OpenAI (falls back to local on failure); else the
+      // existing on-device push-to-talk. Pure dictation → no voice-intent parsing.
+      if (cloudEngine()) void captureCloud(false);
+      else startLocalCapture(false);
     },
     stopListening() {
+      // Push-to-talk release: SIGINT reaches the on-device session OR the --record
+      // child (both tracked as stt's `proc`), which flushes/finalises and exits.
       stt.stopListening();
     },
     getWakeword() {

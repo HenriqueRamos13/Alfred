@@ -104,6 +104,17 @@ import {
   resolveSttLocale,
   DEFAULT_LANGUAGE,
 } from '../src/main/core/language-pure.ts';
+import {
+  buildAtempoChain,
+  buildFfmpegArgs,
+  resolveSttEngine,
+  openaiLangHint,
+  parseSttSpeed,
+  parseSttTrimTailMs,
+  DEFAULT_STT_SPEED,
+  DEFAULT_STT_TRIM_TAIL_MS,
+  DEFAULT_STT_MODEL,
+} from '../src/main/core/audio-transform-pure.ts';
 import { enqueueTurn, TURN_QUEUE_MAX, coalesceTurns } from '../src/main/core/turn-queue-pure.ts';
 import { primaryAction } from '../src/main/core/command-bar-pure.ts';
 import {
@@ -5171,4 +5182,70 @@ test('newThreadSentinel / openThreadAgentId — a conversation exists before its
   assert.equal(openThreadAgentId('', threads), '');
   // a blank sentinel is not an agent either (never sends to "")
   assert.equal(openThreadAgentId('new:', threads), '');
+});
+
+// ── Cloud STT audio-transform pure logic (audio-transform-pure.ts) ────────────
+
+test('buildAtempoChain — decomposes into ffmpeg-legal [0.5,2.0] factors', () => {
+  assert.deepEqual(buildAtempoChain(1.0), []); // no-op at 1x
+  assert.deepEqual(buildAtempoChain(0), []); // invalid → no filter
+  assert.deepEqual(buildAtempoChain(-2), []); // invalid → no filter
+  assert.deepEqual(buildAtempoChain(NaN), []);
+  assert.deepEqual(buildAtempoChain(2.3), ['atempo=2.0', 'atempo=1.15']); // the headline case
+  assert.deepEqual(buildAtempoChain(1.5), ['atempo=1.5']);
+  assert.deepEqual(buildAtempoChain(2.0), ['atempo=2.0']); // boundary stays a single factor
+  assert.deepEqual(buildAtempoChain(4.0), ['atempo=2.0', 'atempo=2.0']); // needs two hops
+  assert.deepEqual(buildAtempoChain(0.25), ['atempo=0.5', 'atempo=0.5']); // slow-down splits too
+  // Every emitted factor is within ffmpeg's allowed range, and the product is the speed.
+  for (const speed of [1.3, 2.3, 3.1, 4, 0.4, 0.6]) {
+    const chain = buildAtempoChain(speed);
+    let product = 1;
+    for (const f of chain) {
+      const v = Number(f.split('=')[1]);
+      assert.ok(v >= 0.5 && v <= 2.0, `factor ${v} out of range for speed ${speed}`);
+      product *= v;
+    }
+    if (chain.length) assert.ok(Math.abs(product - speed) < 1e-6, `product ${product} != ${speed}`);
+  }
+});
+
+test('buildFfmpegArgs — trims the tail, applies atempo, writes mono 16k', () => {
+  const args = buildFfmpegArgs({ input: 'in.wav', output: 'out.wav', durationSec: 5, trimTailSec: 2, speed: 2.3 });
+  // keep = 5 - 2 = 3.000s
+  assert.deepEqual(args, ['-y', '-i', 'in.wav', '-t', '3.000', '-af', 'atempo=2.0,atempo=1.15', '-ac', '1', '-ar', '16000', 'out.wav']);
+});
+
+test('buildFfmpegArgs — trim never drives the kept length to zero/negative', () => {
+  const args = buildFfmpegArgs({ input: 'i', output: 'o', durationSec: 1, trimTailSec: 5, speed: 1 });
+  const t = Number(args[args.indexOf('-t') + 1]);
+  assert.ok(t >= 0.1, `kept length ${t} must floor at 0.1`);
+  assert.equal(args.includes('-af'), false); // 1x → no atempo filter
+});
+
+test('resolveSttEngine — fail-closed: openai only with a key, else local', () => {
+  assert.equal(resolveSttEngine('openai', true), 'openai');
+  assert.equal(resolveSttEngine('openai', false), 'local'); // picked cloud but no key → local
+  assert.equal(resolveSttEngine('local', true), 'local');
+  assert.equal(resolveSttEngine(undefined, true), 'local'); // default is local
+  assert.equal(resolveSttEngine('garbage', true), 'local');
+});
+
+test('openaiLangHint — pt-BR → pt, en-US → en, default pt', () => {
+  assert.equal(openaiLangHint('en-US'), 'en');
+  assert.equal(openaiLangHint('pt-BR'), 'pt');
+  assert.equal(openaiLangHint(undefined), 'pt');
+  assert.equal(openaiLangHint('xx'), 'pt');
+});
+
+test('parseSttSpeed / parseSttTrimTailMs — clamp junk to safe defaults', () => {
+  assert.equal(parseSttSpeed('2.3'), 2.3);
+  assert.equal(parseSttSpeed(undefined), DEFAULT_STT_SPEED);
+  assert.equal(parseSttSpeed('0'), DEFAULT_STT_SPEED); // 0 would break ffmpeg
+  assert.equal(parseSttSpeed('99'), DEFAULT_STT_SPEED); // absurd → default
+  assert.equal(parseSttSpeed('abc'), DEFAULT_STT_SPEED);
+  assert.equal(parseSttTrimTailMs('2000'), 2000);
+  assert.equal(parseSttTrimTailMs('0'), 0); // 0 = keep the whole recording
+  assert.equal(parseSttTrimTailMs(undefined), DEFAULT_STT_TRIM_TAIL_MS);
+  assert.equal(parseSttTrimTailMs('-5'), DEFAULT_STT_TRIM_TAIL_MS);
+  assert.equal(DEFAULT_STT_MODEL, 'gpt-4o-mini-transcribe');
 });

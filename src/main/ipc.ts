@@ -27,6 +27,7 @@ import type {
   TeamAgentInfo,
   VoiceConfig,
   WakeStatus,
+  SttSettings,
 } from './core/types.ts';
 import type { ProjectDetail } from './core/projects.ts';
 import type { KanbanCard } from './core/kanban-pure.ts';
@@ -134,6 +135,9 @@ export interface Orchestrator {
   /** Auto-send toggle (submit dictation on stt.final): read/set, persisted. */
   getAutosend(): boolean | Promise<boolean>;
   setAutosend(on: boolean): boolean | Promise<boolean>;
+  /** STT engine + cloud knobs (engine local|openai, speed, trim, model): read/patch, persisted. */
+  getSttSettings(): SttSettings | Promise<SttSettings>;
+  setSttSettings(patch: Partial<Omit<SttSettings, 'hasKey'>>): SttSettings | Promise<SttSettings>;
   /** Send-delay / edit window (ms): hold a submitted message before it reaches the AI. Read/set, persisted, default 2000, 0 = off. */
   getSendDelay(): number | Promise<number>;
   setSendDelay(ms: number): number | Promise<number>;
@@ -383,6 +387,18 @@ export function registerIpc(core: Orchestrator, emit: (e: StreamEvent) => void):
     } catch (err) {
       fail('set autosend', err);
       return false;
+    }
+  });
+
+  const STT_DEFAULTS: SttSettings = { engine: 'local', hasKey: false, speed: 2.3, trimTailMs: 2000, model: 'gpt-4o-mini-transcribe' };
+  ipcMain.handle('alfred:getSttSettings', guard('get stt settings', () => core.getSttSettings(), STT_DEFAULTS));
+  ipcMain.handle('alfred:setSttSettings', async (_e, patch: unknown) => {
+    try {
+      // Trust boundary: pass only a plain object; the core clamps/validates each field.
+      return await core.setSttSettings(patch && typeof patch === 'object' ? (patch as Partial<Omit<SttSettings, 'hasKey'>>) : {});
+    } catch (err) {
+      fail('set stt settings', err);
+      return STT_DEFAULTS;
     }
   });
 

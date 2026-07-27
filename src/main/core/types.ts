@@ -572,7 +572,11 @@ export type SettingKey =
   | 'spawn_paused'
   | 'send_delay_ms'
   | 'voice_config'
-  | 'language';
+  | 'language'
+  | 'stt_engine'
+  | 'stt_speed'
+  | 'stt_trim_tail_ms'
+  | 'stt_model';
 
 /**
  * TTS voice knobs the settings card can override at runtime (hot-applied, no
@@ -590,6 +594,21 @@ export interface VoiceConfig {
   rate?: string;
   /** ElevenLabs voice id (public identifier, not a secret). */
   elevenVoiceId?: string;
+}
+
+/**
+ * STT engine + cloud knobs the settings card reads/writes. `engine` is the user's
+ * pick (default 'local' = Apple on-device, private); 'openai' records the post-wake
+ * command, cuts the silent tail, speeds it up and transcribes via OpenAI. `hasKey`
+ * is runtime-only (is OPENAI_API_KEY set) so the UI can warn when cloud is picked
+ * without a key. speed/trimTailMs/model tune the cloud path.
+ */
+export interface SttSettings {
+  engine: 'local' | 'openai';
+  hasKey: boolean;
+  speed: number;
+  trimTailMs: number;
+  model: string;
 }
 
 /** Explicit wake-listener state, surfaced to the UI (see the wake.status event). */

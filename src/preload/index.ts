@@ -19,6 +19,7 @@ import type {
   TeamAgentInfo,
   VoiceConfig,
   WakeStatus,
+  SttSettings,
 } from '../main/core/types.ts';
 import type { VoiceOption } from '../main/core/voice-list-pure.ts';
 import type { BrainInfo } from '../main/core/providers.ts';
@@ -200,6 +201,10 @@ const api = {
   /** Auto-send (submit dictation on stt.final) toggle — persisted; read on mount. */
   getAutosend: (): Promise<boolean> => ipcRenderer.invoke('alfred:getAutosend'),
   setAutosend: (on: boolean): Promise<boolean> => ipcRenderer.invoke('alfred:setAutosend', on),
+  /** STT engine + cloud knobs (local Apple / OpenAI cloud) — persisted; read on mount. */
+  getSttSettings: (): Promise<SttSettings> => ipcRenderer.invoke('alfred:getSttSettings'),
+  setSttSettings: (patch: Partial<Omit<SttSettings, 'hasKey'>>): Promise<SttSettings> =>
+    ipcRenderer.invoke('alfred:setSttSettings', patch),
   /** Send-delay / edit window in ms (hold before a message reaches the AI) — persisted; read on mount. Default 2000, 0 = off. */
   getSendDelay: (): Promise<number> => ipcRenderer.invoke('alfred:getSendDelay'),
   setSendDelay: (ms: number): Promise<number> => ipcRenderer.invoke('alfred:setSendDelay', ms),

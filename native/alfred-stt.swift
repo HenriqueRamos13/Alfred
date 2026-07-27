@@ -468,18 +468,122 @@ final class WakeRecognizer {
     }
 }
 
+// MARK: - Record session (cloud STT, --record <path>)
+
+/// ADDITIVE mode for the cloud STT engine: capture the command audio to a WAV
+/// (NO recognition) and hand the file to the parent, which trims + speeds it up
+/// with ffmpeg and transcribes it via OpenAI. Uses the SAME mic tap as the other
+/// modes; stops on a silence gap (simple energy VAD) or SIGINT, then emits
+/// {"recorded":"<path>","seconds":<n>} and exits. Deliberately dumb + obvious.
+final class RecordSession {
+    private let engine = AVAudioEngine()
+    private let outPath: String
+    private let silenceSeconds: TimeInterval
+    private let threshold: Float = 0.01   // RMS below this counts as silence
+    private var file: AVAudioFile?
+    private var silenceTimer: DispatchSourceTimer?
+    private var startedAt: Date?
+    private var finished = false
+
+    init(outPath: String, silenceSeconds: TimeInterval) {
+        self.outPath = outPath
+        self.silenceSeconds = silenceSeconds
+    }
+
+    func start() {
+        let input = engine.inputNode
+        let format = startVoiceProcessing(input)   // reuse the shared AEC/format helper
+        do {
+            file = try AVAudioFile(forWriting: URL(fileURLWithPath: outPath), settings: format.settings)
+        } catch {
+            fail("could not open \(outPath) for writing: \(error.localizedDescription)")
+        }
+        input.installTap(onBus: 0, bufferSize: 1024, format: format) { [weak self] buffer, _ in
+            self?.append(buffer)
+        }
+        engine.prepare()
+        do {
+            try engine.start()
+        } catch {
+            fail("audio engine failed to start: \(error.localizedDescription)")
+        }
+        startedAt = Date()
+        resetSilence()
+    }
+
+    private func append(_ buffer: AVAudioPCMBuffer) {
+        guard !finished, let file = file else { return }
+        try? file.write(from: buffer)
+        if rms(buffer) >= threshold { resetSilence() }   // extend only while there's sound
+    }
+
+    private func rms(_ buffer: AVAudioPCMBuffer) -> Float {
+        guard let ch = buffer.floatChannelData else { return 0 }
+        let n = Int(buffer.frameLength)
+        if n == 0 { return 0 }
+        var sum: Float = 0
+        let data = ch[0]
+        for i in 0..<n { sum += data[i] * data[i] }
+        return (sum / Float(n)).squareRoot()
+    }
+
+    private func resetSilence() {
+        silenceTimer?.cancel()
+        let t = DispatchSource.makeTimerSource(queue: .main)
+        t.schedule(deadline: .now() + silenceSeconds)
+        t.setEventHandler { [weak self] in self?.finish() }
+        t.resume()
+        silenceTimer = t
+    }
+
+    /// Stop, close the file, and emit {"recorded":path,"seconds":n}. Idempotent.
+    /// seconds is a JSON NUMBER (the parent reads it as one), so build the line via
+    /// JSONSerialization rather than the [String:String] emit().
+    func finish() {
+        if finished { return }
+        finished = true
+        silenceTimer?.cancel()
+        engine.inputNode.removeTap(onBus: 0)
+        engine.stop()
+        let seconds = startedAt.map { Date().timeIntervalSince($0) } ?? 0
+        file = nil   // flush + close the WAV
+        let payload: [String: Any] = ["recorded": outPath, "seconds": seconds]
+        if let data = try? JSONSerialization.data(withJSONObject: payload),
+           let line = String(data: data, encoding: .utf8) {
+            print(line)
+            fflush(stdout)
+        }
+        exit(0)
+    }
+}
+
 // MARK: - Lifecycle
 
 var recognizer: Recognizer?
 var wakeRecognizer: WakeRecognizer?
+var recordSession: RecordSession?
 let localeId = resolveLocaleId()
 let silenceSeconds = resolveSilenceSeconds()
 let wakeMode = CommandLine.arguments.contains("--wake")
 let wakeWords = resolveWakeWords()
 
+/// The WAV path for --record mode, or nil for the wake/push-to-talk modes.
+func resolveRecordPath() -> String? {
+    let args = CommandLine.arguments
+    if let i = args.firstIndex(of: "--record"), i + 1 < args.count {
+        return args[i + 1]
+    }
+    return nil
+}
+let recordPath = resolveRecordPath()
+
 func beginListening() {
     DispatchQueue.main.async {
-        if wakeMode {
+        if let path = recordPath {
+            let s = RecordSession(outPath: path, silenceSeconds: silenceSeconds)
+            recordSession = s
+            s.start()
+        } else if wakeMode {
             let w = WakeRecognizer(localeId: localeId, wakeWords: wakeWords, silenceSeconds: silenceSeconds)
             wakeRecognizer = w
             w.start()
@@ -492,7 +596,8 @@ func beginListening() {
 }
 
 func stopListening() {
-    if let w = wakeRecognizer { w.stop() }
+    if let s = recordSession { s.finish() }
+    else if let w = wakeRecognizer { w.stop() }
     else if let r = recognizer { r.finish() }
     else { exit(0) }
 }
