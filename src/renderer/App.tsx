@@ -32,6 +32,7 @@ import { ReferenceChat } from './components/ReferenceChat.tsx';
 import { GraphCard } from './components/GraphCard.tsx';
 import { ScheduledTasksCard } from './components/ScheduledTasksCard.tsx';
 import { TeamCard } from './components/TeamCard.tsx';
+import { AtWorkCard } from './components/AtWorkCard.tsx';
 import { AgentForm } from './components/AgentForm.tsx';
 import { AgentModal } from './components/AgentModal.tsx';
 import type { AgentFormSpec } from '../main/core/agent-augment-pure.ts';
@@ -102,7 +103,7 @@ interface LogRow {
 }
 
 /** Shipped version — shown in the corner HUD and the top-bar title. Bump on release. */
-const VERSION = '1.28.0';
+const VERSION = '1.29.0';
 
 /** STT settings defaults until the async read lands (mirrors audio-transform-pure). */
 const STT_DEFAULTS: SttSettings = { engine: 'local', hasKey: false, speed: 2.3, trimTailMs: 2000, model: 'gpt-4o-mini-transcribe' };
@@ -1730,6 +1731,11 @@ export default function App() {
               </div>
             </div>
           ),
+        };
+      case 'atwork':
+        return {
+          meta: <span className="panel-meta">quem trabalha agora · live</span>,
+          body: <AtWorkCard />,
         };
       case 'activity':
         return {

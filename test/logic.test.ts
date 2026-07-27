@@ -1823,6 +1823,7 @@ import {
   truncateLabel,
   type ActivityEntry,
 } from '../src/main/core/agent-activity-pure.ts';
+import { agentsAtWork, atWorkSummary } from '../src/main/core/atwork-pure.ts';
 import {
   emptyFormSpec,
   fillFormSpec,
@@ -5445,4 +5446,40 @@ test('ttsCostUsd — local free, openai per-model, elevenlabs flat', () => {
   // ElevenLabs flat ~$100/1M regardless of model.
   assert.ok(Math.abs(ttsCostUsd('elevenlabs', '', 1_000_000) - 100) < 1e-9);
   assert.equal(ttsCostUsd('openai', 'gpt-4o-mini-tts', 0), 0);
+});
+
+test('atwork-pure — agentsAtWork filters idle, orders by precedence, missing activity = idle', () => {
+  const roster = [
+    { id: 'w', activity: { state: 'working' as const, since: 1 } },
+    { id: 'noact' }, // no activity → idle → excluded
+    { id: 'wait', activity: { state: 'waiting-approval' as const, since: 2 } },
+    { id: 'idle', activity: { state: 'idle' as const, since: 3 } },
+    { id: 'study', activity: { state: 'studying' as const, since: 4 } },
+  ];
+  const busy = agentsAtWork(roster);
+  assert.deepEqual(busy.map((a) => a.id), ['wait', 'study', 'w']); // precedence order
+  assert.equal(agentsAtWork([]).length, 0);
+  assert.equal(agentsAtWork([{ id: 'x' }, { id: 'y', activity: { state: 'idle', since: 0 } }]).length, 0);
+});
+
+test('atwork-pure — agentsAtWork is stable within a state and does not mutate input', () => {
+  const roster = [
+    { id: 'a', activity: { state: 'working' as const, since: 1 } },
+    { id: 'b', activity: { state: 'working' as const, since: 9 } },
+  ];
+  assert.deepEqual(agentsAtWork(roster).map((a) => a.id), ['a', 'b']); // original order kept
+  assert.equal(roster[0].id, 'a'); // untouched
+});
+
+test('atwork-pure — atWorkSummary counts each state; no activity counts as idle', () => {
+  assert.deepEqual(atWorkSummary([]), { working: 0, studying: 0, waiting: 0, idle: 0 });
+  const c = atWorkSummary([
+    { activity: { state: 'working', since: 0 } },
+    { activity: { state: 'working', since: 0 } },
+    { activity: { state: 'studying', since: 0 } },
+    { activity: { state: 'waiting-approval', since: 0 } },
+    { activity: { state: 'idle', since: 0 } },
+    {}, // missing → idle
+  ]);
+  assert.deepEqual(c, { working: 2, studying: 1, waiting: 1, idle: 2 });
 });

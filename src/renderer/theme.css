@@ -951,6 +951,46 @@ body.low-cpu .scanline { display: none; }
 }
 .team-role.orchestrator { color: var(--mag); }
 .team-role.leaf { color: var(--acc); }
+
+/* AT WORK card (P4) — reuses .team-dot + .empty; only its own layout is new. */
+.atwork-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--muted);
+  margin-bottom: 10px;
+}
+.atwork-summary b { color: var(--fg); font-weight: 600; }
+.atwork-summary .amber { color: var(--amb); }
+.atwork-summary .amber b { color: var(--amb); }
+.atwork-summary .dim { color: var(--dim); }
+.atwork-agent {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 6px 0;
+  border-top: 1px solid var(--line, rgba(255, 255, 255, 0.06));
+}
+.atwork-agent-body { min-width: 0; flex: 1; }
+.atwork-agent-top {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+.atwork-name { color: var(--fg); font-size: 12px; }
+.atwork-role { font-family: var(--font-mono); font-size: 10px; color: var(--muted); }
+.atwork-what {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-style: italic;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.atwork-agent .team-dot { margin-top: 5px; }
 .team-role.msg { color: var(--grn); }
 .team-meta {
   display: flex;

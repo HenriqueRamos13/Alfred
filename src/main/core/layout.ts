@@ -213,10 +213,11 @@ const CARD_TITLES: Record<string, string> = {
   graph: 'KNOWLEDGE GRAPH',
   jobs: 'SCHEDULED TASKS',
   agents: 'AGENTS',
+  atwork: 'EM ATIVIDADE',
 };
 
 /** Cards that start hidden (opened from the top-bar), not shown on first run. */
-const HIDDEN_DEFAULT = new Set<string>(['settings', 'graph', 'jobs', 'agents']);
+const HIDDEN_DEFAULT = new Set<string>(['settings', 'graph', 'jobs', 'agents', 'atwork']);
 
 /** First-run positions (px from the canvas top-left). [id, x, y, w, h]. */
 const DEFAULTS: ReadonlyArray<readonly [string, number, number, number, number]> = [
@@ -231,6 +232,7 @@ const DEFAULTS: ReadonlyArray<readonly [string, number, number, number, number]>
   ['graph', 340, 150, 760, 580],
   ['jobs', 360, 150, 560, 560],
   ['agents', 380, 150, 560, 620],
+  ['atwork', 400, 150, 420, 460],
 ];
 
 const clampPos = (v: number): number => Math.max(0, Math.round(v));
