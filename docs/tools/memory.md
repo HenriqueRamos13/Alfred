@@ -48,8 +48,9 @@ homoglyph Unicode, stray `<script>`) is written with a `warning`. See
 - **Never invent memories.** If `recall` returns nothing, say so.
 - **Never edit the stable layer** (`preferences.md`/`house-rules.md`) — it is the
   human's; you only `read` it.
-- Save proactively: durable user/world facts as `semantic`; noteworthy events as
-  `episodic`. When a relevant task ends: `note` then `handoff`.
+- Explicit memory requests use `remember`/`note`/`handoff` during the turn.
+  Routine durable facts and workflow lessons are proposed by the idle
+  auto-review after the response.
 - Writes are append-only; the curator (a cheap separate brain) later turns
   handoffs into notes and rebuilds `index.md`/maps/backlinks.
 - **Deleting**: never guess a note's slugified filename — run `list` to get the

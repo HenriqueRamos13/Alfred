@@ -31,11 +31,11 @@ Frontmatter (`title`, `type`, `created`, `updated`, `tags[]`) + `## Observations
 `- rel_type [[Target]]`). Re-using a title **merges** (union, idempotent).
 
 ## When to write
-1. Proactively `remember` durable facts (`semantic`) and noteworthy events
-   (`episodic`) as they happen.
-2. When a **relevant task completes**: `memory` op:`note` (one atomic idea, with
-   `[[wikilink]]` relations), then `memory` op:`handoff` (a short summary + the
-   note/file path).
+1. Use `remember`, `note`, or `handoff` synchronously when the user explicitly
+   asks to remember something or memory is the requested deliverable.
+2. Routine durable facts and workflow lessons are captured by the idle
+   auto-review after the response, keeping memory maintenance off the critical
+   response path.
 3. Never invent memories — if `recall` finds nothing, say so.
 
 ## The curator (librarian)

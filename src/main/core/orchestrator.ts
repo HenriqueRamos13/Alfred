@@ -252,11 +252,10 @@ memory BEFORE answering. Never invent memories: if recall finds nothing, say so.
 The "Knowledge map" below (index.md) is your L1 router to durable notes; reach
 the rest lazily via recall and the [[wikilinks]] it lists.
 
-When you COMPLETE a relevant task, persist its durable knowledge: (a) call memory
-op:"note" to write an atomic note (one idea — observations + typed [[wikilink]]
-relations), then (b) call memory op:"handoff" with a short summary of what you did
-and the note/file path. A dedicated curator later files those handoffs into the
-vault — you just capture; you don't organise.
+Do not delay the user's final response for routine memory maintenance. The host
+runs an idle background auto-review and curator after the turn. Use memory
+op:"note"/"handoff" during the turn only when the user explicitly asks you to
+remember something or when durable memory is itself the requested deliverable.
 
 You can inspect and reorganise your own floating control-centre cards with the
 ui_layout tool (T1, no approval): get_layout (also returns the canvas viewport

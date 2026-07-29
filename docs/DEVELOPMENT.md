@@ -75,8 +75,9 @@ Full recipes with exact wiring live in
   `DEFAULTS` in `core/layout.ts`.
 - **Add a skill** — `skills/<name>/SKILL.md` referenced from `AGENTS.md` and
   `core/manifest.ts`. No code wiring; the runtime model opens it on demand.
-- **Add a memory entry (as the runtime agent)** — via the `memory` tool
-  (`remember`, then `note` + `handoff`); never edit the human-curated stable layer.
+- **Add a memory entry (as the runtime agent)** — use the `memory` tool when
+  memory is the requested deliverable; routine capture runs through idle
+  auto-review. Never edit the human-curated stable layer.
 
 ## Conventions (enforced)
 
