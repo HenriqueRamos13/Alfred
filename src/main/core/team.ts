@@ -252,19 +252,26 @@ export async function loadAgentContext(
   project?: ProjectManifest | null,
   memberships?: AgentMemberships,
 ): Promise<string> {
-  const indexText = await readFile(join(workspace, 'agents', 'index.md'), 'utf8').catch(() => '');
   const dir = join(workspace, 'agents', agent.id, 'knowledge');
-  let files: string[] = [];
-  try {
-    files = (await readdir(dir)).filter((f) => f.endsWith('.md')).sort();
-  } catch {
-    /* no folder yet — no private notes */
-  }
+  const [indexText, files] = await Promise.all([
+    readFile(join(workspace, 'agents', 'index.md'), 'utf8').catch(() => ''),
+    readdir(dir)
+      .then((entries) => entries.filter((file) => file.endsWith('.md')).sort())
+      .catch(() => [] as string[]),
+  ]);
+  // buildAgentContext accepts at most 4,000 chars at 600 chars/note, so reading
+  // more than seven files cannot affect the generated prompt.
   const notes: AgentNote[] = [];
-  for (const f of files) {
-    const body = await readFile(join(dir, f), 'utf8').catch(() => '');
-    if (body.trim()) notes.push({ title: f.replace(/\.md$/, ''), body });
+  for (let offset = 0; offset < files.length && notes.length < 7; offset += 7) {
+    const batch = await Promise.all(
+      files.slice(offset, offset + 7).map(async (file): Promise<AgentNote | null> => {
+        const body = await readFile(join(dir, file), 'utf8').catch(() => '');
+        return body.trim() ? { title: file.replace(/\.md$/, ''), body } : null;
+      }),
+    );
+    notes.push(...batch.filter((note): note is AgentNote => note !== null));
   }
+  notes.length = Math.min(notes.length, 7);
   // The ProjectManifest is a superset of ProjectContextInfo (buildAgentContext
   // reads only name/slug/stack/status/summary/ownerAgentId).
   return buildAgentContext(agent, indexText, notes, {

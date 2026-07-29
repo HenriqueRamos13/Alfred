@@ -189,12 +189,20 @@ export async function getProject(db: DB, workspace: string, slug: string): Promi
     | undefined;
   const path = row?.path ?? join(workspace, 'projects', slug);
 
-  let manifest: ProjectManifest;
+  const manifest = await readProjectManifest(row, path);
+  if (!manifest) return null;
+  return { manifest, files: await fileTree(path), paused: !!row?.paused };
+}
+
+async function readProjectManifest(
+  row: (ProjectRecord & { paused?: number }) | undefined,
+  path: string,
+): Promise<ProjectManifest | null> {
   try {
-    manifest = parseManifest(await readFile(manifestPath(path), 'utf8'));
+    return parseManifest(await readFile(manifestPath(path), 'utf8'));
   } catch {
     if (!row) return null;
-    manifest = {
+    return {
       name: row.name,
       slug: row.slug,
       path: row.path,
@@ -206,8 +214,14 @@ export async function getProject(db: DB, workspace: string, slug: string): Promi
       decisions: [],
     };
   }
+}
 
-  return { manifest, files: await fileTree(path), paused: !!row?.paused };
+/** Read project metadata without scanning its file tree. */
+export async function getProjectManifest(db: DB, workspace: string, slug: string): Promise<ProjectManifest | null> {
+  const row = db.prepare('SELECT slug, name, path, summary, updated, paused FROM projects WHERE slug = ?').get(slug) as
+    | (ProjectRecord & { paused?: number })
+    | undefined;
+  return readProjectManifest(row, row?.path ?? join(workspace, 'projects', slug));
 }
 
 /**
@@ -219,15 +233,19 @@ export async function getProject(db: DB, workspace: string, slug: string): Promi
  * "not owned". Feeds buildAgentContext's `# Your projects` section so a turn never
  * answers "no project" when it actually owns one.
  */
-export async function projectsForAgent(db: DB, workspace: string, agentId: string): Promise<AgentMemberships> {
+export async function projectsForAgent(db: DB, _workspace: string, agentId: string): Promise<AgentMemberships> {
   const projects = listProjects(db);
   const nameBySlug = new Map(projects.map((p) => [p.slug, p.name] as const));
 
-  const owned: AgentMemberships['owned'] = [];
-  for (const p of projects) {
-    const detail = await getProject(db, workspace, p.slug).catch(() => null);
-    if (detail?.manifest.ownerAgentId === agentId) owned.push({ slug: p.slug, name: p.name });
-  }
+  const manifests = await Promise.all(
+    projects.map(async (project) => ({
+      project,
+      manifest: await readProjectManifest(project, project.path).catch(() => null),
+    })),
+  );
+  const owned: AgentMemberships['owned'] = manifests
+    .filter(({ manifest }) => manifest?.ownerAgentId === agentId)
+    .map(({ project }) => ({ slug: project.slug, name: project.name }));
 
   const rows = db
     .prepare(

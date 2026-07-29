@@ -590,21 +590,23 @@ export class Orchestrator {
         'user can turn this off/on any time ("desativa/ativa o grill me"); when ' +
         'they ask, call the system tool op grill_me_off / grill_me_on / grill_me_toggle.';
     }
-    const mem = await readStable(ctx.workspace).catch(() => '');
+    const transcript = formatTranscript(getRecentMessages(ctx.db, 13).slice(0, -1), 2000);
+    const [mem, index, team, recent] = await Promise.all([
+      readStable(ctx.workspace).catch(() => ''),
+      readIndex(ctx.workspace).catch(() => ''),
+      readFile(join(ctx.workspace, 'agents', 'index.md'), 'utf8').catch(() => ''),
+      recentMemoryText(ctx.workspace).catch(() => ''),
+    ]);
     if (mem.trim()) sys += `\n\n# Stable memory (honour these)\n${mem}`;
     // L1: the index.md Map of Content — the router to every durable note.
-    const index = await readIndex(ctx.workspace).catch(() => '');
     if (index.trim()) sys += `\n\n# Knowledge map (index — L1 router)\n${index}`;
     // Team roster router: the shared who-knows-what index (agents/index.md). Load
     // it like the other MOCs so Alfred can DELEGATE a task to the right specialist
     // (delegate_to_agent) by learned topic instead of always doing it inline.
-    const team = await readFile(join(ctx.workspace, 'agents', 'index.md'), 'utf8').catch(() => '');
     if (team.trim()) sys += `\n\n# Team — who knows what (delegate to the right specialist via delegate_to_agent)\n${team}`;
-    const recent = await recentMemoryText(ctx.workspace).catch(() => '');
     if (recent.trim()) sys += `\n\n# Recent memory (last 7 days)\n${recent}`;
     // The just-sent user turn is persisted before run() and is passed as the
     // prompt, so drop it here to avoid duplicating it in the transcript.
-    const transcript = formatTranscript(getRecentMessages(ctx.db, 13).slice(0, -1), 2000);
     if (transcript.trim()) sys += `\n\n# Recent conversation (for continuity)\n${transcript}`;
     if (this.deps.projectContext?.trim()) sys += `\n\n# Active project\n${this.deps.projectContext}`;
     return sys;
