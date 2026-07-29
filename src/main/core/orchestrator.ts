@@ -868,7 +868,7 @@ export interface OrchestratorHandle {
   /**
    * Send-delay / edit window (ms): a submitted message is held as an editable
    * pending bubble for this long before it reaches the AI, so a transcription
-   * slip can be caught. Read/set, persisted, default 2000; 0 = off (send now).
+   * slip can be caught. Read/set, persisted, default 0 (send now).
    */
   getSendDelay(): number;
   setSendDelay(ms: number): number;

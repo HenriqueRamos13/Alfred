@@ -745,7 +745,7 @@ export default function App() {
     alfred.getAutosend().then(setAutosend).catch(() => {});
     // Reflect the persisted STT engine + cloud knobs (default local Apple on-device).
     alfred.getSttSettings().then(setStt).catch(() => {});
-    // Reflect the persisted send-delay / edit window (default 2000ms).
+    // Reflect the persisted send-delay / edit window (default off).
     alfred.getSendDelay().then(setSendDelayMs).catch(() => {});
     // Reflect the persisted wake-word toggle (default on when the STT binary exists).
     alfred.getWakeword().then(setWake).catch(() => {});

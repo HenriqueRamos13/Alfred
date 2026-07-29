@@ -4514,9 +4514,9 @@ test('isAccent — guards the setAccent validation boundary', () => {
 
 // ── send-delay (edit-window) pure logic ──────────────────────────────────────
 
-test('parseSendDelay — absent uses the 2s default', () => {
-  assert.equal(parseSendDelay(undefined), 2000);
-  assert.equal(SEND_DELAY_DEFAULT_MS, 2000);
+test('parseSendDelay — absent sends immediately by default', () => {
+  assert.equal(parseSendDelay(undefined), 0);
+  assert.equal(SEND_DELAY_DEFAULT_MS, 0);
 });
 
 test('parseSendDelay — 0 is honoured (off), not the default', () => {
@@ -4529,9 +4529,9 @@ test('parseSendDelay — finite values floor to an integer of ms', () => {
 });
 
 test('parseSendDelay — negative / non-numeric fall back to the default', () => {
-  assert.equal(parseSendDelay('-1'), 2000);
-  assert.equal(parseSendDelay('abc'), 2000);
-  assert.equal(parseSendDelay(''), 2000);
+  assert.equal(parseSendDelay('-1'), 0);
+  assert.equal(parseSendDelay('abc'), 0);
+  assert.equal(parseSendDelay(''), 0);
 });
 
 test('shouldHoldSend — holds only with a positive delay AND real text', () => {

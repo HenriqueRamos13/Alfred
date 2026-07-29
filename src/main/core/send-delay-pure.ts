@@ -8,7 +8,7 @@
  * goes out. 0 = disabled (send immediately, the pre-feature behaviour).
  */
 
-export const SEND_DELAY_DEFAULT_MS = 2000;
+export const SEND_DELAY_DEFAULT_MS = 0;
 
 /**
  * Parse the persisted `send_delay_ms` setting. Absent → default; non-numeric /

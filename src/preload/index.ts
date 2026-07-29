@@ -218,7 +218,7 @@ const api = {
   getSttSettings: (): Promise<SttSettings> => ipcRenderer.invoke('alfred:getSttSettings'),
   setSttSettings: (patch: Partial<Omit<SttSettings, 'hasKey'>>): Promise<SttSettings> =>
     ipcRenderer.invoke('alfred:setSttSettings', patch),
-  /** Send-delay / edit window in ms (hold before a message reaches the AI) — persisted; read on mount. Default 2000, 0 = off. */
+  /** Send-delay / edit window in ms (hold before a message reaches the AI) — persisted; read on mount. Default 0. */
   getSendDelay: (): Promise<number> => ipcRenderer.invoke('alfred:getSendDelay'),
   setSendDelay: (ms: number): Promise<number> => ipcRenderer.invoke('alfred:setSendDelay', ms),
   /** Widget JS toggle (run tier-2 widget scripts via the sandboxed alfred-widget:// protocol) — persisted; read on mount. Default OFF. */

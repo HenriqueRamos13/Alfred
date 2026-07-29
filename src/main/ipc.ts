@@ -142,7 +142,7 @@ export interface Orchestrator {
   /** STT engine + cloud knobs (engine local|openai, speed, trim, model): read/patch, persisted. */
   getSttSettings(): SttSettings | Promise<SttSettings>;
   setSttSettings(patch: Partial<Omit<SttSettings, 'hasKey'>>): SttSettings | Promise<SttSettings>;
-  /** Send-delay / edit window (ms): hold a submitted message before it reaches the AI. Read/set, persisted, default 2000, 0 = off. */
+  /** Send-delay / edit window (ms): hold a submitted message before it reaches the AI. Read/set, persisted, default 0. */
   getSendDelay(): number | Promise<number>;
   setSendDelay(ms: number): number | Promise<number>;
   /** Widget JS toggle (run tier-2 widget scripts via the alfred-widget:// protocol): read/set, persisted, default OFF. */
@@ -412,7 +412,7 @@ export function registerIpc(core: Orchestrator, emit: (e: StreamEvent) => void):
     }
   });
 
-  ipcMain.handle('alfred:getSendDelay', guard('get send delay', () => core.getSendDelay(), 2000));
+  ipcMain.handle('alfred:getSendDelay', guard('get send delay', () => core.getSendDelay(), 0));
   ipcMain.handle('alfred:setSendDelay', async (_e, ms: unknown) => {
     try {
       return await core.setSendDelay(typeof ms === 'number' ? ms : 0);
