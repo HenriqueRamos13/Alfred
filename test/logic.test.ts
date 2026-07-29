@@ -42,7 +42,13 @@ import { shell } from '../src/main/tools/shell.ts';
 import { filesystem } from '../src/main/tools/filesystem.ts';
 import { browser } from '../src/main/tools/browser.ts';
 import { delegate } from '../src/main/tools/delegate.ts';
-import { dangerousArgs, DANGEROUS_SYSTEM_PROMPT, TERSE_SYSTEM_PROMPT, resolveMcpToolTimeout } from '../src/main/core/claudeSpawn.ts';
+import {
+  dangerousArgs,
+  DANGEROUS_SYSTEM_PROMPT,
+  TERSE_SYSTEM_PROMPT,
+  resolveMcpToolTimeout,
+  parseClaudeStreamEvent,
+} from '../src/main/core/claudeSpawn.ts';
 import { gmailConfigured } from '../src/main/tools/gmail-config.ts';
 import {
   dayKey,
@@ -5496,6 +5502,37 @@ test('ttsCostUsd — local free, openai per-model, elevenlabs flat', () => {
   // ElevenLabs flat ~$100/1M regardless of model.
   assert.ok(Math.abs(ttsCostUsd('elevenlabs', '', 1_000_000) - 100) < 1e-9);
   assert.equal(ttsCostUsd('openai', 'gpt-4o-mini-tts', 0), 0);
+});
+
+test('claudeSpawn — exposes text deltas and ignores internal stream events', () => {
+  assert.deepEqual(
+    parseClaudeStreamEvent({
+      type: 'stream_event',
+      event: { type: 'content_block_delta', delta: { type: 'text_delta', text: 'Olá' } },
+    }),
+    { delta: 'Olá' },
+  );
+  assert.deepEqual(
+    parseClaudeStreamEvent({
+      type: 'stream_event',
+      event: { type: 'content_block_delta', delta: { type: 'thinking_delta', thinking: 'private' } },
+    }),
+    {},
+  );
+});
+
+test('claudeSpawn — extracts final result, session and timing metadata', () => {
+  assert.deepEqual(
+    parseClaudeStreamEvent({
+      type: 'result',
+      result: 'feito',
+      session_id: 'session-1',
+      ttft_ms: 321,
+      duration_ms: 987,
+    }),
+    { result: 'feito', sessionId: 'session-1', ttftMs: 321, durationMs: 987 },
+  );
+  assert.deepEqual(parseClaudeStreamEvent(null), {});
 });
 
 test('atwork-pure — agentsAtWork filters idle, orders by precedence, missing activity = idle', () => {

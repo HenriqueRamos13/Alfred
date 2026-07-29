@@ -256,7 +256,9 @@ export async function askReference(deps: ReferenceDeps, req: ReferenceRequest): 
         '-p',
         prompt,
         '--output-format',
-        'json',
+        'stream-json',
+        '--include-partial-messages',
+        '--verbose',
         '--model',
         deps.reference.model,
         '--disallowedTools',
@@ -272,16 +274,14 @@ export async function askReference(deps: ReferenceDeps, req: ReferenceRequest): 
         '--append-system-prompt',
         REFERENCE_SYSTEM,
       ];
-      const out = await spawnClaudeCli(args, { cwd: deps.workspace, bridge: false });
+      const out = await spawnClaudeCli(args, {
+        cwd: deps.workspace,
+        bridge: false,
+        onDelta: (text) => emit({ kind: 'reference.delta', threadId, text }),
+      });
       if (out.enoent) return fail('Claude Code CLI not found on PATH. Install it: npm i -g @anthropic-ai/claude-code');
       if (out.code !== 0) return fail(`claude -p exited ${out.code}: ${(out.stderr || out.stdout).trim()}`);
-      let text = out.stdout.trim();
-      try {
-        text = (JSON.parse(out.stdout) as { result?: string }).result ?? text;
-      } catch {
-        /* not JSON — use raw stdout */
-      }
-      if (text.trim()) emit({ kind: 'reference.delta', threadId, text });
+      const text = out.result ?? out.stdout.trim();
       emit({ kind: 'reference.message', threadId, message: refMessage(threadId, text) });
       return done();
     }

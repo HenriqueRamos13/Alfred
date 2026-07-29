@@ -666,21 +666,25 @@ async function spawnClaudeConversation(
   model?: string,
   signal?: AbortSignal,
   extraSystem?: string,
+  onDelta?: (text: string) => void,
 ): Promise<ClaudeTurn> {
-  const args = ['-p', prompt, '--output-format', 'json', ...dangerousArgs(dangerous, extraSystem)];
+  const args = [
+    '-p',
+    prompt,
+    '--output-format',
+    'stream-json',
+    '--include-partial-messages',
+    '--verbose',
+    ...dangerousArgs(dangerous, extraSystem),
+  ];
   if (model) args.push('--model', model);
   if (resumeId) args.push('--resume', resumeId);
-  const out = await spawnClaudeCli(args, { cwd, signal });
+  const out = await spawnClaudeCli(args, { cwd, signal, onDelta });
   if (out.enoent) return { enoent: true };
   if (out.code !== 0) {
     return { error: `claude -p exited ${out.code}: ${(out.stderr || out.stdout).trim()}` };
   }
-  try {
-    const parsed = JSON.parse(out.stdout) as { session_id?: string; result?: string };
-    return { sessionId: parsed.session_id, result: parsed.result ?? out.stdout.trim() };
-  } catch {
-    return { result: out.stdout.trim() };
-  }
+  return { sessionId: out.sessionId, result: out.result ?? out.stdout.trim() };
 }
 
 /**
@@ -1495,7 +1499,16 @@ export function createOrchestrator(opts: CreateOrchestratorOpts): OrchestratorHa
     // (and is easily out-weighed), so inject the reply-language directive here where
     // --append-system-prompt weighs heavily — parity with the AI-SDK buildSystem path.
     const langDirective = languageDirective(resolveLanguage(getSetting(db, 'language'), process.env.ALFRED_LANGUAGE));
-    const turn = await spawnClaudeConversation(prompt, config.workspace, isDangerous(), resumeId, model, signal, langDirective);
+    const turn = await spawnClaudeConversation(
+      prompt,
+      config.workspace,
+      isDangerous(),
+      resumeId,
+      model,
+      signal,
+      langDirective,
+      (delta) => emit({ kind: 'chat.delta', sessionId, text: delta }),
+    );
 
     // User kill/reset: the child was SIGKILLed → clean halt, not a red error
     // (parity with the AI-SDK path's abort handling).
@@ -1526,7 +1539,6 @@ export function createOrchestrator(opts: CreateOrchestratorOpts): OrchestratorHa
     }
     const content = turn.result ?? '';
     if (content.trim()) {
-      emit({ kind: 'chat.delta', sessionId, text: content });
       emit({
         kind: 'chat.message',
         message: { id: randomUUID(), sessionId, role: 'assistant', content, ts: Date.now() },

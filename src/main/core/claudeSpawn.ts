@@ -48,6 +48,41 @@ export interface ClaudeCliResult {
   stderr: string;
   code: number;
   enoent: boolean;
+  result?: string;
+  sessionId?: string;
+  ttftMs?: number;
+  durationMs?: number;
+}
+
+export interface ClaudeCliStreamState {
+  result?: string;
+  sessionId?: string;
+  ttftMs?: number;
+  durationMs?: number;
+}
+
+/**
+ * Extract the user-visible and final fields from one Claude stream-json event.
+ * Thinking/signature/hook events are deliberately ignored.
+ */
+export function parseClaudeStreamEvent(value: unknown): ClaudeCliStreamState & { delta?: string } {
+  if (!value || typeof value !== 'object') return {};
+  const event = value as Record<string, unknown>;
+  if (event.type === 'stream_event') {
+    const inner = event.event;
+    if (!inner || typeof inner !== 'object') return {};
+    const delta = (inner as Record<string, unknown>).delta;
+    if (!delta || typeof delta !== 'object') return {};
+    const fields = delta as Record<string, unknown>;
+    return fields.type === 'text_delta' && typeof fields.text === 'string' ? { delta: fields.text } : {};
+  }
+  if (event.type !== 'result') return {};
+  return {
+    result: typeof event.result === 'string' ? event.result : undefined,
+    sessionId: typeof event.session_id === 'string' ? event.session_id : undefined,
+    ttftMs: typeof event.ttft_ms === 'number' ? event.ttft_ms : undefined,
+    durationMs: typeof event.duration_ms === 'number' ? event.duration_ms : undefined,
+  };
 }
 
 /** Preamble injected via --append-system-prompt so the brain never asks for permission in dangerous mode. */
@@ -112,7 +147,7 @@ function subscriptionEnv(): NodeJS.ProcessEnv {
 
 export function spawnClaudeCli(
   args: string[],
-  opts: { cwd: string; bridge?: boolean; signal?: AbortSignal },
+  opts: { cwd: string; bridge?: boolean; signal?: AbortSignal; onDelta?: (text: string) => void },
 ): Promise<ClaudeCliResult> {
   return new Promise((resolve) => {
     // Kill switch: an already-aborted signal never spawns; a later abort SIGKILLs
@@ -143,24 +178,66 @@ export function spawnClaudeCli(
     let stdout = '';
     let stderr = '';
     let bytes = 0;
+    let lineBuffer = '';
+    let streamState: ClaudeCliStreamState = {};
+    let settled = false;
+
+    const finish = (result: ClaudeCliResult): void => {
+      if (settled) return;
+      settled = true;
+      opts.signal?.removeEventListener('abort', onAbort);
+      resolve({ ...result, ...streamState });
+    };
+
+    const consumeLine = (line: string): void => {
+      if (!line.trim()) return;
+      try {
+        const parsed = parseClaudeStreamEvent(JSON.parse(line));
+        if (parsed.delta) {
+          try {
+            opts.onDelta?.(parsed.delta);
+          } catch (err) {
+            console.error('[alfred] Claude CLI delta sink failed:', err instanceof Error ? err.message : err);
+          }
+        }
+        streamState = {
+          result: parsed.result ?? streamState.result,
+          sessionId: parsed.sessionId ?? streamState.sessionId,
+          ttftMs: parsed.ttftMs ?? streamState.ttftMs,
+          durationMs: parsed.durationMs ?? streamState.durationMs,
+        };
+      } catch {
+        // Non-JSON output is retained in stdout and handled by the caller fallback.
+      }
+    };
 
     child.stdout.on('data', (d: Buffer) => {
       bytes += d.length;
-      if (bytes <= MAX_STDOUT) stdout += d.toString();
-      else child.kill('SIGKILL'); // runaway output — kill; close reports failure
+      if (bytes <= MAX_STDOUT) {
+        const chunk = d.toString();
+        stdout += chunk;
+        lineBuffer += chunk;
+        let newline = lineBuffer.indexOf('\n');
+        while (newline >= 0) {
+          consumeLine(lineBuffer.slice(0, newline));
+          lineBuffer = lineBuffer.slice(newline + 1);
+          newline = lineBuffer.indexOf('\n');
+        }
+      } else {
+        child.kill('SIGKILL'); // runaway output — kill; close reports failure
+      }
     });
     child.stderr.on('data', (d: Buffer) => {
       stderr += d.toString();
     });
 
     child.on('error', (err: NodeJS.ErrnoException) => {
-      opts.signal?.removeEventListener('abort', onAbort);
-      resolve({ stdout, stderr, code: 1, enoent: err.code === 'ENOENT' });
+      finish({ stdout, stderr, code: 1, enoent: err.code === 'ENOENT' });
     });
     // code null ⇒ killed by a signal (timeout / maxBuffer / abort) ⇒ failure.
     child.on('close', (code) => {
-      opts.signal?.removeEventListener('abort', onAbort);
-      resolve({ stdout, stderr, code: code == null ? 1 : code, enoent: false });
+      consumeLine(lineBuffer);
+      finish({ stdout, stderr, code: code == null ? 1 : code, enoent: false });
     });
   });
 }

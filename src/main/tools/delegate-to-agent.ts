@@ -180,8 +180,10 @@ export interface RosterRunOpts {
   model?: string;
   /** Project to anchor the turn to (Phase 3): loads PROJECT.md into context + defaults sub-tool boards. */
   projectSlug?: string;
-  /** Live token sink (thread streaming). API brains only; claude-cli streams nothing. */
+  /** Live token sink (thread streaming) for API and claude-cli brains. */
   onDelta?: (text: string) => void;
+  /** Optional hard interrupt propagated to the selected provider. */
+  signal?: AbortSignal;
 }
 
 /**
@@ -253,7 +255,9 @@ export async function runRosterAgentAttended(
     // parent's interactive approval). A TOP-LEVEL delegate (Alfred, depth 0) and
     // every thread turn (the user is right there) stay ATTENDED.
     const nested = depth >= 1;
-    if (agent.provider === 'claude-cli') return await runClaudeCli(ctx, context, task, model);
+    if (agent.provider === 'claude-cli') {
+      return await runClaudeCli(ctx, context, task, model, opts?.signal, opts?.onDelta);
+    }
     return await runAgentTurn(ctx, {
       agentId: agent.id,
       provider: agent.provider,
@@ -335,22 +339,34 @@ export interface AgentTurnSpec {
  * normal sensitive-action approval, which applies to both. Upgrade path: map the
  * grant to `claude`'s --disallowedTools (as the reference agent does for read-only).
  */
-async function runClaudeCli(ctx: ToolCtx, context: string, task: string, model: string) {
+async function runClaudeCli(
+  ctx: ToolCtx,
+  context: string,
+  task: string,
+  model: string,
+  signal?: AbortSignal,
+  onDelta?: (text: string) => void,
+) {
   const dangerous =
     (ctx.db.prepare("SELECT value FROM settings WHERE key = 'dangerous_mode'").get() as { value?: string } | undefined)?.value === '1';
   const prompt = `${context}\n\n# Task\n${task}`;
   const out = await spawnClaudeCli(
-    ['-p', prompt, '--output-format', 'json', '--model', model, ...dangerousArgs(dangerous)],
-    { cwd: ctx.workspace },
+    [
+      '-p',
+      prompt,
+      '--output-format',
+      'stream-json',
+      '--include-partial-messages',
+      '--verbose',
+      '--model',
+      model,
+      ...dangerousArgs(dangerous),
+    ],
+    { cwd: ctx.workspace, signal, onDelta },
   );
   if (out.enoent) return { ok: false, error: 'Claude Code CLI not found on PATH. Install it: npm i -g @anthropic-ai/claude-code' };
   if (out.code !== 0) return { ok: false, error: `claude -p exited ${out.code}: ${(out.stderr || out.stdout).trim()}` };
-  let text = out.stdout.trim();
-  try {
-    text = (JSON.parse(out.stdout) as { result?: string }).result ?? text;
-  } catch {
-    /* not JSON — use raw stdout */
-  }
+  const text = out.result ?? out.stdout.trim();
   return { ok: true, result: { model, text } };
 }
 

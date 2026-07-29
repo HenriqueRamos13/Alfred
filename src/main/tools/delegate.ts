@@ -84,7 +84,17 @@ export const delegate: Tool<Args> = {
     const model = resolveDelegateModel(a.model, agentClaudeModel(rawAgentCfg));
 
     const out = await spawnClaudeCli(
-      ['-p', a.task, '--output-format', 'json', '--model', model, ...dangerousArgs(dangerous)],
+      [
+        '-p',
+        a.task,
+        '--output-format',
+        'stream-json',
+        '--include-partial-messages',
+        '--verbose',
+        '--model',
+        model,
+        ...dangerousArgs(dangerous),
+      ],
       { cwd },
     );
     if (out.enoent) {
@@ -97,13 +107,7 @@ export const delegate: Tool<Args> = {
       return { ok: false, error: `claude -p exited ${out.code}: ${out.stderr.trim() || out.stdout.trim()}` };
     }
 
-    // --output-format json prints a single JSON object; fall back to raw text.
-    let parsed: ClaudeJson | null = null;
-    try {
-      parsed = JSON.parse(out.stdout) as ClaudeJson;
-    } catch {
-      /* not JSON — return raw below */
-    }
-    return { ok: true, result: parsed ?? { result: out.stdout.trim() } };
+    const parsed: ClaudeJson = { result: out.result ?? out.stdout.trim(), session_id: out.sessionId };
+    return { ok: true, result: parsed };
   },
 };
