@@ -121,9 +121,24 @@ export function denialError(res: { timedOut?: boolean }): string {
 // ── audit ─────────────────────────────────────────────────────────────────────
 
 const SECRET_KEY = /token|secret|password|passwd|api[-_]?key|authorization|credential|cookie|bearer/i;
+const PRIVATE_PAYLOAD_KEY = /^(?:body|content|html|image|message|snippet|stderr|stdout|text)$/i;
+
+/** Redact common credential formats when a secret appears inside free-form text. */
+export function redactSensitiveText(text: string): string {
+  return text
+    .replace(/-----BEGIN [^-]+-----[\s\S]*?-----END [^-]+-----/g, '***')
+    .replace(/\bBearer\s+[A-Za-z0-9._~+/=-]{8,}/gi, 'Bearer ***')
+    .replace(/\beyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\b/g, '***')
+    .replace(/\b(?:sk-[A-Za-z0-9_-]{12,}|gh[pousr]_[A-Za-z0-9_]{12,}|AIza[A-Za-z0-9_-]{20,}|xox[a-z]-[A-Za-z0-9-]{10,})\b/g, '***')
+    .replace(
+      /\b(password|passwd|api[-_]?key|access[-_]?token|refresh[-_]?token|client[-_]?secret|secret)(\s*[:=]\s*)(["']?)[^\s"',;}]+\3/gi,
+      '$1$2***',
+    );
+}
 
 /** Redact secret-looking fields before persisting/streaming tool args. */
 export function maskSecrets(value: unknown): unknown {
+  if (typeof value === 'string') return redactSensitiveText(value);
   if (Array.isArray(value)) return value.map(maskSecrets);
   if (value && typeof value === 'object') {
     const out: Record<string, unknown> = {};
@@ -133,6 +148,78 @@ export function maskSecrets(value: unknown): unknown {
     return out;
   }
   return value;
+}
+
+function textSummary(value: unknown): string {
+  return `[redacted: ${typeof value === 'string' ? value.length : 0} chars]`;
+}
+
+function summarizePrivateFields(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(summarizePrivateFields);
+  if (value && typeof value === 'object') {
+    const out: Record<string, unknown> = {};
+    for (const [key, field] of Object.entries(value as Record<string, unknown>)) {
+      out[key] = PRIVATE_PAYLOAD_KEY.test(key) ? textSummary(field) : summarizePrivateFields(field);
+    }
+    return out;
+  }
+  return maskSecrets(value);
+}
+
+/** Keep an actionable audit trail without duplicating private tool payloads. */
+export function sanitizeAuditArgs(toolName: string, args: unknown): unknown {
+  const name = toolName.toLowerCase();
+  const masked = maskSecrets(args);
+  if (!masked || typeof masked !== 'object' || Array.isArray(masked)) return masked;
+
+  const out = { ...(masked as Record<string, unknown>) };
+  if (name === 'filesystem' && typeof out.content === 'string') out.content = textSummary(out.content);
+  if (name === 'browser' && typeof out.text === 'string') out.text = textSummary(out.text);
+  if (name === 'system' && typeof out.text === 'string') out.text = textSummary(out.text);
+  if (name === 'system' && typeof out.body === 'string') out.body = textSummary(out.body);
+  return out;
+}
+
+/** Results from content-reading tools are reduced to non-content metadata. */
+export function sanitizeAuditResult(toolName: string, result: unknown): unknown {
+  if (result === undefined) return undefined;
+  const name = toolName.toLowerCase();
+  const r = result && typeof result === 'object' && !Array.isArray(result)
+    ? (result as Record<string, unknown>)
+    : null;
+
+  if (name === 'shell' && r) {
+    return {
+      code: typeof r.code === 'number' ? r.code : undefined,
+      timedOut: r.timedOut === true || undefined,
+      stdoutChars: typeof r.stdout === 'string' ? r.stdout.length : 0,
+      stderrChars: typeof r.stderr === 'string' ? r.stderr.length : 0,
+    };
+  }
+  if (name === 'filesystem' && r) {
+    return {
+      path: r.path,
+      bytes: r.bytes ?? (typeof r.content === 'string' ? r.content.length : undefined),
+      entryCount: Array.isArray(r.entries) ? r.entries.length : undefined,
+      deleted: r.deleted,
+    };
+  }
+  if (name === 'gmail' && r) {
+    return {
+      connected: typeof r.email === 'string' || undefined,
+      messageId: r.id,
+      messageCount: Array.isArray(r.messages) ? r.messages.length : undefined,
+    };
+  }
+  if (name === 'browser' && r) {
+    return {
+      url: r.url,
+      path: r.path,
+      textChars: typeof r.text === 'string' ? r.text.length : undefined,
+    };
+  }
+
+  return summarizePrivateFields(result);
 }
 
 /**
@@ -205,24 +292,12 @@ export async function runGovernedTool(t: Tool, args: unknown, ctx: ToolCtx): Pro
   try {
     const out = await t.execute(args, ctx);
     const status = out.ok ? 'ok' : 'error';
-    // Never persist an inline `image` base64 (e.g. system op:screenshot) into the
-    // audit table — it would bloat the DB with multi-MB blobs and log screen
-    // pixels. The path is kept; the image only rides the live return value.
-    const auditResult =
-      out.ok && out.result && typeof out.result === 'object' && 'image' in out.result
-        ? (() => {
-            const { image: _drop, ...rest } = out.result as Record<string, unknown>;
-            return rest;
-          })()
-        : out.ok
-          ? out.result
-          : undefined;
     audit({
       toolName: t.name,
       args,
       tier,
       status,
-      result: auditResult,
+      result: out.ok ? out.result : undefined,
       error: out.error,
       durationMs: Date.now() - started,
       note: approvalNote,
@@ -248,13 +323,13 @@ export function recordAudit(db: DB, entry: AuditEntry): void {
     sessionId: entry.sessionId,
     ts: entry.ts,
     toolName: entry.toolName,
-    args: JSON.stringify(maskSecrets(entry.args) ?? null),
+    args: JSON.stringify(sanitizeAuditArgs(entry.toolName, entry.args) ?? null),
     tier: entry.tier,
     status: entry.status,
-    result: entry.result === undefined ? null : JSON.stringify(entry.result),
-    error: entry.error ?? null,
+    result: entry.result === undefined ? null : JSON.stringify(sanitizeAuditResult(entry.toolName, entry.result)),
+    error: entry.error ? redactSensitiveText(entry.error) : null,
     durationMs: entry.durationMs ?? null,
-    note: entry.note ?? null,
+    note: entry.note ? redactSensitiveText(entry.note) : null,
   });
 }
 

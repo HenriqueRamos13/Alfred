@@ -16,7 +16,7 @@
  */
 import { app, BrowserWindow, globalShortcut, ipcMain, Notification, protocol, screen } from 'electron';
 import { join } from 'node:path';
-import { mkdirSync, readFileSync, existsSync } from 'node:fs';
+import { chmodSync, mkdirSync, readFileSync, existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { openDb } from './core/db.ts';
 import { getJob } from './core/jobs.ts';
@@ -173,7 +173,8 @@ function loadConfig(): AlfredConfig {
 // can't write inside the asar, so fall back to userData there.
 function dataDir(): string {
   const dir = app.isPackaged ? join(app.getPath('userData'), 'data') : join(process.cwd(), 'data');
-  mkdirSync(dir, { recursive: true });
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  if (process.platform !== 'win32') chmodSync(dir, 0o700);
   return dir;
 }
 

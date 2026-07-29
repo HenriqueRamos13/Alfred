@@ -4,7 +4,7 @@
  */
 
 import Database from 'better-sqlite3';
-import { mkdirSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { isUserMsgStatus, statusTransition, type UserMsgStatus } from './thread-pure.ts';
 import { markTurnMetricStatus } from './turn-metrics.ts';
@@ -342,11 +342,22 @@ CREATE INDEX IF NOT EXISTS idx_thread_msgs ON agent_thread_messages(thread_id, c
 `;
 
 export function openDb(dbPath: string): AlfredDb {
-  mkdirSync(dirname(dbPath), { recursive: true });
+  const fileBacked = dbPath !== ':memory:';
+  if (fileBacked) {
+    const dir = dirname(dbPath);
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
+    if (process.platform !== 'win32') chmodSync(dir, 0o700);
+  }
   const db = new Database(dbPath);
+  if (fileBacked && process.platform !== 'win32') chmodSync(dbPath, 0o600);
   db.pragma('journal_mode = WAL');
   db.pragma('foreign_keys = ON');
   db.exec(SCHEMA);
+  if (fileBacked && process.platform !== 'win32') {
+    for (const path of [dbPath, `${dbPath}-wal`, `${dbPath}-shm`]) {
+      if (existsSync(path)) chmodSync(path, 0o600);
+    }
+  }
   // Idempotent migration: `audit.note` (auto-approval provenance) for DBs created
   // before it existed. CREATE TABLE IF NOT EXISTS above won't add columns.
   const hasNote = (db.prepare('PRAGMA table_info(audit)').all() as { name: string }[]).some((c) => c.name === 'note');

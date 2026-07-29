@@ -15,6 +15,9 @@ import {
   trifectaImpact,
   fullTrifecta,
   maskSecrets,
+  redactSensitiveText,
+  sanitizeAuditArgs,
+  sanitizeAuditResult,
   approvalKey,
   isAutoApproved,
   denialError,
@@ -1291,6 +1294,46 @@ test('maskSecrets — redacts nested arrays + more key shapes, leaves plain data
   // primitives pass through untouched
   assert.equal(maskSecrets('plain'), 'plain');
   assert.equal(maskSecrets(42), 42);
+});
+
+test('redactSensitiveText — removes credentials embedded in free-form text', () => {
+  const redacted = redactSensitiveText(
+    'Authorization: Bearer abcdefghijklmnop password=hunter2 token=not-a-key sk-abcdefghijklmnop',
+  );
+  assert.ok(!redacted.includes('abcdefghijklmnop'));
+  assert.ok(!redacted.includes('hunter2'));
+  assert.match(redacted, /Bearer \*\*\*/);
+  assert.match(redacted, /password=\*\*\*/);
+});
+
+test('audit sanitizers — keep metadata while dropping private tool payloads', () => {
+  assert.deepEqual(sanitizeAuditArgs('filesystem', { op: 'write', path: '/x', content: 'private' }), {
+    op: 'write',
+    path: '/x',
+    content: '[redacted: 7 chars]',
+  });
+  assert.deepEqual(sanitizeAuditResult('shell', { stdout: 'secret output', stderr: '', code: 0 }), {
+    code: 0,
+    timedOut: undefined,
+    stdoutChars: 13,
+    stderrChars: 0,
+  });
+  assert.deepEqual(sanitizeAuditResult('filesystem', { path: '/x', content: 'private' }), {
+    path: '/x',
+    bytes: 7,
+    entryCount: undefined,
+    deleted: undefined,
+  });
+  assert.deepEqual(sanitizeAuditResult('gmail', { account: 'a@example.com', messages: [{ subject: 'private' }] }), {
+    connected: undefined,
+    messageId: undefined,
+    messageCount: 1,
+  });
+  assert.deepEqual(sanitizeAuditResult('browser', { url: 'https://example.com', text: 'private' }), {
+    url: 'https://example.com',
+    path: undefined,
+    textChars: 7,
+  });
 });
 
 // ── stt/wakeword shared protocol reader (line-delimited JSON) ─────────────────
