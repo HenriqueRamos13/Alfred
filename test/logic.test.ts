@@ -56,6 +56,7 @@ import {
   parseClaudeStreamEvent,
 } from '../src/main/core/claudeSpawn.ts';
 import { gmailConfigured } from '../src/main/tools/gmail-config.ts';
+import { classifyOAuthCallback } from '../src/main/tools/gmail-oauth-pure.ts';
 import {
   dayKey,
   makeBudget,
@@ -1347,6 +1348,17 @@ test('Electron URL policy — trusts only the exact renderer page and safe exter
   assert.equal(isSafeExternalUrl('mailto:user@example.com'), true);
   assert.equal(isSafeExternalUrl('javascript:alert(1)'), false);
   assert.equal(isSafeExternalUrl('file:///etc/passwd'), false);
+});
+
+test('Gmail OAuth callback — requires matching state and accepts one code shape', () => {
+  assert.deepEqual(classifyOAuthCallback('/favicon.ico', 'nonce'), { kind: 'ignore' });
+  assert.deepEqual(classifyOAuthCallback('/?code=abc', 'nonce'), { kind: 'invalid-state' });
+  assert.deepEqual(classifyOAuthCallback('/?code=abc&state=wrong', 'nonce'), { kind: 'invalid-state' });
+  assert.deepEqual(classifyOAuthCallback('/?error=access_denied&state=nonce', 'nonce'), {
+    kind: 'error',
+    error: 'access_denied',
+  });
+  assert.deepEqual(classifyOAuthCallback('/?code=abc&state=nonce', 'nonce'), { kind: 'code', code: 'abc' });
 });
 
 // ── stt/wakeword shared protocol reader (line-delimited JSON) ─────────────────

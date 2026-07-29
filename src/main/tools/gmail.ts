@@ -6,6 +6,7 @@ import { gmail as gmailApi, auth } from '@googleapis/gmail';
 import type { gmail_v1 } from '@googleapis/gmail';
 import { denialError } from '../core/governance.ts';
 import { gmailConfigured, GMAIL_NOT_CONFIGURED } from './gmail-config.ts';
+import { classifyOAuthCallback } from './gmail-oauth-pure.ts';
 import type { Tool, ToolCtx } from './types.ts';
 
 type OAuth2Client = InstanceType<typeof auth.OAuth2>;
@@ -33,37 +34,81 @@ function openUrl(url: string): void {
 /** Full loopback OAuth consent flow. Resolves with tokens + the account email. */
 function oauthConnect(clientId: string, clientSecret: string): Promise<{ tokens: unknown; email: string }> {
   return new Promise((resolve, reject) => {
-    let oauth2: OAuth2Client;
+    const state = randomUUID();
+    let oauth2: OAuth2Client | undefined;
+    let codeVerifier = '';
+    let callbackConsumed = false;
+    let settled = false;
+    const finish = (error?: Error, value?: { tokens: unknown; email: string }): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      server.close();
+      if (error) reject(error);
+      else resolve(value!);
+    };
     const server = http.createServer(async (req, res) => {
-      const u = new URL(req.url ?? '/', 'http://127.0.0.1');
-      const code = u.searchParams.get('code');
-      const err = u.searchParams.get('error');
-      if (!code && !err) {
-        res.end();
+      const callback = classifyOAuthCallback(req.url ?? '/', state);
+      res.setHeader('Cache-Control', 'no-store');
+      res.setHeader('Content-Security-Policy', "default-src 'none'; style-src 'unsafe-inline'");
+      res.setHeader('Content-Type', 'text/html; charset=utf-8');
+      if (callback.kind === 'ignore') {
+        res.statusCode = 404;
+        res.end('Not found');
         return;
       }
-      res.setHeader('Content-Type', 'text/html; charset=utf-8');
-      res.end('<h2>Alfred</h2><p>Gmail connected. You can close this tab and return to Alfred.</p>');
-      server.close();
+      if (callback.kind === 'invalid-state' || callbackConsumed) {
+        res.statusCode = 400;
+        res.end('<h2>Alfred</h2><p>Invalid or expired OAuth callback.</p>');
+        return;
+      }
+      callbackConsumed = true;
+      if (callback.kind === 'error') {
+        res.statusCode = 400;
+        res.end('<h2>Alfred</h2><p>Gmail authorization was not completed.</p>');
+        finish(new Error(`Google OAuth error: ${callback.error}`));
+        return;
+      }
       try {
-        if (err || !code) throw new Error(err ?? 'No authorization code returned');
-        const { tokens } = await oauth2.getToken(code);
+        if (!oauth2 || !codeVerifier) throw new Error('OAuth client was not initialized');
+        const { tokens } = await oauth2.getToken({ code: callback.code, codeVerifier });
         oauth2.setCredentials(tokens);
         const gmail = gmailApi({ version: 'v1', auth: oauth2 });
         const profile = await gmail.users.getProfile({ userId: 'me' });
         const email = profile.data.emailAddress;
         if (!email) throw new Error('Could not read account email address');
-        resolve({ tokens, email });
+        res.end('<h2>Alfred</h2><p>Gmail connected. You can close this tab and return to Alfred.</p>');
+        finish(undefined, { tokens, email });
       } catch (e) {
-        reject(e as Error);
+        res.statusCode = 500;
+        res.end('<h2>Alfred</h2><p>Gmail connection failed. Return to Alfred for details.</p>');
+        finish(e as Error);
       }
     });
-    server.on('error', reject);
-    server.listen(0, '127.0.0.1', () => {
+    const timeout = setTimeout(() => finish(new Error('Google OAuth timed out after 5 minutes')), 5 * 60_000);
+    timeout.unref();
+    server.on('error', (error) => finish(error));
+    server.listen(0, '127.0.0.1', async () => {
       const port = (server.address() as AddressInfo).port;
       oauth2 = new auth.OAuth2(clientId, clientSecret, `http://127.0.0.1:${port}`);
-      const authUrl = oauth2.generateAuthUrl({ access_type: 'offline', prompt: 'consent', scope: [SCOPE] });
-      openUrl(authUrl);
+      try {
+        const verifier = await oauth2.generateCodeVerifierAsync();
+        codeVerifier = verifier.codeVerifier;
+        const authOptions: NonNullable<Parameters<OAuth2Client['generateAuthUrl']>[0]> = {
+          access_type: 'offline',
+          prompt: 'consent',
+          scope: [SCOPE],
+          state,
+          code_challenge: verifier.codeChallenge,
+        };
+        // @googleapis/gmail does not re-export google-auth-library's enum, but
+        // the OAuth wire value is the standard literal "S256".
+        Object.assign(authOptions, { code_challenge_method: 'S256' });
+        const authUrl = oauth2.generateAuthUrl(authOptions);
+        openUrl(authUrl);
+      } catch (error) {
+        finish(error as Error);
+      }
     });
   });
 }
