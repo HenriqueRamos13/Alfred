@@ -16,6 +16,7 @@
  */
 import { app, BrowserWindow, globalShortcut, ipcMain, Notification, protocol, screen } from 'electron';
 import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { chmodSync, mkdirSync, readFileSync, existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { openDb } from './core/db.ts';
@@ -25,8 +26,9 @@ import { createOrchestrator } from './core/orchestrator.ts';
 import { loadPricingOverrides } from './core/pricing.ts';
 import { reassignDisplayCards } from './core/layout.ts';
 import { listBrains, resolveActiveBrainId } from './core/providers.ts';
-import { registerIpc, registerWindowIpc, type Orchestrator } from './ipc.ts';
+import { assertTrustedIpcSender, registerIpc, registerWindowIpc, type Orchestrator } from './ipc.ts';
 import { DisplayManager } from './displays.ts';
+import { hardenWindowNavigation } from './electron-security.ts';
 import { hideAllWindows, showAllWindows, toggleAllWindows } from './windows.ts';
 import type { AlfredConfig, StreamEvent } from './core/types.ts';
 
@@ -184,7 +186,7 @@ function webPreferences(args: string[]) {
     preload: join(import.meta.dirname, '../preload/index.mjs'),
     contextIsolation: true,
     nodeIntegration: false,
-    sandbox: false,
+    sandbox: true,
     additionalArguments: args,
   };
 }
@@ -193,8 +195,10 @@ function webPreferences(args: string[]) {
 function loadRenderer(win: BrowserWindow): BrowserWindow {
   win.once('ready-to-show', () => win.show());
   const url = process.env.ELECTRON_RENDERER_URL;
+  const rendererFile = join(import.meta.dirname, '../renderer/index.html');
+  hardenWindowNavigation(win, url ?? pathToFileURL(rendererFile).href);
   if (url) win.loadURL(url);
-  else win.loadFile(join(import.meta.dirname, '../renderer/index.html'));
+  else win.loadFile(rendererFile);
   return win;
 }
 
@@ -387,7 +391,10 @@ function boot(): void {
   // jobs; `fetch` jobs run for real and `agent` jobs now run under grant + budget.
   // Displays for the renderer's "move card to next monitor" control.
   ipcMain.removeHandler('alfred:listDisplays');
-  ipcMain.handle('alfred:listDisplays', () => displayManager?.list() ?? []);
+  ipcMain.handle('alfred:listDisplays', (event) => {
+    assertTrustedIpcSender(event);
+    return displayManager?.list() ?? [];
+  });
 
   // Crash-proofing: a stray throw / rejection anywhere must NOT close Alfred.
   // Log (secret-free) + surface to the UI + stay alive. Registered once.

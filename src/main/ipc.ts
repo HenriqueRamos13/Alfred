@@ -8,7 +8,9 @@
  * injected `emit` callback (see index.ts), so IPC is only inbound commands
  * plus a couple of read queries.
  */
-import { app, BrowserWindow, ipcMain } from 'electron';
+import { app, BrowserWindow, ipcMain, type IpcMainEvent, type IpcMainInvokeEvent } from 'electron';
+import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { hideAllWindows, toggleAllWindows } from './windows.ts';
 import { listVoices } from './core/voice-list.ts';
 import type { VoiceOption } from './core/voice-list-pure.ts';
@@ -53,6 +55,35 @@ import {
   type CatalogModel,
   type ProviderId,
 } from './core/modelCatalog.ts';
+import { isTrustedPageUrl } from './core/electron-security-pure.ts';
+
+function trustedRendererUrl(): string {
+  return process.env.ELECTRON_RENDERER_URL ?? pathToFileURL(join(import.meta.dirname, '../renderer/index.html')).href;
+}
+
+/** Every privileged IPC call must come from Alfred's top-level renderer page. */
+export function assertTrustedIpcSender(event: IpcMainEvent | IpcMainInvokeEvent): void {
+  const frame = event.senderFrame;
+  if (!frame || frame !== frame.top || !isTrustedPageUrl(frame.url, trustedRendererUrl())) {
+    throw new Error(`Blocked IPC from untrusted frame: ${frame?.url || 'unknown'}`);
+  }
+}
+
+type InvokeListener = Parameters<typeof ipcMain.handle>[1];
+
+function secureHandle(channel: string, listener: InvokeListener): void {
+  ipcMain.handle(channel, (event, ...args) => {
+    assertTrustedIpcSender(event);
+    return listener(event, ...args);
+  });
+}
+
+function secureOn(channel: string, listener: (event: IpcMainEvent, ...args: any[]) => void): void {
+  ipcMain.on(channel, (event, ...args) => {
+    assertTrustedIpcSender(event);
+    listener(event, ...args);
+  });
+}
 
 export interface Orchestrator {
   /**
@@ -264,14 +295,14 @@ export function registerIpc(core: Orchestrator, emit: (e: StreamEvent) => void):
   // Trust boundary: `messageId` is the renderer's correlation id and becomes a
   // PRIMARY KEY, so only `[A-Za-z0-9-]{1,64}` passes — anything else is dropped and
   // main mints its own (the renderer learns the real id from turn.status).
-  ipcMain.handle('alfred:send', async (_e, text: unknown, messageId: unknown) => {
+  secureHandle('alfred:send', async (_e, text: unknown, messageId: unknown) => {
     try {
       await core.send(String(text ?? ''), isValidMessageId(messageId) ? messageId : undefined);
     } catch (err) {
       fail('send', err);
     }
   });
-  ipcMain.handle('alfred:getHistory', async (_e, limit: unknown) => {
+  secureHandle('alfred:getHistory', async (_e, limit: unknown) => {
     const n = typeof limit === 'number' && Number.isFinite(limit) ? limit : undefined;
     try {
       return await core.getHistory(n);
@@ -280,11 +311,11 @@ export function registerIpc(core: Orchestrator, emit: (e: StreamEvent) => void):
       return [] as ChatMessage[];
     }
   });
-  ipcMain.handle('alfred:listProjects', guard('list projects', () => core.listProjects(), [] as ProjectRecord[]));
-  ipcMain.handle('alfred:listAccounts', guard('list accounts', () => core.listAccounts(), [] as AccountRecord[]));
-  ipcMain.handle('alfred:listBrains', guard('list brains', () => core.listBrains(), [] as BrainInfo[]));
-  ipcMain.handle('alfred:getActiveBrain', guard('get active brain', () => core.getActiveBrain(), null as string | null));
-  ipcMain.handle('alfred:setActiveBrain', async (_e, id: unknown) => {
+  secureHandle('alfred:listProjects', guard('list projects', () => core.listProjects(), [] as ProjectRecord[]));
+  secureHandle('alfred:listAccounts', guard('list accounts', () => core.listAccounts(), [] as AccountRecord[]));
+  secureHandle('alfred:listBrains', guard('list brains', () => core.listBrains(), [] as BrainInfo[]));
+  secureHandle('alfred:getActiveBrain', guard('get active brain', () => core.getActiveBrain(), null as string | null));
+  secureHandle('alfred:setActiveBrain', async (_e, id: unknown) => {
     if (typeof id !== 'string') return null;
     try {
       return await core.setActiveBrain(id);
@@ -293,8 +324,8 @@ export function registerIpc(core: Orchestrator, emit: (e: StreamEvent) => void):
       return null;
     }
   });
-  ipcMain.handle('alfred:getAgentConfig', guard('get agent config', () => core.getAgentConfig(), null as AgentConfigMap | null));
-  ipcMain.handle('alfred:setAgentConfig', async (_e, id: unknown, patch: unknown) => {
+  secureHandle('alfred:getAgentConfig', guard('get agent config', () => core.getAgentConfig(), null as AgentConfigMap | null));
+  secureHandle('alfred:setAgentConfig', async (_e, id: unknown, patch: unknown) => {
     // Trust boundary: id must be a known agent; patch fields validated (provider
     // against the catalog, model/name as strings) — core coerces the rest.
     if (typeof id !== 'string' || !(AGENT_IDS as readonly string[]).includes(id)) return null;
@@ -310,13 +341,13 @@ export function registerIpc(core: Orchestrator, emit: (e: StreamEvent) => void):
       return null;
     }
   });
-  ipcMain.handle(
+  secureHandle(
     'alfred:getModelCatalog',
     guard('get model catalog', () => core.getModelCatalog(), {} as Record<ProviderId, CatalogModel[]>),
   );
-  ipcMain.handle('alfred:connectGmail', guard('connect Gmail', () => core.connectGmail(), null as AccountRecord | null));
-  ipcMain.handle('alfred:getLayout', guard('get layout', () => core.getLayout(), [] as CardLayout[]));
-  ipcMain.handle('alfred:updateCard', async (_e, id: unknown, patch: unknown) => {
+  secureHandle('alfred:connectGmail', guard('connect Gmail', () => core.connectGmail(), null as AccountRecord | null));
+  secureHandle('alfred:getLayout', guard('get layout', () => core.getLayout(), [] as CardLayout[]));
+  secureHandle('alfred:updateCard', async (_e, id: unknown, patch: unknown) => {
     if (typeof id !== 'string') return [] as CardLayout[];
     try {
       return await core.updateCard(id, sanitizeCardPatch(patch));
@@ -326,10 +357,10 @@ export function registerIpc(core: Orchestrator, emit: (e: StreamEvent) => void):
     }
   });
 
-  ipcMain.handle('alfred:getCost', guard('get cost', () => core.getCost(), null as CostSnapshot | null));
+  secureHandle('alfred:getCost', guard('get cost', () => core.getCost(), null as CostSnapshot | null));
 
-  ipcMain.handle('alfred:getTts', guard('get tts', () => core.getTts(), false));
-  ipcMain.handle('alfred:setTts', async (_e, on: unknown) => {
+  secureHandle('alfred:getTts', guard('get tts', () => core.getTts(), false));
+  secureHandle('alfred:setTts', async (_e, on: unknown) => {
     try {
       return await core.setTts(on === true);
     } catch (err) {
@@ -338,8 +369,8 @@ export function registerIpc(core: Orchestrator, emit: (e: StreamEvent) => void):
     }
   });
 
-  ipcMain.handle('alfred:getAccent', guard('get accent', () => core.getAccent(), 'cyan'));
-  ipcMain.handle('alfred:setAccent', async (_e, name: unknown) => {
+  secureHandle('alfred:getAccent', guard('get accent', () => core.getAccent(), 'cyan'));
+  secureHandle('alfred:setAccent', async (_e, name: unknown) => {
     try {
       return await core.setAccent(typeof name === 'string' ? name : '');
     } catch (err) {
@@ -348,8 +379,8 @@ export function registerIpc(core: Orchestrator, emit: (e: StreamEvent) => void):
     }
   });
 
-  ipcMain.handle('alfred:getLanguage', guard('get language', () => core.getLanguage(), 'pt-BR'));
-  ipcMain.handle('alfred:setLanguage', async (_e, lang: unknown) => {
+  secureHandle('alfred:getLanguage', guard('get language', () => core.getLanguage(), 'pt-BR'));
+  secureHandle('alfred:setLanguage', async (_e, lang: unknown) => {
     try {
       return await core.setLanguage(typeof lang === 'string' ? lang : '');
     } catch (err) {
@@ -358,8 +389,8 @@ export function registerIpc(core: Orchestrator, emit: (e: StreamEvent) => void):
     }
   });
 
-  ipcMain.handle('alfred:getElevenlabs', guard('get elevenlabs', () => core.getElevenlabs(), false));
-  ipcMain.handle('alfred:setElevenlabs', async (_e, on: unknown) => {
+  secureHandle('alfred:getElevenlabs', guard('get elevenlabs', () => core.getElevenlabs(), false));
+  secureHandle('alfred:setElevenlabs', async (_e, on: unknown) => {
     try {
       return await core.setElevenlabs(on === true);
     } catch (err) {
@@ -368,8 +399,8 @@ export function registerIpc(core: Orchestrator, emit: (e: StreamEvent) => void):
     }
   });
 
-  ipcMain.handle('alfred:getVoiceConfig', guard('get voice config', () => core.getVoiceConfig(), {} as VoiceConfig));
-  ipcMain.handle('alfred:setVoiceConfig', async (_e, patch: unknown) => {
+  secureHandle('alfred:getVoiceConfig', guard('get voice config', () => core.getVoiceConfig(), {} as VoiceConfig));
+  secureHandle('alfred:setVoiceConfig', async (_e, patch: unknown) => {
     try {
       // Trust boundary: pass only a plain object; the core re-parses/sanitises it.
       return await core.setVoiceConfig(patch && typeof patch === 'object' ? (patch as VoiceConfig) : {});
@@ -381,7 +412,7 @@ export function registerIpc(core: Orchestrator, emit: (e: StreamEvent) => void):
 
   // Voice catalog for the Settings selector — main-only (spawns macOS `say`);
   // degrades to [] off-Mac / on failure so the dropdown just shows no voices.
-  ipcMain.handle('alfred:listVoices', async (_e, engine: unknown) => {
+  secureHandle('alfred:listVoices', async (_e, engine: unknown) => {
     try {
       return await listVoices(typeof engine === 'string' ? engine : '');
     } catch (err) {
@@ -390,8 +421,8 @@ export function registerIpc(core: Orchestrator, emit: (e: StreamEvent) => void):
     }
   });
 
-  ipcMain.handle('alfred:getAutosend', guard('get autosend', () => core.getAutosend(), false));
-  ipcMain.handle('alfred:setAutosend', async (_e, on: unknown) => {
+  secureHandle('alfred:getAutosend', guard('get autosend', () => core.getAutosend(), false));
+  secureHandle('alfred:setAutosend', async (_e, on: unknown) => {
     try {
       return await core.setAutosend(on === true);
     } catch (err) {
@@ -401,8 +432,8 @@ export function registerIpc(core: Orchestrator, emit: (e: StreamEvent) => void):
   });
 
   const STT_DEFAULTS: SttSettings = { engine: 'local', hasKey: false, speed: 2.3, trimTailMs: 2000, model: 'gpt-4o-mini-transcribe' };
-  ipcMain.handle('alfred:getSttSettings', guard('get stt settings', () => core.getSttSettings(), STT_DEFAULTS));
-  ipcMain.handle('alfred:setSttSettings', async (_e, patch: unknown) => {
+  secureHandle('alfred:getSttSettings', guard('get stt settings', () => core.getSttSettings(), STT_DEFAULTS));
+  secureHandle('alfred:setSttSettings', async (_e, patch: unknown) => {
     try {
       // Trust boundary: pass only a plain object; the core clamps/validates each field.
       return await core.setSttSettings(patch && typeof patch === 'object' ? (patch as Partial<Omit<SttSettings, 'hasKey'>>) : {});
@@ -412,8 +443,8 @@ export function registerIpc(core: Orchestrator, emit: (e: StreamEvent) => void):
     }
   });
 
-  ipcMain.handle('alfred:getSendDelay', guard('get send delay', () => core.getSendDelay(), 0));
-  ipcMain.handle('alfred:setSendDelay', async (_e, ms: unknown) => {
+  secureHandle('alfred:getSendDelay', guard('get send delay', () => core.getSendDelay(), 0));
+  secureHandle('alfred:setSendDelay', async (_e, ms: unknown) => {
     try {
       return await core.setSendDelay(typeof ms === 'number' ? ms : 0);
     } catch (err) {
@@ -422,8 +453,8 @@ export function registerIpc(core: Orchestrator, emit: (e: StreamEvent) => void):
     }
   });
 
-  ipcMain.handle('alfred:getWidgetScripts', guard('get widget scripts', () => core.getWidgetScripts(), false));
-  ipcMain.handle('alfred:setWidgetScripts', async (_e, on: unknown) => {
+  secureHandle('alfred:getWidgetScripts', guard('get widget scripts', () => core.getWidgetScripts(), false));
+  secureHandle('alfred:setWidgetScripts', async (_e, on: unknown) => {
     try {
       return await core.setWidgetScripts(on === true);
     } catch (err) {
@@ -432,30 +463,30 @@ export function registerIpc(core: Orchestrator, emit: (e: StreamEvent) => void):
     }
   });
 
-  ipcMain.on('alfred:setViewport', (_e, w: unknown, h: unknown) => {
+  secureOn('alfred:setViewport', (_e, w: unknown, h: unknown) => {
     if (typeof w === 'number' && typeof h === 'number' && Number.isFinite(w) && Number.isFinite(h)) {
       core.setViewport(w, h);
     }
   });
 
-  ipcMain.on('alfred:stop', () => core.stop());
-  ipcMain.on('alfred:cancel', () => core.cancel());
-  ipcMain.on('alfred:startListening', () => {
+  secureOn('alfred:stop', () => core.stop());
+  secureOn('alfred:cancel', () => core.cancel());
+  secureOn('alfred:startListening', () => {
     try {
       core.startListening();
     } catch (err) {
       fail('start listening', err);
     }
   });
-  ipcMain.on('alfred:stopListening', () => {
+  secureOn('alfred:stopListening', () => {
     try {
       core.stopListening();
     } catch (err) {
       fail('stop listening', err);
     }
   });
-  ipcMain.handle('alfred:getWakeword', guard('get wakeword', () => core.getWakeword(), false));
-  ipcMain.handle('alfred:setWakeword', async (_e, on: unknown) => {
+  secureHandle('alfred:getWakeword', guard('get wakeword', () => core.getWakeword(), false));
+  secureHandle('alfred:setWakeword', async (_e, on: unknown) => {
     try {
       return await core.setWakeword(on === true);
     } catch (err) {
@@ -463,20 +494,20 @@ export function registerIpc(core: Orchestrator, emit: (e: StreamEvent) => void):
       return false;
     }
   });
-  ipcMain.handle(
+  secureHandle(
     'alfred:getWakeStatus',
     guard('get wake status', () => core.getWakeStatus(), { status: 'stopped' as WakeStatus }),
   );
 
-  ipcMain.on('alfred:resolveApproval', (_e, id: unknown, decision: unknown, remember: unknown) => {
+  secureOn('alfred:resolveApproval', (_e, id: unknown, decision: unknown, remember: unknown) => {
     // Trust boundary: only forward well-formed decisions.
     if (typeof id !== 'string') return;
     if (decision !== 'approve' && decision !== 'deny') return;
     core.resolveApproval({ id, decision, remember: remember === true });
   });
 
-  ipcMain.handle('alfred:getDangerousMode', guard('get dangerous mode', () => core.getDangerousMode(), false));
-  ipcMain.handle('alfred:setDangerousMode', async (_e, on: unknown) => {
+  secureHandle('alfred:getDangerousMode', guard('get dangerous mode', () => core.getDangerousMode(), false));
+  secureHandle('alfred:setDangerousMode', async (_e, on: unknown) => {
     try {
       return await core.setDangerousMode(on === true);
     } catch (err) {
@@ -484,8 +515,8 @@ export function registerIpc(core: Orchestrator, emit: (e: StreamEvent) => void):
       return false;
     }
   });
-  ipcMain.handle('alfred:getSpawnPaused', guard('get spawn paused', () => core.getSpawnPaused(), false));
-  ipcMain.handle('alfred:setSpawnPaused', async (_e, on: unknown) => {
+  secureHandle('alfred:getSpawnPaused', guard('get spawn paused', () => core.getSpawnPaused(), false));
+  secureHandle('alfred:setSpawnPaused', async (_e, on: unknown) => {
     try {
       return await core.setSpawnPaused(on === true);
     } catch (err) {
@@ -494,8 +525,8 @@ export function registerIpc(core: Orchestrator, emit: (e: StreamEvent) => void):
     }
   });
   const SPAWN_LIMITS_DEFAULT: SpawnLimits = { maxConcurrentChildren: 3, maxSpawnDepth: 2 };
-  ipcMain.handle('alfred:getSpawnLimits', guard('get spawn limits', () => core.getSpawnLimits(), SPAWN_LIMITS_DEFAULT));
-  ipcMain.handle('alfred:setSpawnLimits', async (_e, patch: unknown) => {
+  secureHandle('alfred:getSpawnLimits', guard('get spawn limits', () => core.getSpawnLimits(), SPAWN_LIMITS_DEFAULT));
+  secureHandle('alfred:setSpawnLimits', async (_e, patch: unknown) => {
     try {
       const p = (patch ?? {}) as Record<string, unknown>;
       const clean: Partial<SpawnLimits> = {};
@@ -507,8 +538,8 @@ export function registerIpc(core: Orchestrator, emit: (e: StreamEvent) => void):
       return SPAWN_LIMITS_DEFAULT;
     }
   });
-  ipcMain.handle('alfred:getGrillMe', guard('get grill me', () => core.getGrillMe(), true));
-  ipcMain.handle('alfred:setGrillMe', async (_e, on: unknown) => {
+  secureHandle('alfred:getGrillMe', guard('get grill me', () => core.getGrillMe(), true));
+  secureHandle('alfred:setGrillMe', async (_e, on: unknown) => {
     try {
       return await core.setGrillMe(on === true);
     } catch (err) {
@@ -516,8 +547,8 @@ export function registerIpc(core: Orchestrator, emit: (e: StreamEvent) => void):
       return true;
     }
   });
-  ipcMain.handle('alfred:getLowCpu', guard('get low cpu', () => core.getLowCpu(), false));
-  ipcMain.handle('alfred:setLowCpu', async (_e, on: unknown) => {
+  secureHandle('alfred:getLowCpu', guard('get low cpu', () => core.getLowCpu(), false));
+  secureHandle('alfred:setLowCpu', async (_e, on: unknown) => {
     try {
       return await core.setLowCpu(on === true);
     } catch (err) {
@@ -525,37 +556,37 @@ export function registerIpc(core: Orchestrator, emit: (e: StreamEvent) => void):
       return false;
     }
   });
-  ipcMain.on('alfred:resetApprovals', () => {
+  secureOn('alfred:resetApprovals', () => {
     try {
       core.resetApprovals();
     } catch (err) {
       fail('reset approvals', err);
     }
   });
-  ipcMain.on('alfred:resetConversation', () => {
+  secureOn('alfred:resetConversation', () => {
     try {
       core.resetConversation();
     } catch (err) {
       fail('reset conversation', err);
     }
   });
-  ipcMain.handle(
+  secureHandle(
     'alfred:factoryResetInfo',
     guard('factory reset info', () => core.factoryResetInfo(), null as FactoryResetInfo | null),
   );
-  ipcMain.handle('alfred:factoryReset', async () => {
+  secureHandle('alfred:factoryReset', async () => {
     try {
       await core.factoryReset();
     } catch (err) {
       fail('factory reset', err);
     }
   });
-  ipcMain.handle('alfred:runCurator', guard('run curator', () => core.runCurator(), null as unknown));
-  ipcMain.handle(
+  secureHandle('alfred:runCurator', guard('run curator', () => core.runCurator(), null as unknown));
+  secureHandle(
     'alfred:getGraph',
     guard('get graph', () => core.getGraph(), { nodes: [], edges: [] } as Graph),
   );
-  ipcMain.handle('alfred:getNote', async (_e, ref: unknown) => {
+  secureHandle('alfred:getNote', async (_e, ref: unknown) => {
     if (typeof ref !== 'string' || !ref.trim()) return null;
     try {
       return await core.getNote(ref);
@@ -567,8 +598,8 @@ export function registerIpc(core: Orchestrator, emit: (e: StreamEvent) => void):
 
   // ── Scheduled jobs — read the job list + the pending approval queue, and
   // resolve one approval. Data channel only; stage 3 wires the buttons. ──
-  ipcMain.handle('alfred:listJobs', guard('list jobs', () => core.listJobs(), [] as Job[]));
-  ipcMain.handle('alfred:listPendingApprovals', async (_e, jobId: unknown) => {
+  secureHandle('alfred:listJobs', guard('list jobs', () => core.listJobs(), [] as Job[]));
+  secureHandle('alfred:listPendingApprovals', async (_e, jobId: unknown) => {
     const id = typeof jobId === 'string' && jobId ? jobId : undefined;
     try {
       return await core.listPendingApprovals(id);
@@ -577,7 +608,7 @@ export function registerIpc(core: Orchestrator, emit: (e: StreamEvent) => void):
       return [] as JobApproval[];
     }
   });
-  ipcMain.handle('alfred:resolveJobApproval', async (_e, id: unknown, approved: unknown) => {
+  secureHandle('alfred:resolveJobApproval', async (_e, id: unknown, approved: unknown) => {
     // Trust boundary: id must be a string, approved a real boolean.
     if (typeof id !== 'string' || !id || typeof approved !== 'boolean') return null;
     try {
@@ -601,10 +632,10 @@ export function registerIpc(core: Orchestrator, emit: (e: StreamEvent) => void):
         return null;
       }
     };
-  ipcMain.handle('alfred:getJob', jobMutate('get job', (id) => core.getJob(id)));
-  ipcMain.handle('alfred:pauseJob', jobMutate('pause job', (id) => core.pauseJob(id)));
-  ipcMain.handle('alfred:resumeJob', jobMutate('resume job', (id) => core.resumeJob(id)));
-  ipcMain.handle('alfred:deleteJob', async (_e, id: unknown): Promise<boolean> => {
+  secureHandle('alfred:getJob', jobMutate('get job', (id) => core.getJob(id)));
+  secureHandle('alfred:pauseJob', jobMutate('pause job', (id) => core.pauseJob(id)));
+  secureHandle('alfred:resumeJob', jobMutate('resume job', (id) => core.resumeJob(id)));
+  secureHandle('alfred:deleteJob', async (_e, id: unknown): Promise<boolean> => {
     if (typeof id !== 'string' || !id) return false;
     try {
       await core.deleteJob(id);
@@ -617,11 +648,11 @@ export function registerIpc(core: Orchestrator, emit: (e: StreamEvent) => void):
 
   // ── Team roster — data-only. Read the roster projection; delete an agent.
   // create is NOT exposed (agents are made by the `team` command/tool). ──
-  ipcMain.handle('alfred:listTeamAgents', guard('list team agents', () => core.listTeamAgents(), [] as TeamAgentInfo[]));
+  secureHandle('alfred:listTeamAgents', guard('list team agents', () => core.listTeamAgents(), [] as TeamAgentInfo[]));
   // Full detail of one agent (the agent-detail modal). Trust boundary: a non-empty
   // string id; core returns null for an unknown/deleted agent and the slug charset is
   // re-asserted before any of it reaches the filesystem (listKnowledgeNotes).
-  ipcMain.handle('alfred:getTeamAgentDetail', async (_e, id: unknown): Promise<TeamAgentDetail | null> => {
+  secureHandle('alfred:getTeamAgentDetail', async (_e, id: unknown): Promise<TeamAgentDetail | null> => {
     if (typeof id !== 'string' || !id) return null;
     try {
       return (await core.getTeamAgentDetail(id)) ?? null;
@@ -632,7 +663,7 @@ export function registerIpc(core: Orchestrator, emit: (e: StreamEvent) => void):
   });
   // One knowledge note's markdown (the modal's note viewer). Both ids must be non-empty
   // strings here; core enforces the slug charset (defence in depth on a path segment).
-  ipcMain.handle('alfred:readAgentNote', async (_e, agentId: unknown, slug: unknown): Promise<string | null> => {
+  secureHandle('alfred:readAgentNote', async (_e, agentId: unknown, slug: unknown): Promise<string | null> => {
     if (typeof agentId !== 'string' || !agentId) return null;
     if (typeof slug !== 'string' || !slug) return null;
     try {
@@ -642,7 +673,7 @@ export function registerIpc(core: Orchestrator, emit: (e: StreamEvent) => void):
       return null;
     }
   });
-  ipcMain.handle('alfred:deleteTeamAgent', async (_e, id: unknown): Promise<boolean> => {
+  secureHandle('alfred:deleteTeamAgent', async (_e, id: unknown): Promise<boolean> => {
     if (typeof id !== 'string' || !id) return false;
     try {
       return await core.deleteTeamAgent(id);
@@ -654,7 +685,7 @@ export function registerIpc(core: Orchestrator, emit: (e: StreamEvent) => void):
   // Reparent an agent in the org hierarchy. Trust boundary: agentId must be a
   // non-empty string; parentId is a non-empty string or null (top). Core re-checks
   // existence + refuses cycles / over-depth.
-  ipcMain.handle('alfred:setManager', (_e, agentId: unknown, parentId: unknown): { ok: boolean; error?: string } => {
+  secureHandle('alfred:setManager', (_e, agentId: unknown, parentId: unknown): { ok: boolean; error?: string } => {
     if (typeof agentId !== 'string' || !agentId) return { ok: false, error: 'agentId is required' };
     const pid = typeof parentId === 'string' && parentId ? parentId : null;
     try {
@@ -667,7 +698,7 @@ export function registerIpc(core: Orchestrator, emit: (e: StreamEvent) => void):
   // AI-augment a draft form spec (read-only; no side effects). The renderer's
   // fillFormSpec re-defaults anything malformed, so pass the payload through as a
   // partial spec and let core + the pure helpers sanitise it.
-  ipcMain.handle('alfred:augmentAgentSpec', async (_e, spec: unknown, flags: unknown): Promise<AgentFormSpec | null> => {
+  secureHandle('alfred:augmentAgentSpec', async (_e, spec: unknown, flags: unknown): Promise<AgentFormSpec | null> => {
     try {
       return await core.augmentAgentSpec((spec ?? {}) as AgentFormSpec, (flags ?? {}) as AugmentFlags);
     } catch (err) {
@@ -677,7 +708,7 @@ export function registerIpc(core: Orchestrator, emit: (e: StreamEvent) => void):
   });
   // Create a roster agent from the completed form (the UI "Criar" button). Core
   // validates (name/provider/model/parent) and emits team.changed on success.
-  ipcMain.handle('alfred:createTeamAgent', async (_e, spec: unknown): Promise<{ ok: boolean; error?: string; agent?: TeamAgent }> => {
+  secureHandle('alfred:createTeamAgent', async (_e, spec: unknown): Promise<{ ok: boolean; error?: string; agent?: TeamAgent }> => {
     try {
       return await core.createTeamAgent((spec ?? {}) as AgentFormSpec);
     } catch (err) {
@@ -688,7 +719,7 @@ export function registerIpc(core: Orchestrator, emit: (e: StreamEvent) => void):
   // Edit a roster agent from the completed form (the modal's "editar" tab). The id/slug
   // is immutable — it identifies the row, the folder and the budget key. Core validates
   // (name/provider/model/parent/budget) and emits team.changed on success.
-  ipcMain.handle('alfred:updateTeamAgent', async (_e, id: unknown, spec: unknown): Promise<{ ok: boolean; error?: string; agent?: TeamAgent }> => {
+  secureHandle('alfred:updateTeamAgent', async (_e, id: unknown, spec: unknown): Promise<{ ok: boolean; error?: string; agent?: TeamAgent }> => {
     if (typeof id !== 'string' || !id.trim()) return { ok: false, error: 'invalid agent id' };
     try {
       return await core.updateTeamAgent(id, (spec ?? {}) as AgentFormSpec);
@@ -699,7 +730,7 @@ export function registerIpc(core: Orchestrator, emit: (e: StreamEvent) => void):
   });
 
   // ── Projects + Kanban (Phase 7) ──
-  ipcMain.handle('alfred:getProject', async (_e, slug: unknown): Promise<ProjectDetail | null> => {
+  secureHandle('alfred:getProject', async (_e, slug: unknown): Promise<ProjectDetail | null> => {
     if (typeof slug !== 'string' || !slug) return null;
     try {
       return (await core.getProject(slug)) ?? null;
@@ -708,7 +739,7 @@ export function registerIpc(core: Orchestrator, emit: (e: StreamEvent) => void):
       return null;
     }
   });
-  ipcMain.handle('alfred:listCards', async (_e, projectSlug: unknown): Promise<KanbanCard[]> => {
+  secureHandle('alfred:listCards', async (_e, projectSlug: unknown): Promise<KanbanCard[]> => {
     if (typeof projectSlug !== 'string' || !projectSlug) return [];
     try {
       return await core.listCards(projectSlug);
@@ -718,7 +749,7 @@ export function registerIpc(core: Orchestrator, emit: (e: StreamEvent) => void):
     }
   });
   // ── P7 "PARAR" — per-project stop. Read + toggle. ──
-  ipcMain.handle('alfred:getProjectPaused', async (_e, slug: unknown): Promise<boolean> => {
+  secureHandle('alfred:getProjectPaused', async (_e, slug: unknown): Promise<boolean> => {
     if (typeof slug !== 'string' || !slug) return false;
     try {
       return await core.getProjectPaused(slug);
@@ -727,7 +758,7 @@ export function registerIpc(core: Orchestrator, emit: (e: StreamEvent) => void):
       return false;
     }
   });
-  ipcMain.handle('alfred:setProjectPaused', async (_e, slug: unknown, on: unknown): Promise<boolean> => {
+  secureHandle('alfred:setProjectPaused', async (_e, slug: unknown, on: unknown): Promise<boolean> => {
     if (typeof slug !== 'string' || !slug) return false;
     try {
       await core.setProjectPaused(slug, !!on);
@@ -739,7 +770,7 @@ export function registerIpc(core: Orchestrator, emit: (e: StreamEvent) => void):
   });
   // The user's direct board op. Trust boundary: op is a whitelisted string; args
   // is coerced to a plain object of primitive/array fields (core re-validates).
-  ipcMain.handle('alfred:kanban', async (_e, op: unknown, rawArgs: unknown): Promise<{ ok: boolean; error?: string }> => {
+  secureHandle('alfred:kanban', async (_e, op: unknown, rawArgs: unknown): Promise<{ ok: boolean; error?: string }> => {
     const OPS = ['create_card', 'update_card', 'move_card', 'assign', 'comment', 'claim', 'complete', 'delete_card'];
     if (typeof op !== 'string' || !OPS.includes(op)) return { ok: false, error: 'unknown kanban op' };
     const src = (rawArgs ?? {}) as Record<string, unknown>;
@@ -757,7 +788,7 @@ export function registerIpc(core: Orchestrator, emit: (e: StreamEvent) => void):
 
   // ── Human inbox (Phase 7 stage 3) — async HITL. ──
   // Speak arbitrary text (the "▶ Ouvir" button). Fire-and-forget like startListening.
-  ipcMain.on('alfred:speakText', (_e, text: unknown) => {
+  secureOn('alfred:speakText', (_e, text: unknown) => {
     if (typeof text !== 'string' || !text.trim()) return;
     try {
       core.speakText(text);
@@ -765,7 +796,7 @@ export function registerIpc(core: Orchestrator, emit: (e: StreamEvent) => void):
       fail('speak text', err);
     }
   });
-  ipcMain.handle('alfred:listInbox', async (_e, rawFilter: unknown): Promise<InboxMessage[]> => {
+  secureHandle('alfred:listInbox', async (_e, rawFilter: unknown): Promise<InboxMessage[]> => {
     // Trust boundary: keep only well-formed string filter fields.
     const src = (rawFilter ?? {}) as Record<string, unknown>;
     const filter: InboxFilter = {};
@@ -779,7 +810,7 @@ export function registerIpc(core: Orchestrator, emit: (e: StreamEvent) => void):
       return [];
     }
   });
-  ipcMain.handle('alfred:answerInbox', async (_e, id: unknown, action: unknown, text: unknown): Promise<InboxResult> => {
+  secureHandle('alfred:answerInbox', async (_e, id: unknown, action: unknown, text: unknown): Promise<InboxResult> => {
     if (typeof id !== 'string' || !id) return { ok: false, error: 'id is required' };
     if (typeof action !== 'string') return { ok: false, error: 'action is required' };
     const t = typeof text === 'string' ? text : undefined;
@@ -790,7 +821,7 @@ export function registerIpc(core: Orchestrator, emit: (e: StreamEvent) => void):
       return { ok: false, error: 'answer inbox failed' };
     }
   });
-  ipcMain.handle('alfred:markInboxRead', async (_e, id: unknown): Promise<InboxMessage | null> => {
+  secureHandle('alfred:markInboxRead', async (_e, id: unknown): Promise<InboxMessage | null> => {
     if (typeof id !== 'string' || !id) return null;
     try {
       return (await core.markInboxRead(id)) ?? null;
@@ -804,7 +835,7 @@ export function registerIpc(core: Orchestrator, emit: (e: StreamEvent) => void):
   // Trust boundary: agentId/text are checked here as SHAPES (non-empty strings) and
   // re-validated in core (validateUserMessage + the roster lookup own the rules);
   // messageId must match the id whitelist or it is ignored, never coerced.
-  ipcMain.handle(
+  secureHandle(
     'alfred:messageAgent',
     async (_e, agentId: unknown, text: unknown, messageId: unknown): Promise<SendUserMessageResult> => {
       if (typeof agentId !== 'string' || !agentId.trim()) return { ok: false, error: 'agentId is required' };
@@ -817,7 +848,7 @@ export function registerIpc(core: Orchestrator, emit: (e: StreamEvent) => void):
       }
     },
   );
-  ipcMain.handle('alfred:cancelAgentThread', async (_e, threadId: unknown): Promise<boolean> => {
+  secureHandle('alfred:cancelAgentThread', async (_e, threadId: unknown): Promise<boolean> => {
     if (typeof threadId !== 'string' || !threadId.trim()) return false;
     try {
       return await core.cancelAgentThread(threadId);
@@ -826,8 +857,8 @@ export function registerIpc(core: Orchestrator, emit: (e: StreamEvent) => void):
       return false;
     }
   });
-  ipcMain.handle('alfred:listThreads', guard('list threads', () => core.listThreads(), [] as ThreadInfo[]));
-  ipcMain.handle('alfred:listThreadMessages', async (_e, threadId: unknown): Promise<ThreadMessage[]> => {
+  secureHandle('alfred:listThreads', guard('list threads', () => core.listThreads(), [] as ThreadInfo[]));
+  secureHandle('alfred:listThreadMessages', async (_e, threadId: unknown): Promise<ThreadMessage[]> => {
     if (typeof threadId !== 'string' || !threadId.trim()) return [];
     try {
       return await core.listThreadMessages(threadId);
@@ -836,7 +867,7 @@ export function registerIpc(core: Orchestrator, emit: (e: StreamEvent) => void):
       return [];
     }
   });
-  ipcMain.handle('alfred:markThreadRead', async (_e, threadId: unknown): Promise<number> => {
+  secureHandle('alfred:markThreadRead', async (_e, threadId: unknown): Promise<number> => {
     if (typeof threadId !== 'string' || !threadId.trim()) return 0;
     try {
       return await core.markThreadRead(threadId);
@@ -847,7 +878,7 @@ export function registerIpc(core: Orchestrator, emit: (e: StreamEvent) => void):
   });
 
   // ── Notifications + heartbeat (Phase 7 stage 4). ──
-  ipcMain.handle('alfred:listNotifications', async (_e, rawFilter: unknown): Promise<AgentNotification[]> => {
+  secureHandle('alfred:listNotifications', async (_e, rawFilter: unknown): Promise<AgentNotification[]> => {
     const src = (rawFilter ?? {}) as Record<string, unknown>;
     const filter: NotificationFilter = {};
     if (typeof src.toAgentId === 'string' && src.toAgentId) filter.toAgentId = src.toAgentId;
@@ -860,7 +891,7 @@ export function registerIpc(core: Orchestrator, emit: (e: StreamEvent) => void):
       return [];
     }
   });
-  ipcMain.handle('alfred:markNotificationSeen', async (_e, id: unknown): Promise<AgentNotification | null> => {
+  secureHandle('alfred:markNotificationSeen', async (_e, id: unknown): Promise<AgentNotification | null> => {
     if (typeof id !== 'string' || !id) return null;
     try {
       return (await core.markNotificationSeen(id)) ?? null;
@@ -869,8 +900,8 @@ export function registerIpc(core: Orchestrator, emit: (e: StreamEvent) => void):
       return null;
     }
   });
-  ipcMain.handle('alfred:getHeartbeat', guard('get heartbeat', () => core.getHeartbeat(), { enabled: false, intervalMs: 60_000 }));
-  ipcMain.handle('alfred:setHeartbeat', async (_e, patch: unknown): Promise<{ enabled: boolean; intervalMs: number }> => {
+  secureHandle('alfred:getHeartbeat', guard('get heartbeat', () => core.getHeartbeat(), { enabled: false, intervalMs: 60_000 }));
+  secureHandle('alfred:setHeartbeat', async (_e, patch: unknown): Promise<{ enabled: boolean; intervalMs: number }> => {
     const src = (patch ?? {}) as Record<string, unknown>;
     const clean: { enabled?: boolean; intervalMs?: number } = {};
     if (typeof src.enabled === 'boolean') clean.enabled = src.enabled;
@@ -885,7 +916,7 @@ export function registerIpc(core: Orchestrator, emit: (e: StreamEvent) => void):
 
   // Reference agent — validate the whole payload at the boundary before it reaches
   // core. A missing threadId means we can't scope the stream, so drop silently.
-  ipcMain.handle('alfred:askReference', async (_e, payload: unknown) => {
+  secureHandle('alfred:askReference', async (_e, payload: unknown) => {
     const p = (payload ?? {}) as Record<string, unknown>;
     if (typeof p.threadId !== 'string' || !p.threadId) return;
     const t = (p.target ?? {}) as Record<string, unknown>;
@@ -927,10 +958,10 @@ export function registerIpc(core: Orchestrator, emit: (e: StreamEvent) => void):
  * click-through when it leaves, so empty desktop stays clickable behind Alfred.
  */
 export function registerWindowIpc(): void {
-  ipcMain.on('window:hide', () => hideAllWindows());
-  ipcMain.on('window:quit', () => app.quit());
-  ipcMain.on('window:toggle', () => toggleAllWindows());
-  ipcMain.on('overlay:setInteractive', (e, interactive: unknown) => {
+  secureOn('window:hide', () => hideAllWindows());
+  secureOn('window:quit', () => app.quit());
+  secureOn('window:toggle', () => toggleAllWindows());
+  secureOn('overlay:setInteractive', (e, interactive: unknown) => {
     const win = BrowserWindow.fromWebContents(e.sender);
     // forward:true keeps move events flowing so the renderer can detect the
     // pointer re-entering a card and flip back to interactive.

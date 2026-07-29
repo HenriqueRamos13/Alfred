@@ -15,7 +15,9 @@
  */
 import { BrowserWindow, screen, type Display } from 'electron';
 import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import type { DisplayInfo } from './core/types.ts';
+import { hardenWindowNavigation } from './electron-security.ts';
 
 const RENDERER_HTML = join(import.meta.dirname, '../renderer/index.html');
 const PRELOAD = join(import.meta.dirname, '../preload/index.mjs');
@@ -95,7 +97,7 @@ export class DisplayManager {
         preload: PRELOAD,
         contextIsolation: true,
         nodeIntegration: false,
-        sandbox: false,
+        sandbox: true,
         additionalArguments: [`--display-id=${d.id}`, `--primary=${isPrimary ? '1' : '0'}`, '--overlay=1'],
       },
     });
@@ -110,6 +112,7 @@ export class DisplayManager {
     });
     win.on('closed', () => this.windows.delete(d.id));
 
+    hardenWindowNavigation(win, this.hooks.rendererUrl ?? pathToFileURL(RENDERER_HTML).href);
     if (this.hooks.rendererUrl) win.loadURL(this.hooks.rendererUrl);
     else win.loadFile(RENDERER_HTML);
 

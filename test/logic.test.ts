@@ -24,6 +24,7 @@ import {
 } from '../src/main/core/governance.ts';
 import { readJsonLines } from '../src/main/core/stt.ts';
 import { turnMetricDurations } from '../src/main/core/turn-metrics.ts';
+import { isSafeExternalUrl, isTrustedPageUrl } from '../src/main/core/electron-security-pure.ts';
 import {
   classifyWakeExit,
   WAKE_MAX_FAST_FAILS,
@@ -1334,6 +1335,18 @@ test('audit sanitizers — keep metadata while dropping private tool payloads', 
     path: undefined,
     textChars: 7,
   });
+});
+
+test('Electron URL policy — trusts only the exact renderer page and safe external schemes', () => {
+  const trusted = 'file:///Applications/Alfred/resources/app.asar/out/renderer/index.html';
+  assert.equal(isTrustedPageUrl(trusted, trusted), true);
+  assert.equal(isTrustedPageUrl(`${trusted}#settings`, trusted), true);
+  assert.equal(isTrustedPageUrl('https://example.com/', trusted), false);
+  assert.equal(isTrustedPageUrl('file:///tmp/index.html', trusted), false);
+  assert.equal(isSafeExternalUrl('https://example.com/path'), true);
+  assert.equal(isSafeExternalUrl('mailto:user@example.com'), true);
+  assert.equal(isSafeExternalUrl('javascript:alert(1)'), false);
+  assert.equal(isSafeExternalUrl('file:///etc/passwd'), false);
 });
 
 // ── stt/wakeword shared protocol reader (line-delimited JSON) ─────────────────

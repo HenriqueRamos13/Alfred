@@ -282,6 +282,6 @@ const api = {
   },
 };
 
-contextBridge.exposeInMainWorld('alfred', api);
+if (process.isMainFrame) contextBridge.exposeInMainWorld('alfred', api);
 
 export type AlfredApi = typeof api;
