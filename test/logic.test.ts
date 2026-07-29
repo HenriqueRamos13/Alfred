@@ -234,6 +234,7 @@ import {
 import type { ToolMeta } from '../src/main/core/tool-disclosure-pure.ts';
 import {
   classifyUrl,
+  classifyBrowserUrl,
   ipIsBlocked,
   isBlockedHostname,
   shouldRevalidateRedirect,
@@ -4226,6 +4227,13 @@ test('classifyUrl — scheme gate + host block + public pass', () => {
   assert.equal(good.ok, true);
   assert.equal(good.protocol, 'https:');
   assert.equal(good.hostname, 'api.open-meteo.com');
+});
+
+test('classifyBrowserUrl — WebSockets follow the same public-host SSRF policy', () => {
+  assert.equal(classifyBrowserUrl('wss://example.com/socket').ok, true);
+  assert.equal(classifyBrowserUrl('ws://127.0.0.1:8080/socket').ok, false);
+  assert.equal(classifyBrowserUrl('wss://metadata.google.internal/socket').ok, false);
+  assert.equal(classifyBrowserUrl('data:text/html,hello').ok, false);
 });
 
 test('shouldRevalidateRedirect — 3xx with a Location only', () => {

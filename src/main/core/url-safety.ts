@@ -18,7 +18,7 @@ import http from 'node:http';
 import https from 'node:https';
 import { lookup as dnsLookup } from 'node:dns';
 import { lookup as dnsLookupP } from 'node:dns/promises';
-import { classifyUrl, ipIsBlocked, shouldRevalidateRedirect } from './url-safety-pure.ts';
+import { classifyUrl, classifyBrowserUrl, ipIsBlocked, shouldRevalidateRedirect } from './url-safety-pure.ts';
 
 const MAX_BODY = 8 * 1024 * 1024;
 const MAX_REDIRECTS = 5;
@@ -115,6 +115,19 @@ export function safeFetch(url: string, opts: SafeFetchOptions = {}, hop = 0): Pr
  */
 export async function assertUrlSafe(url: string): Promise<void> {
   const cls = classifyUrl(url);
+  await assertClassificationSafe(url, cls);
+}
+
+/** Validate an HTTP(S) or WebSocket URL used by the browser context. */
+export async function assertBrowserUrlSafe(url: string): Promise<void> {
+  const cls = classifyBrowserUrl(url);
+  await assertClassificationSafe(url, cls);
+}
+
+async function assertClassificationSafe(
+  url: string,
+  cls: ReturnType<typeof classifyUrl>,
+): Promise<void> {
   if (!cls.ok) throw new Error(`SSRF guard: ${cls.reason} (${url})`);
   const addrs = await dnsLookupP(cls.hostname as string, { all: true, verbatim: true });
   for (const a of addrs) {

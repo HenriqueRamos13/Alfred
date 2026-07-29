@@ -1,6 +1,6 @@
 import path from 'node:path';
 import type { Page } from 'playwright';
-import { assertUrlSafe } from '../core/url-safety.ts';
+import { assertBrowserUrlSafe } from '../core/url-safety.ts';
 import type { Tool, ToolCtx, BrowserHandle } from './types.ts';
 
 /**
@@ -18,6 +18,28 @@ export function createBrowserHandle(userDataDir: string): BrowserHandle {
       ctxPromise = chromium.launchPersistentContext(userDataDir, {
         headless: false,
         viewport: null,
+        // Requests controlled by a service worker bypass context.route.
+        serviceWorkers: 'block',
+      });
+      const context = await ctxPromise;
+      await context.route('**/*', async (route) => {
+        const url = route.request().url();
+        try {
+          await assertBrowserUrlSafe(url);
+          await route.continue();
+        } catch (err) {
+          console.warn('[alfred] browser request blocked:', url, err instanceof Error ? err.message : err);
+          await route.abort('blockedbyclient');
+        }
+      });
+      await context.routeWebSocket(/.*/, async (socket) => {
+        try {
+          await assertBrowserUrlSafe(socket.url());
+          socket.connectToServer();
+        } catch (err) {
+          console.warn('[alfred] browser WebSocket blocked:', socket.url(), err instanceof Error ? err.message : err);
+          await socket.close({ code: 1008, reason: 'blocked by SSRF policy' });
+        }
       });
     }
     const context = await ctxPromise;
@@ -50,6 +72,10 @@ async function detectLoginWall(page: Page): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+async function assertPageSafe(page: Page): Promise<void> {
+  await assertBrowserUrlSafe(page.url());
 }
 
 type Op = 'goto' | 'readText' | 'click' | 'type' | 'screenshot';
@@ -105,13 +131,15 @@ export const browser: Tool<Args> = {
           if (!a.url) return { ok: false, error: 'url is required for goto' };
           // SSRF guard: classify + resolve-and-check the target IP before Playwright
           // connects (DNS-rebinding aware). Throws on a blocked/internal address.
-          await assertUrlSafe(a.url);
+          await assertBrowserUrlSafe(a.url);
           await page.goto(a.url, { waitUntil: 'domcontentloaded' });
+          await assertPageSafe(page);
           const wall = await handleLoginWall(page, ctx, this.name);
           if (wall) return { ok: false, error: wall };
           return { ok: true, result: { url: page.url(), title: await page.title() } };
         }
         case 'readText': {
+          await assertPageSafe(page);
           const wall = await handleLoginWall(page, ctx, this.name);
           if (wall) return { ok: false, error: wall };
           // Reading web content = untrusted input entering the session.
@@ -122,16 +150,19 @@ export const browser: Tool<Args> = {
         case 'click': {
           if (!a.selector) return { ok: false, error: 'selector is required for click' };
           await page.click(a.selector, { timeout: 15_000 });
+          await assertPageSafe(page);
           const wall = await handleLoginWall(page, ctx, this.name);
           if (wall) return { ok: false, error: wall };
           return { ok: true, result: { url: page.url() } };
         }
         case 'type': {
+          await assertPageSafe(page);
           if (!a.selector) return { ok: false, error: 'selector is required for type' };
           await page.fill(a.selector, a.text ?? '', { timeout: 15_000 });
           return { ok: true, result: { url: page.url() } };
         }
         case 'screenshot': {
+          await assertPageSafe(page);
           const out = a.path
             ? path.isAbsolute(a.path)
               ? a.path

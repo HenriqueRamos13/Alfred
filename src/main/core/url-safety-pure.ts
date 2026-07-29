@@ -126,6 +126,19 @@ export function classifyUrl(raw: string): UrlClassification {
   return { ok: true, protocol: u.protocol, hostname };
 }
 
+/** Browser requests also include WebSocket handshakes; validate them as HTTP(S). */
+export function classifyBrowserUrl(raw: string): UrlClassification {
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    return { ok: false, reason: 'not a valid URL' };
+  }
+  if (url.protocol === 'ws:') url.protocol = 'http:';
+  else if (url.protocol === 'wss:') url.protocol = 'https:';
+  return classifyUrl(url.toString());
+}
+
 /**
  * Whether a response is a redirect whose target must be re-classified and
  * re-connect-checked before it is followed. Every hop is revalidated — a public
