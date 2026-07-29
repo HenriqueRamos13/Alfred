@@ -273,6 +273,7 @@ cards too.`;
 
 /** Reason the loop was hard-stopped by a guardrail (vs a plain user stop). */
 type StopInfo = { kind: 'budget' | 'step' | 'loop'; message: string };
+type TurnOutcome = { status: 'done' | 'error' | 'cancelled'; error?: string };
 
 export interface OrchestratorDeps {
   config: AlfredConfig;
@@ -328,7 +329,7 @@ export class Orchestrator {
   }
 
   /** Run one user turn to completion (may span many model+tool round-trips). */
-  async run(userText: string): Promise<void> {
+  async run(userText: string): Promise<TurnOutcome> {
     const { ctx } = this.deps;
     this.controller = new AbortController();
     ctx.emit({ kind: 'agent.status', sessionId: ctx.sessionId, status: 'thinking' });
@@ -417,24 +418,26 @@ export class Orchestrator {
       if (this.stopInfo) {
         ctx.emit({ kind: 'error', sessionId: ctx.sessionId, message: this.stopInfo.message });
         ctx.emit({ kind: 'agent.status', sessionId: ctx.sessionId, status: 'error' });
-        return;
+        return { status: 'error', error: this.stopInfo.message };
       }
       ctx.emit({ kind: 'agent.status', sessionId: ctx.sessionId, status: 'done' });
+      return { status: 'done' };
     } catch (err) {
       // A guardrail hard-stop or user stop surfaces here as an AbortError.
       if (this.stopInfo) {
         ctx.emit({ kind: 'error', sessionId: ctx.sessionId, message: this.stopInfo.message });
         ctx.emit({ kind: 'agent.status', sessionId: ctx.sessionId, status: 'error' });
-        return;
+        return { status: 'error', error: this.stopInfo.message };
       }
       if (this.controller?.signal.aborted) {
         // Plain user stop — clean halt, no error.
-        ctx.emit({ kind: 'agent.status', sessionId: ctx.sessionId, status: 'done' });
-        return;
+        ctx.emit({ kind: 'agent.status', sessionId: ctx.sessionId, status: 'idle' });
+        return { status: 'cancelled' };
       }
       const message = err instanceof Error ? err.message : String(err);
       ctx.emit({ kind: 'error', sessionId: ctx.sessionId, message });
       ctx.emit({ kind: 'agent.status', sessionId: ctx.sessionId, status: 'error' });
+      return { status: 'error', error: message };
     }
   }
 
@@ -1327,7 +1330,7 @@ export function createOrchestrator(opts: CreateOrchestratorOpts): OrchestratorHa
    * Kill / cancel / conversation reset / factory reset all drop what is PENDING.
    * Every dropped message is settled on the ladder + announced, so a bubble never
    * sits on "na fila" forever after a stop. The RUNNING batch is already out of the
-   * queue: aborting it makes runTurn throw, and the drain's catch marks it 'error'.
+   * queue: its explicit outcome settles it as dropped/error in the drain.
    */
   const dropPendingTurns = (): void => {
     for (const item of turnQueue) markTurn(item.id, 'dropped');
@@ -1501,7 +1504,7 @@ export function createOrchestrator(opts: CreateOrchestratorOpts): OrchestratorHa
     model?: string,
     signal?: AbortSignal,
     metricIds: readonly string[] = [],
-  ): Promise<void> {
+  ): Promise<TurnOutcome> {
     emit({ kind: 'agent.status', sessionId, status: 'thinking' });
     // claude -p reads the CLAUDE.md of its cwd (the workspace) automatically —
     // seed it with Alfred's identity so the vanilla CLI knows it's Alfred.
@@ -1547,22 +1550,23 @@ export function createOrchestrator(opts: CreateOrchestratorOpts): OrchestratorHa
     // User kill/reset: the child was SIGKILLed → clean halt, not a red error
     // (parity with the AI-SDK path's abort handling).
     if (signal?.aborted) {
-      emit({ kind: 'agent.status', sessionId, status: 'done' });
-      return;
+      emit({ kind: 'agent.status', sessionId, status: 'idle' });
+      return { status: 'cancelled' };
     }
     if (turn.enoent) {
+      const error = 'Claude Code CLI not found on PATH. Install it: npm i -g @anthropic-ai/claude-code';
       emit({
         kind: 'error',
         sessionId,
-        message: 'Claude Code CLI not found on PATH. Install it: npm i -g @anthropic-ai/claude-code',
+        message: error,
       });
       emit({ kind: 'agent.status', sessionId, status: 'error' });
-      return;
+      return { status: 'error', error };
     }
     if (turn.error) {
       emit({ kind: 'error', sessionId, message: turn.error });
       emit({ kind: 'agent.status', sessionId, status: 'error' });
-      return;
+      return { status: 'error', error: turn.error };
     }
     if (turn.sessionId) {
       try {
@@ -1581,6 +1585,7 @@ export function createOrchestrator(opts: CreateOrchestratorOpts): OrchestratorHa
     // Spend is billed by the Claude Code subscription, not Alfred's estimator.
     emit({ kind: 'cost', snapshot: externalCostSnapshot(config.dailyTokenBudget, model) });
     emit({ kind: 'agent.status', sessionId, status: 'done' });
+    return { status: 'done' };
   }
 
   // The single turn entry point: IPC `alfred:send` and the wake "enviar <text>"
@@ -1588,7 +1593,7 @@ export function createOrchestrator(opts: CreateOrchestratorOpts): OrchestratorHa
   // (defined above) can call it.
   // One drained turn: the body of the old send(). resetTrifecta lives HERE, at
   // the start of every turn — a per-turn reset, never mid-turn from a sibling.
-  async function runTurn(text: string, metricIds: readonly string[]): Promise<void> {
+  async function runTurn(text: string, metricIds: readonly string[]): Promise<TurnOutcome> {
       gov.resetTrifecta();
       try {
         const main = getAgentConfig().main;
@@ -1599,32 +1604,33 @@ export function createOrchestrator(opts: CreateOrchestratorOpts): OrchestratorHa
         if (main.provider === 'claude-cli') {
           const cc = brains.find((b) => b.id === 'claude-code');
           if (!cc?.enabled) {
+            const error = 'Claude Code CLI not found on PATH. Install it: npm i -g @anthropic-ai/claude-code';
             emit({
               kind: 'error',
               sessionId,
-              message: 'Claude Code CLI not found on PATH. Install it: npm i -g @anthropic-ai/claude-code',
+              message: error,
             });
             emit({ kind: 'agent.status', sessionId, status: 'error' });
-            return;
+            return { status: 'error', error };
           }
           const ac = new AbortController();
           activeAbort = () => ac.abort();
-          await runClaudeTurn(text, main.model, ac.signal, metricIds);
-          return;
+          return await runClaudeTurn(text, main.model, ac.signal, metricIds);
         }
 
         const brainId = providerToBrain(main.provider);
         const brain = brains.find((b) => b.id === brainId);
         if (!brain?.enabled) {
+          const error =
+            `Brain "${brainId}" (agent "main") is not connected: set its API key in .env ` +
+            '(ANTHROPIC_API_KEY / OPENAI_API_KEY / DEEPSEEK_API_KEY) or pick a connected provider in Settings, then restart.';
           emit({
             kind: 'error',
             sessionId,
-            message:
-              `Brain "${brainId}" (agent "main") is not connected: set its API key in .env ` +
-              '(ANTHROPIC_API_KEY / OPENAI_API_KEY / DEEPSEEK_API_KEY) or pick a connected provider in Settings, then restart.',
+            message: error,
           });
           emit({ kind: 'agent.status', sessionId, status: 'error' });
-          return;
+          return { status: 'error', error };
         }
 
         let provider: ReturnType<typeof resolveProvider>;
@@ -1640,7 +1646,7 @@ export function createOrchestrator(opts: CreateOrchestratorOpts): OrchestratorHa
             message: `No brain connected: set an API key in .env (ANTHROPIC_API_KEY / OPENAI_API_KEY / DEEPSEEK_API_KEY) and restart. (${detail})`,
           });
           emit({ kind: 'agent.status', sessionId, status: 'error' });
-          return;
+          return { status: 'error', error: detail };
         }
         active = new Orchestrator({
           config,
@@ -1655,7 +1661,7 @@ export function createOrchestrator(opts: CreateOrchestratorOpts): OrchestratorHa
           onFirstToken: () => markTurnMetricsFirstToken(db, metricIds),
         });
         activeAbort = () => active?.abort();
-        await active.run(text);
+        return await active.run(text);
       } finally {
         active = null;
         activeAbort = null;
@@ -1719,8 +1725,12 @@ export function createOrchestrator(opts: CreateOrchestratorOpts): OrchestratorHa
         const main = getAgentConfig().main;
         startTurnMetrics(db, ids, main.provider, main.model);
         try {
-          await runTurn(combined, ids);
-          for (const id of ids) markTurn(id, 'done');
+          const outcome = await runTurn(combined, ids);
+          for (const id of ids) {
+            if (outcome.status === 'done') markTurn(id, 'done');
+            else if (outcome.status === 'cancelled') markTurn(id, 'dropped');
+            else markTurn(id, 'error', { error: outcome.error ?? 'Turn failed' });
+          }
         } catch (err) {
           const error = err instanceof Error ? err.message : String(err);
           console.error('[alfred] turn failed:', error);
