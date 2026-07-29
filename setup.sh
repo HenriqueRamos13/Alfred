@@ -114,8 +114,9 @@ fi
 # 5. Environment file.
 if [[ ! -f .env ]]; then
   say "Creating .env from template — edit it and add your keys"
-  cp .env.example .env
+  (umask 077; cp .env.example .env)
 fi
+chmod 600 .env
 
 # 6. Optional: pre-warm the Kokoro TTS model (voice output). The ~300MB weights
 #    otherwise download lazily on Alfred's first spoken reply. Set

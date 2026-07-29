@@ -32,10 +32,12 @@ npx playwright install chromium
 # 4. Environment file present?
 if [[ ! -f .env ]]; then
   say "Creating .env from template"
-  cp .env.example .env
+  (umask 077; cp .env.example .env)
+  chmod 600 .env
   echo "Edit .env and set your ANTHROPIC_API_KEY / DEEPSEEK_API_KEY, then run ./start.sh again." >&2
   exit 1
 fi
+chmod 600 .env
 
 # 5. Load .env into the environment (works even before the app reads it itself).
 set -a; source ./.env; set +a
