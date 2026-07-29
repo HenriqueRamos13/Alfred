@@ -324,6 +324,7 @@ export class Orchestrator {
   async run(userText: string): Promise<void> {
     const { ctx } = this.deps;
     this.controller = new AbortController();
+    ctx.emit({ kind: 'agent.status', sessionId: ctx.sessionId, status: 'thinking' });
     const system = await this.buildSystem();
 
     ctx.emit({ kind: 'agent.status', sessionId: ctx.sessionId, status: 'thinking' });
@@ -1503,6 +1504,7 @@ export function createOrchestrator(opts: CreateOrchestratorOpts): OrchestratorHa
     // (and is easily out-weighed), so inject the reply-language directive here where
     // --append-system-prompt weighs heavily — parity with the AI-SDK buildSystem path.
     const langDirective = languageDirective(resolveLanguage(getSetting(db, 'language'), process.env.ALFRED_LANGUAGE));
+    emit({ kind: 'agent.status', sessionId, status: 'thinking' });
     const turn = await spawnClaudeConversation(
       prompt,
       config.workspace,

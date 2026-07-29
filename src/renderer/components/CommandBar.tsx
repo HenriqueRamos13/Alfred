@@ -10,6 +10,8 @@ import { primaryAction } from '../../main/core/command-bar-pure.ts';
 
 export interface CommandBarProps {
   status: AgentStatus;
+  /** Current backend-derived phase and the start of the whole turn. */
+  progress?: { label: string; since: number; ended?: number } | null;
   killed: boolean;
   budget: BudgetState | null;
   onSubmit: (text: string) => void;
@@ -46,6 +48,7 @@ const STATUS_COLOR: Record<AgentStatus, string> = {
 
 export function CommandBar({
   status,
+  progress,
   killed,
   budget,
   onSubmit,
@@ -237,6 +240,9 @@ export function CommandBar({
         Kill
       </button>
     </div>
+    {progress && (
+      <ElapsedProgress label={progress.label} since={progress.since} ended={progress.ended} color={color} />
+    )}
     {(listening || speaking) && (
       <div
         aria-live="polite"
@@ -254,6 +260,43 @@ export function CommandBar({
         {listening ? (partial ? partial : 'Listening…') : '🔇 Alfred a falar — mic em silêncio'}
       </div>
     )}
+    </div>
+  );
+}
+
+function ElapsedProgress({
+  label,
+  since,
+  color,
+  ended,
+}: {
+  label: string;
+  since: number;
+  color: string;
+  ended?: number;
+}) {
+  const [clock, setClock] = useState(Date.now());
+  useEffect(() => {
+    if (ended !== undefined) return;
+    const timer = setInterval(() => setClock(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, [ended]);
+  const elapsed = Math.max(0, Math.floor(((ended ?? clock) - since) / 1000));
+  const time = elapsed < 60 ? `${elapsed}s` : `${Math.floor(elapsed / 60)}m ${elapsed % 60}s`;
+  return (
+    <div
+      aria-live="polite"
+      style={{
+        color,
+        fontFamily: 'var(--font-mono, ui-monospace, monospace)',
+        fontSize: 12,
+        padding: '0 12px',
+        whiteSpace: 'nowrap',
+        overflow: 'hidden',
+        textOverflow: 'ellipsis',
+      }}
+    >
+      {label} · {time}
     </div>
   );
 }

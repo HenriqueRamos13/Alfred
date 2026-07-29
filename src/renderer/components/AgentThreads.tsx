@@ -32,6 +32,17 @@ function nameOf(agents: readonly TeamAgentInfo[], agentId: string): string {
   return agents.find((a) => a.id === agentId)?.name?.trim() || agentId;
 }
 
+function ActiveThreadStatus({ label, since }: { label: string; since: number }) {
+  const [clock, setClock] = useState(Date.now());
+  useEffect(() => {
+    const timer = setInterval(() => setClock(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, []);
+  const elapsed = Math.max(0, Math.floor((clock - since) / 1000));
+  const time = elapsed < 60 ? `${elapsed}s` : `${Math.floor(elapsed / 60)}m ${elapsed % 60}s`;
+  return <span className="th-chip s-executing">{label} · {time}</span>;
+}
+
 export interface ThreadsPaneProps {
   threads: ThreadInfo[];
   agents: TeamAgentInfo[];
@@ -159,9 +170,13 @@ export function ThreadView({ thread, agentName, agentGone, messages, streaming, 
             <div key={m.id} className={`th-msg ${mine ? 'user' : 'agent'}`}>
               <div className="th-bubble">{m.body}</div>
               {mine && (
-                <span className={`th-chip s-${m.status}`} title={m.error ?? ''}>
-                  {statusChipPt(m.status)}
-                </span>
+                ['queued', 'delivered', 'read', 'executing'].includes(m.status) ? (
+                  <ActiveThreadStatus label={statusChipPt(m.status)} since={m.startedTs ?? m.createdTs} />
+                ) : (
+                  <span className={`th-chip s-${m.status}`} title={m.error ?? ''}>
+                    {statusChipPt(m.status)}
+                  </span>
+                )
               )}
               {m.status === 'error' && m.error && <div className="th-err">⚠ {m.error}</div>}
             </div>
@@ -173,6 +188,13 @@ export function ThreadView({ thread, agentName, agentGone, messages, streaming, 
               {streaming}
               <span className="th-cursor" />
             </div>
+            <ActiveThreadStatus
+              label="a responder"
+              since={
+                messages.findLast((message) => ['queued', 'delivered', 'read', 'executing'].includes(message.status))
+                  ?.startedTs ?? Date.now()
+              }
+            />
           </div>
         )}
         <div ref={endRef} />

@@ -135,6 +135,7 @@ export default function App() {
   const [streaming, setStreaming] = useState('');
   const [logs, setLogs] = useState<LogRow[]>([]);
   const [status, setStatus] = useState<AgentStatus>('idle');
+  const [turnProgress, setTurnProgress] = useState<{ label: string; since: number; ended?: number } | null>(null);
   const [budget, setBudget] = useState<BudgetState | null>(null);
   const [approval, setApproval] = useState<ApprovalRequest | null>(null);
   const [tree, setTree] = useState<UiNode | null>(null);
@@ -757,6 +758,7 @@ export default function App() {
       switch (e.kind) {
         case 'chat.delta':
           setStreaming((s) => s + e.text);
+          setTurnProgress((current) => ({ label: 'A responder', since: current?.since ?? Date.now() }));
           break;
         case 'chat.message':
           setMessages((m) => [...m, e.message]);
@@ -833,9 +835,14 @@ export default function App() {
           break;
         }
         case 'tool.start':
+          setTurnProgress((current) => ({ label: `A executar ${e.toolName}`, since: current?.since ?? Date.now() }));
           pushLog({ tag: e.toolName, tone: 'cyan', msg: summarize(e.args) });
           break;
         case 'tool.end':
+          setTurnProgress((current) => ({
+            label: e.status === 'ok' ? `A analisar resultado de ${e.toolName}` : `${e.toolName}: ${e.status}`,
+            since: current?.since ?? Date.now(),
+          }));
           pushLog({
             tag: e.toolName,
             tone: e.status === 'ok' ? 'lime' : e.status === 'denied' ? 'amber' : 'red',
@@ -844,6 +851,10 @@ export default function App() {
           break;
         case 'approval.request':
           setApproval(e.request);
+          setTurnProgress((current) => ({
+            label: `A aguardar aprovação para ${e.request.toolName}`,
+            since: current?.since ?? Date.now(),
+          }));
           pushLog({ tag: 'HITL', tone: 'amber', msg: `${e.request.tier} ${e.request.toolName}` });
           break;
         case 'approval.resolved':
@@ -954,6 +965,21 @@ export default function App() {
           break;
         case 'agent.status':
           setStatus(e.status);
+          setTurnProgress((current) => {
+            const since = current?.since ?? Date.now();
+            if (e.status === 'idle') return null;
+            if (e.status === 'thinking') {
+              if (current?.ended !== undefined) return { label: 'A preparar contexto', since: Date.now() };
+              if (!current || current.label === 'Na fila') return { label: 'A preparar contexto', since };
+              if (current.label === 'A preparar contexto') return { label: 'A aguardar modelo', since };
+              return { label: 'A analisar', since };
+            }
+            if (e.status === 'tool') return current ?? { label: 'A executar ferramenta', since };
+            if (e.status === 'awaiting-approval') return current ?? { label: 'A aguardar aprovação', since };
+            if (e.status === 'done') return { label: 'Concluído', since, ended: Date.now() };
+            if (e.status === 'error') return { label: 'Falhou', since, ended: Date.now() };
+            return current;
+          });
           if (e.status === 'done' || e.status === 'idle') {
             refreshProjects();
             refreshBrains();
@@ -1079,6 +1105,8 @@ export default function App() {
   const doSend = (text: string) => {
     const trimmed = text.trim();
     if (!trimmed) return;
+    setStatus('thinking');
+    setTurnProgress({ label: 'Na fila', since: Date.now() });
     // The renderer MINTS the correlation id (a plain uuid — the charset main
     // whitelists) and uses it for BOTH the optimistic bubble and the send, so every
     // turn.status that follows lands on this exact bubble instead of guessing.
@@ -1168,6 +1196,7 @@ export default function App() {
     setKilled(true);
     setApproval(null);
     setStatus('idle');
+    setTurnProgress(null);
     clearPending(); // a queued edit-window message must not fire after a kill
     pushLog({ tag: 'KERNEL', tone: 'red', msg: '!! kill switch engaged' });
   };
@@ -1177,6 +1206,7 @@ export default function App() {
   // agent.status idle → the primary button flips back to Send on its own.
   const onCancel = () => {
     alfred.cancel();
+    setTurnProgress(null);
     clearPending(); // drop any queued edit-window message too
     pushLog({ tag: 'KERNEL', tone: 'amber', msg: 'cancelado — turno interrompido' });
   };
@@ -1968,6 +1998,7 @@ export default function App() {
 
         <CommandBar
           status={status}
+          progress={turnProgress}
           killed={killed}
           budget={budget}
           onSubmit={onSubmit}
