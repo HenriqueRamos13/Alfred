@@ -312,8 +312,36 @@ function boot(): void {
   // window. emit closes over the getter so a display added/removed at runtime
   // is picked up without re-wiring the orchestrator.
   let getWindows: () => BrowserWindow[];
+  type DeltaEvent = Extract<StreamEvent, { kind: 'chat.delta' | 'agent.chat.delta' | 'reference.delta' }>;
+  const pendingDeltas = new Map<string, DeltaEvent>();
+  let deltaTimer: ReturnType<typeof setTimeout> | null = null;
+  const broadcast = (event: StreamEvent): void => {
+    for (const window of getWindows()) {
+      if (!window.isDestroyed()) window.webContents.send('alfred:stream', event);
+    }
+  };
+  const flushDeltas = (): void => {
+    if (deltaTimer) clearTimeout(deltaTimer);
+    deltaTimer = null;
+    for (const event of pendingDeltas.values()) broadcast(event);
+    pendingDeltas.clear();
+  };
   const emit = (event: StreamEvent): void => {
-    for (const w of getWindows()) if (!w.isDestroyed()) w.webContents.send('alfred:stream', event);
+    if (event.kind === 'chat.delta' || event.kind === 'agent.chat.delta' || event.kind === 'reference.delta') {
+      const target = event.kind === 'chat.delta' ? event.sessionId : event.threadId;
+      const key = `${event.kind}:${target}`;
+      const pending = pendingDeltas.get(key);
+      pendingDeltas.set(key, pending ? { ...event, text: pending.text + event.text } : event);
+      if (!deltaTimer) {
+        deltaTimer = setTimeout(flushDeltas, 32);
+        deltaTimer.unref?.();
+      }
+      return;
+    }
+    // Preserve stream ordering: a final/tool/status event never overtakes text
+    // currently waiting in the short coalescing window.
+    flushDeltas();
+    broadcast(event);
   };
 
   if (windowMode() === 'windowed') {

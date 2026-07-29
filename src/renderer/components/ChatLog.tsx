@@ -8,7 +8,7 @@
  * `done` shrinks to a bare ✓ and a legacy row (no status) shows nothing at all, so
  * the transcript only gains ink while a message is actually in flight or has failed.
  */
-import { useEffect, useRef } from 'react';
+import { memo, useEffect, useRef } from 'react';
 import type { ChatMessage, ChatRole } from '../../main/core/types.ts';
 import { statusChipPt, type UserMsgStatus } from '../../main/core/thread-pure.ts';
 import { Markdown } from './Markdown.tsx';
@@ -55,6 +55,56 @@ export interface ChatLogProps {
   streaming?: string;
 }
 
+const ChatRow = memo(function ChatRow({
+  role,
+  content,
+  status,
+}: {
+  role: ChatRole;
+  content: string;
+  status?: UserMsgStatus;
+}) {
+  const style = ROLE[role] ?? ROLE.system;
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', alignItems: style.align }}>
+      <span
+        style={{
+          fontFamily: 'var(--font-mono, ui-monospace, monospace)',
+          fontSize: 10,
+          letterSpacing: '0.14em',
+          textTransform: 'uppercase',
+          color: style.color,
+          marginBottom: 4,
+        }}
+      >
+        {style.label}
+      </span>
+      <div
+        style={{
+          maxWidth: '88%',
+          background: style.bg,
+          border: `1px solid ${style.border}`,
+          borderRadius: 2,
+          padding: '8px 10px',
+          color: 'var(--text, #cfe8f2)',
+          fontSize: 13,
+        }}
+      >
+        {role === 'assistant' ? (
+          <Markdown content={content} />
+        ) : (
+          <span style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{content}</span>
+        )}
+      </div>
+      {role === 'user' && status && (
+        <span className={`th-chip s-${status}`} title={statusChipPt(status)}>
+          {status === 'done' ? '✓' : statusChipPt(status)}
+        </span>
+      )}
+    </div>
+  );
+});
+
 export function ChatLog({ messages, streaming }: ChatLogProps) {
   const rows: { role: ChatRole; content: string; key: string; status?: UserMsgStatus }[] = messages.map((m) => ({
     role: m.role,
@@ -73,45 +123,7 @@ export function ChatLog({ messages, streaming }: ChatLogProps) {
   return (
     <div className="alfred-chatlog" style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
       {rows.map((m) => {
-        const r = ROLE[m.role] ?? ROLE.system;
-        return (
-          <div key={m.key} style={{ display: 'flex', flexDirection: 'column', alignItems: r.align }}>
-            <span
-              style={{
-                fontFamily: 'var(--font-mono, ui-monospace, monospace)',
-                fontSize: 10,
-                letterSpacing: '0.14em',
-                textTransform: 'uppercase',
-                color: r.color,
-                marginBottom: 4,
-              }}
-            >
-              {r.label}
-            </span>
-            <div
-              style={{
-                maxWidth: '88%',
-                background: r.bg,
-                border: `1px solid ${r.border}`,
-                borderRadius: 2,
-                padding: '8px 10px',
-                color: 'var(--text, #cfe8f2)',
-                fontSize: 13,
-              }}
-            >
-              {m.role === 'assistant' ? (
-                <Markdown content={m.content} />
-              ) : (
-                <span style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{m.content}</span>
-              )}
-            </div>
-            {m.role === 'user' && m.status && (
-              <span className={`th-chip s-${m.status}`} title={statusChipPt(m.status)}>
-                {m.status === 'done' ? '✓' : statusChipPt(m.status)}
-              </span>
-            )}
-          </div>
-        );
+        return <ChatRow key={m.key} role={m.role} content={m.content} status={m.status} />;
       })}
       <div ref={endRef} />
     </div>

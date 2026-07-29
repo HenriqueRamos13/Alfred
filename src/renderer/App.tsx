@@ -9,7 +9,15 @@
  *   ProjectList    { projects: ProjectRecord[] }              (also AI-renderable)
  *   ApprovalPrompt { request: ApprovalRequest, onResolve(id, decision) }
  */
-import { useEffect, useRef, useState, type ReactNode } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type Dispatch,
+  type ReactNode,
+  type SetStateAction,
+} from 'react';
 import { alfred } from './lib/ipc.ts';
 import { Surface } from './surface.tsx';
 import { CommandBar } from './components/CommandBar.tsx';
@@ -119,6 +127,44 @@ function now(): string {
   return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
 }
 
+function HudClock() {
+  const [clock, setClock] = useState(() => now());
+  useEffect(() => {
+    const timer = setInterval(() => setClock(now()), 1000);
+    return () => clearInterval(timer);
+  }, []);
+  return <span className="hud-line hud-clock">{clock}</span>;
+}
+
+function useBufferedAppend(setValue: Dispatch<SetStateAction<string>>, delayMs = 40) {
+  const buffer = useRef('');
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const flush = useCallback(() => {
+    if (timer.current) clearTimeout(timer.current);
+    timer.current = null;
+    const text = buffer.current;
+    buffer.current = '';
+    if (text) setValue((current) => current + text);
+  }, [setValue]);
+  const append = useCallback(
+    (text: string) => {
+      buffer.current += text;
+      if (!timer.current) timer.current = setTimeout(flush, delayMs);
+    },
+    [delayMs, flush],
+  );
+  const clear = useCallback(() => {
+    if (timer.current) clearTimeout(timer.current);
+    timer.current = null;
+    buffer.current = '';
+    setValue('');
+  }, [setValue]);
+  useEffect(() => () => {
+    if (timer.current) clearTimeout(timer.current);
+  }, []);
+  return { append, clear };
+}
+
 function summarize(value: unknown): string {
   if (value == null) return '';
   const s = typeof value === 'string' ? value : JSON.stringify(value);
@@ -133,9 +179,11 @@ function usd(n: number): string {
 export default function App() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [streaming, setStreaming] = useState('');
+  const chatDeltas = useBufferedAppend(setStreaming);
   const [logs, setLogs] = useState<LogRow[]>([]);
   const [status, setStatus] = useState<AgentStatus>('idle');
   const [turnProgress, setTurnProgress] = useState<{ label: string; since: number; ended?: number } | null>(null);
+  const mainRespondingRef = useRef(false);
   const [budget, setBudget] = useState<BudgetState | null>(null);
   const [approval, setApproval] = useState<ApprovalRequest | null>(null);
   const [tree, setTree] = useState<UiNode | null>(null);
@@ -166,6 +214,7 @@ export default function App() {
   const [openThreadId, setOpenThreadId] = useState<string | null>(null);
   const [threadMessages, setThreadMessages] = useState<ThreadMessage[]>([]);
   const [threadStreaming, setThreadStreaming] = useState('');
+  const threadDeltas = useBufferedAppend(setThreadStreaming);
   const openThreadRef = useRef<string | null>(null);
   openThreadRef.current = openThreadId;
   // Notifications for the open project's Activity feed + board nudge indicator
@@ -252,15 +301,14 @@ export default function App() {
   const [refTitle, setRefTitle] = useState('');
   const [refMessages, setRefMessages] = useState<ChatMessage[]>([]);
   const [refStreaming, setRefStreaming] = useState('');
+  const referenceDeltas = useBufferedAppend(setRefStreaming);
   const [refBusy, setRefBusy] = useState(false);
   const refThreadRef = useRef('');
 
   const [bounds, setBounds] = useState<Bounds | null>(null);
   const [displays, setDisplays] = useState<DisplayInfo[]>([]);
-  // Corner HUD: a ticking clock + the count of parked job approvals (an existing
-  // IPC, read here only to surface the pending total; the single live HITL prompt
-  // is tracked separately in `approval`).
-  const [clock, setClock] = useState(() => now());
+  // Corner HUD: the count of parked job approvals (an existing IPC, read here
+  // only to surface the pending total; the clock owns its timer in HudClock).
   const [pendingCount, setPendingCount] = useState(0);
   // Corner-HUD battery — stays null until the API reports a REAL battery; the
   // line only renders then. Battery-less machines still resolve, with the spec's
@@ -396,12 +444,6 @@ export default function App() {
     refresh();
     window.addEventListener('focus', refresh);
     return () => window.removeEventListener('focus', refresh);
-  }, []);
-
-  // Corner-HUD clock — one interval, ticks the HH:MM:SS string every second.
-  useEffect(() => {
-    const t = setInterval(() => setClock(now()), 1000);
-    return () => clearInterval(t);
   }, []);
 
   // LOW-CPU mode propagation channel: mirror the state onto <body> so the CSS
@@ -619,7 +661,7 @@ export default function App() {
     if (!agentId) return;
     setOpenThreadId(newThreadSentinel(agentId));
     setThreadMessages([]);
-    setThreadStreaming('');
+    threadDeltas.clear();
   };
   /**
    * Send to whoever the open conversation belongs to — openThreadAgentId owns the ONE
@@ -660,7 +702,7 @@ export default function App() {
   };
 
   const cancelAgent = (threadId: string) => {
-    setThreadStreaming('');
+    threadDeltas.clear();
     alfred.cancelAgentThread(threadId).catch((err) => {
       pushLog({ tag: 'CONVERSA', tone: 'red', msg: err instanceof Error ? err.message : String(err) });
     });
@@ -757,12 +799,18 @@ export default function App() {
     const off = alfred.onStream((e: StreamEvent) => {
       switch (e.kind) {
         case 'chat.delta':
-          setStreaming((s) => s + e.text);
-          setTurnProgress((current) => ({ label: 'A responder', since: current?.since ?? Date.now() }));
+          chatDeltas.append(e.text);
+          if (!mainRespondingRef.current) {
+            mainRespondingRef.current = true;
+            setTurnProgress((current) => ({ label: 'A responder', since: current?.since ?? Date.now() }));
+          }
           break;
         case 'chat.message':
           setMessages((m) => [...m, e.message]);
-          if (e.message.role === 'assistant') setStreaming('');
+          if (e.message.role === 'assistant') {
+            mainRespondingRef.current = false;
+            chatDeltas.clear();
+          }
           break;
         case 'stt.partial':
           setDict((d) => dictationReduce(d, { kind: 'partial', text: e.text }));
@@ -930,24 +978,24 @@ export default function App() {
         case 'agent.chat.delta':
           // Scoped by the OPEN thread (the refThreadRef idiom): a reply streaming in
           // another thread must never bleed into the panel on screen.
-          if (e.threadId === openThreadRef.current) setThreadStreaming((s) => s + e.text);
+          if (e.threadId === openThreadRef.current) threadDeltas.append(e.text);
           break;
         case 'agent.chat.message':
           // The reply is persisted: drop the live text and take the committed row.
           if (e.threadId === openThreadRef.current) {
-            setThreadStreaming('');
+            threadDeltas.clear();
             setThreadMessages((ms) => (ms.some((m) => m.id === e.message.id) ? ms : [...ms, e.message]));
           }
           refreshThreads(); // lastBody / lastTs / unread on every window's sidebar
           break;
         case 'agent.chat.done':
-          if (e.threadId === openThreadRef.current) setThreadStreaming('');
+          if (e.threadId === openThreadRef.current) threadDeltas.clear();
           break;
         case 'agent.chat.error':
           // The reason already landed on the user's own bubble via turn.status; here
           // just stop streaming and log it (a half-streamed reply is never persisted).
           if (e.threadId === openThreadRef.current) {
-            setThreadStreaming('');
+            threadDeltas.clear();
             refreshThreadMessages(e.threadId);
           }
           pushLog({ tag: 'CONVERSA', tone: 'red', msg: e.message });
@@ -965,6 +1013,7 @@ export default function App() {
           break;
         case 'agent.status':
           setStatus(e.status);
+          if (e.status === 'done' || e.status === 'error' || e.status === 'idle') mainRespondingRef.current = false;
           setTurnProgress((current) => {
             const since = current?.since ?? Date.now();
             if (e.status === 'idle') return null;
@@ -1044,7 +1093,7 @@ export default function App() {
           break;
         case 'conversation.reset':
           setMessages([]);
-          setStreaming('');
+          chatDeltas.clear();
           pushLog({ tag: 'KERNEL', tone: 'amber', msg: 'conversation reset — chat cleared' });
           break;
         case 'factory.reset.done':
@@ -1054,12 +1103,12 @@ export default function App() {
         // Reference agent — scoped by threadId so a stale/other thread never bleeds
         // into the open panel. Never persisted; lives only in the panel's state.
         case 'reference.delta':
-          if (e.threadId === refThreadRef.current) setRefStreaming((s) => s + e.text);
+          if (e.threadId === refThreadRef.current) referenceDeltas.append(e.text);
           break;
         case 'reference.message':
           if (e.threadId === refThreadRef.current) {
             setRefMessages((m) => [...m, e.message]);
-            setRefStreaming('');
+            referenceDeltas.clear();
           }
           break;
         case 'reference.done':
@@ -1068,7 +1117,7 @@ export default function App() {
         case 'reference.error':
           if (e.threadId === refThreadRef.current) {
             setRefBusy(false);
-            setRefStreaming('');
+            referenceDeltas.clear();
             pushLog({ tag: 'REFERENCE', tone: 'red', msg: e.message });
           }
           break;
@@ -1090,7 +1139,7 @@ export default function App() {
   // is idempotent and only emits thread.changed when it actually stamped something,
   // so this can't ping-pong with the stream handler.
   useEffect(() => {
-    setThreadStreaming('');
+    threadDeltas.clear();
     if (!openThreadId || openThreadId.startsWith(NEW_THREAD_PREFIX)) {
       setThreadMessages([]);
       return;
@@ -1106,6 +1155,7 @@ export default function App() {
     const trimmed = text.trim();
     if (!trimmed) return;
     setStatus('thinking');
+    mainRespondingRef.current = false;
     setTurnProgress({ label: 'Na fila', since: Date.now() });
     // The renderer MINTS the correlation id (a plain uuid — the charset main
     // whitelists) and uses it for BOTH the optimistic bubble and the send, so every
@@ -1293,7 +1343,7 @@ export default function App() {
     if (!window.confirm('Limpar a conversa atual? (memória, factos e projetos mantêm-se)')) return;
     alfred.resetConversation();
     setMessages([]); // optimistic; the conversation.reset event confirms across windows
-    setStreaming('');
+    chatDeltas.clear();
   };
 
   const openFactoryReset = () => {
@@ -1456,7 +1506,7 @@ export default function App() {
     setRefTarget(target);
     setRefTitle(title || target.note || target.project || 'Reference');
     setRefMessages([]);
-    setRefStreaming('');
+    referenceDeltas.clear();
     setRefBusy(false);
   };
 
@@ -1464,7 +1514,7 @@ export default function App() {
     refThreadRef.current = ''; // ignore any late stream events for this thread
     setRefTarget(null);
     setRefMessages([]);
-    setRefStreaming('');
+    referenceDeltas.clear();
     setRefBusy(false);
   };
 
@@ -1484,7 +1534,7 @@ export default function App() {
       content: m.content,
     }));
     setRefMessages((m) => [...m, userMsg]);
-    setRefStreaming('');
+    referenceDeltas.clear();
     setRefBusy(true);
     alfred.askReference({ threadId, target: refTarget, question, history }).catch((err) => {
       setRefBusy(false);
@@ -1864,7 +1914,7 @@ export default function App() {
               </>
             )}
           </span>
-          <span className="hud-line hud-clock">{clock}</span>
+          <HudClock />
         </div>
         <div className="hud-corner bl">
           <span className="hud-line">BRAIN <span className="hud-v">{hudBrain}</span></span>
