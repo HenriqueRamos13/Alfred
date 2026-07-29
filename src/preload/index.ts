@@ -149,6 +149,8 @@ const api = {
    */
   messageAgent: (agentId: string, text: string, messageId?: string): Promise<SendUserMessageResult> =>
     ipcRenderer.invoke('alfred:messageAgent', agentId, text, messageId),
+  /** Stop the running batch and discard queued messages in one direct conversation. */
+  cancelAgentThread: (threadId: string): Promise<boolean> => ipcRenderer.invoke('alfred:cancelAgentThread', threadId),
   /** Threads with last message + unread count (newest first); re-fetched on thread.changed. */
   listThreads: (): Promise<ThreadInfo[]> => ipcRenderer.invoke('alfred:listThreads'),
   /** One thread's transcript (oldest→newest). */

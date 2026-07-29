@@ -213,6 +213,8 @@ export interface Orchestrator {
   // ── User↔agent threads (Phase 8 stage 8) — the direct conversation. ──
   /** Send the user's message to a roster agent; resolves once queued (events do the rest). */
   messageAgent(agentId: string, text: string, messageId?: string): Promise<SendUserMessageResult>;
+  /** Stop the active/queued work in one direct conversation. */
+  cancelAgentThread(threadId: string): boolean | Promise<boolean>;
   /** Threads with last message + unread count (newest activity first). */
   listThreads(): ThreadInfo[] | Promise<ThreadInfo[]>;
   /** One thread's transcript (oldest→newest). */
@@ -815,6 +817,15 @@ export function registerIpc(core: Orchestrator, emit: (e: StreamEvent) => void):
       }
     },
   );
+  ipcMain.handle('alfred:cancelAgentThread', async (_e, threadId: unknown): Promise<boolean> => {
+    if (typeof threadId !== 'string' || !threadId.trim()) return false;
+    try {
+      return await core.cancelAgentThread(threadId);
+    } catch (err) {
+      fail('cancel agent thread', err);
+      return false;
+    }
+  });
   ipcMain.handle('alfred:listThreads', guard('list threads', () => core.listThreads(), [] as ThreadInfo[]));
   ipcMain.handle('alfred:listThreadMessages', async (_e, threadId: unknown): Promise<ThreadMessage[]> => {
     if (typeof threadId !== 'string' || !threadId.trim()) return [];

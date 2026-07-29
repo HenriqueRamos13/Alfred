@@ -374,6 +374,7 @@ export type SendUserMessageResult =
 interface ThreadQueue {
   queue: TurnItem[];
   draining: boolean;
+  activeController?: AbortController;
 }
 
 /**
@@ -384,6 +385,32 @@ interface ThreadQueue {
  * as an errored message instead of silently dropping the turn.
  */
 const queues = new Map<string, ThreadQueue>();
+
+/** Stop one direct-conversation turn and discard anything waiting behind it. */
+export function cancelThread(deps: ThreadDeps, threadId: string): boolean {
+  const q = queues.get(threadId);
+  if (!q) return false;
+  q.activeController?.abort();
+  const pending = q.queue.splice(0);
+  if (pending.length) {
+    const ids = pending.map((item) => item.id);
+    markDropped(deps.db, ids);
+    for (const id of ids) emitStatus(deps, id, 'dropped');
+  }
+  deps.emit({ kind: 'agent.chat.done', threadId });
+  const thread = getThread(deps.db, threadId);
+  if (thread) emitChanged(deps, thread.id, thread.agentId);
+  return !!q.activeController || pending.length > 0;
+}
+
+/** Emergency-stop every direct agent conversation owned by this process. */
+export function cancelAllThreads(deps: ThreadDeps): number {
+  let cancelled = 0;
+  for (const threadId of [...queues.keys()]) {
+    if (cancelThread(deps, threadId)) cancelled++;
+  }
+  return cancelled;
+}
 
 /** turn.status without leaking undefined keys into the event (optional fields). */
 function emitStatus(
@@ -508,6 +535,8 @@ async function drainThread(deps: ThreadDeps, agentId: string, threadId: string, 
       }
 
       try {
+        const controller = new AbortController();
+        q.activeController = controller;
         // History EXCLUDES this batch: those messages are the "new message" block
         // that buildThreadPrompt puts last, and sending them twice would read to
         // the model like the user repeated himself.
@@ -524,9 +553,14 @@ async function drainThread(deps: ThreadDeps, agentId: string, threadId: string, 
 
         const res = await runRosterAgentAttended(deps.ctx, agent, prompt, {
           onDelta: (t) => deps.emit({ kind: 'agent.chat.delta', threadId, text: t }),
+          signal: controller.signal,
         });
 
-        if (res.ok) {
+        if (controller.signal.aborted) {
+          markDropped(deps.db, ids);
+          deps.emit({ kind: 'agent.chat.done', threadId });
+          for (const id of ids) emitStatus(deps, id, 'dropped');
+        } else if (res.ok) {
           const body = res.result?.text?.trim() || '(o agente terminou sem resposta)';
           const reply = insertAgentReply(deps.db, threadId, agent.id, body);
           markDone(deps.db, ids);
@@ -547,6 +581,8 @@ async function drainThread(deps: ThreadDeps, agentId: string, threadId: string, 
         markError(deps.db, ids, error);
         deps.emit({ kind: 'agent.chat.error', threadId, message: error });
         for (const id of ids) emitStatus(deps, id, 'error', { error });
+      } finally {
+        q.activeController = undefined;
       }
       emitChanged(deps, threadId, agentId);
     }

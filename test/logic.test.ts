@@ -47,6 +47,7 @@ import {
   DANGEROUS_SYSTEM_PROMPT,
   TERSE_SYSTEM_PROMPT,
   resolveMcpToolTimeout,
+  resolveChildIdleTimeout,
   parseClaudeStreamEvent,
 } from '../src/main/core/claudeSpawn.ts';
 import { gmailConfigured } from '../src/main/tools/gmail-config.ts';
@@ -5533,6 +5534,13 @@ test('claudeSpawn — extracts final result, session and timing metadata', () =>
     { result: 'feito', sessionId: 'session-1', ttftMs: 321, durationMs: 987 },
   );
   assert.deepEqual(parseClaudeStreamEvent(null), {});
+});
+
+test('claudeSpawn — idle watchdog defaults to 10 min, supports override and disable', () => {
+  assert.equal(resolveChildIdleTimeout({}), 10 * 60_000);
+  assert.equal(resolveChildIdleTimeout({ ALFRED_CHILD_IDLE_TIMEOUT_MS: '12345.9' }), 12_345);
+  assert.equal(resolveChildIdleTimeout({ ALFRED_CHILD_IDLE_TIMEOUT_MS: '0' }), 0);
+  assert.equal(resolveChildIdleTimeout({ ALFRED_CHILD_IDLE_TIMEOUT_MS: '-1' }), 10 * 60_000);
 });
 
 test('atwork-pure — agentsAtWork filters idle, orders by precedence, missing activity = idle', () => {

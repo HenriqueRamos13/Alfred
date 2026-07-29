@@ -104,9 +104,10 @@ export interface ThreadViewProps {
   /** Live reply text accumulating from agent.chat.delta ('' = not streaming). */
   streaming: string;
   onSend: (text: string) => void;
+  onCancel: () => void;
 }
 
-export function ThreadView({ thread, agentName, agentGone, messages, streaming, onSend }: ThreadViewProps) {
+export function ThreadView({ thread, agentName, agentGone, messages, streaming, onSend, onCancel }: ThreadViewProps) {
   const [text, setText] = useState('');
   const endRef = useRef<HTMLDivElement>(null);
 
@@ -130,6 +131,8 @@ export function ThreadView({ thread, agentName, agentGone, messages, streaming, 
     onSend(t);
     setText('');
   };
+  const busy =
+    !!streaming || messages.some((message) => ['queued', 'delivered', 'read', 'executing'].includes(message.status));
   // Enter envia, Shift+Enter nova linha (the composer idiom of the command bar).
   const onKey = (e: KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -188,11 +191,11 @@ export function ThreadView({ thread, agentName, agentGone, messages, streaming, 
         <button
           type="button"
           className="th-send no-drag"
-          disabled={agentGone || !text.trim()}
-          onClick={submit}
-          title="Envia a mensagem — chega ao agente como um turno atendido"
+          disabled={busy ? !thread : agentGone || !text.trim()}
+          onClick={busy ? onCancel : submit}
+          title={busy ? 'Interrompe o turno atual e limpa a fila desta conversa' : 'Envia a mensagem ao agente'}
         >
-          ENVIAR
+          {busy ? 'PARAR' : 'ENVIAR'}
         </button>
       </div>
     </div>

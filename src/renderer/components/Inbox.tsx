@@ -51,6 +51,7 @@ export interface InboxViewProps {
   onOpenThread?: (threadId: string) => void;
   onNewThread?: (agentId: string) => void;
   onSendToAgent?: (text: string) => void;
+  onCancelAgent?: (threadId: string) => void;
 }
 
 /** Total unread agent replies across every thread — the CONVERSAS tab counter. */
@@ -87,6 +88,7 @@ export function InboxView({
   onOpenThread,
   onNewThread,
   onSendToAgent,
+  onCancelAgent,
 }: InboxViewProps) {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [reply, setReply] = useState('');
@@ -102,7 +104,9 @@ export function InboxView({
   // passes none of it) — fail-closed: no handlers, no tab strip, no behaviour change.
   // Bundled into one object so the branch below narrows without non-null assertions.
   const chat =
-    onOpenThread && onNewThread && onSendToAgent ? { onOpenThread, onNewThread, onSendToAgent } : null;
+    onOpenThread && onNewThread && onSendToAgent && onCancelAgent
+      ? { onOpenThread, onNewThread, onSendToAgent, onCancelAgent }
+      : null;
   const openThread = (threads ?? []).find((t) => t.id === openThreadId) ?? null;
   const openAgentId = openThreadAgentId(openThreadId, threads ?? []);
   const openAgent = (agents ?? []).find((a) => a.id === openAgentId);
@@ -185,6 +189,9 @@ export function InboxView({
             messages={threadMessages ?? []}
             streaming={threadStreaming ?? ''}
             onSend={chat.onSendToAgent}
+            onCancel={() => {
+              if (openThread) chat.onCancelAgent(openThread.id);
+            }}
           />
         </div>
       </div>

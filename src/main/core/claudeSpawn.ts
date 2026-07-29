@@ -29,6 +29,11 @@ const TIMEOUT_MS = ((): number => {
   const n = Number(process.env.ALFRED_CHILD_TIMEOUT_MS);
   return Number.isFinite(n) && n > 0 ? Math.floor(n) : 60 * 60_000;
 })();
+export function resolveChildIdleTimeout(env: NodeJS.ProcessEnv): number {
+  const n = Number(env.ALFRED_CHILD_IDLE_TIMEOUT_MS);
+  return Number.isFinite(n) && n >= 0 ? Math.floor(n) : 10 * 60_000;
+}
+const IDLE_TIMEOUT_MS = resolveChildIdleTimeout(process.env);
 const MAX_STDOUT = 16 * 1024 * 1024;
 
 /**
@@ -181,12 +186,25 @@ export function spawnClaudeCli(
     let lineBuffer = '';
     let streamState: ClaudeCliStreamState = {};
     let settled = false;
+    let idleTimer: ReturnType<typeof setTimeout> | null = null;
+    let idleTimedOut = false;
 
     const finish = (result: ClaudeCliResult): void => {
       if (settled) return;
       settled = true;
+      if (idleTimer) clearTimeout(idleTimer);
       opts.signal?.removeEventListener('abort', onAbort);
       resolve({ ...result, ...streamState });
+    };
+
+    const armIdleWatchdog = (): void => {
+      if (idleTimer) clearTimeout(idleTimer);
+      if (!IDLE_TIMEOUT_MS) return;
+      idleTimer = setTimeout(() => {
+        idleTimedOut = true;
+        child.kill('SIGKILL');
+      }, IDLE_TIMEOUT_MS);
+      idleTimer.unref?.();
     };
 
     const consumeLine = (line: string): void => {
@@ -212,6 +230,7 @@ export function spawnClaudeCli(
     };
 
     child.stdout.on('data', (d: Buffer) => {
+      armIdleWatchdog();
       bytes += d.length;
       if (bytes <= MAX_STDOUT) {
         const chunk = d.toString();
@@ -228,6 +247,7 @@ export function spawnClaudeCli(
       }
     });
     child.stderr.on('data', (d: Buffer) => {
+      armIdleWatchdog();
       stderr += d.toString();
     });
 
@@ -237,7 +257,16 @@ export function spawnClaudeCli(
     // code null ⇒ killed by a signal (timeout / maxBuffer / abort) ⇒ failure.
     child.on('close', (code) => {
       consumeLine(lineBuffer);
-      finish({ stdout, stderr, code: code == null ? 1 : code, enoent: false });
+      const detail = idleTimedOut
+        ? `Claude CLI produced no activity for ${Math.round(IDLE_TIMEOUT_MS / 1000)}s and was stopped.`
+        : '';
+      finish({
+        stdout,
+        stderr: [stderr.trim(), detail].filter(Boolean).join('\n'),
+        code: code == null ? 1 : code,
+        enoent: false,
+      });
     });
+    armIdleWatchdog();
   });
 }

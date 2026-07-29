@@ -165,6 +165,8 @@ import { enqueueTurnItem, coalesceTurnItems, type TurnItem } from './turn-queue-
 import { isValidMessageId, type ThreadInfo, type ThreadMessage, type UserMsgStatus } from './thread-pure.ts';
 import {
   sendUserMessage,
+  cancelThread,
+  cancelAllThreads,
   listThreads as listThreadsDb,
   listThreadMessages as listThreadMessagesDb,
   markThreadRead as markThreadReadDb,
@@ -985,6 +987,8 @@ export interface OrchestratorHandle {
    * agent's grant, its role blocklist, both budgets and normal approvals.
    */
   messageAgent(agentId: string, text: string, messageId?: string): Promise<SendUserMessageResult>;
+  /** Stop the running batch and discard queued messages for one direct thread. */
+  cancelAgentThread(threadId: string): boolean;
   /** Every thread with its last message + unread count, newest activity first. */
   listThreads(): ThreadInfo[];
   /** One thread's transcript, oldest→newest. */
@@ -1781,6 +1785,7 @@ export function createOrchestrator(opts: CreateOrchestratorOpts): OrchestratorHa
     stop() {
       activeAbort?.(); // abort the live turn — AI-SDK stream OR the claude -p child
       dropPendingTurns(); // pending turns are dropped (+ marked) — a kill switch means stop, not "finish the queue"
+      cancelAllThreads({ db, ctx, emit });
       tts.stop();
       // Kill switch also silences every mic owner — no audio capture after an
       // emergency stop. wakeSuppressed keeps wake from auto-restarting on the
@@ -2442,6 +2447,9 @@ export function createOrchestrator(opts: CreateOrchestratorOpts): OrchestratorHa
       // ctx is the orchestrator's own governed ToolCtx (delegationDepth 0) — that is
       // what makes the turn ATTENDED, so approvals reach the user's UI.
       return sendUserMessage({ db, ctx, emit }, agentId, text, messageId);
+    },
+    cancelAgentThread(threadId) {
+      return cancelThread({ db, ctx, emit }, threadId);
     },
     listThreads() {
       return listThreadsDb(db);

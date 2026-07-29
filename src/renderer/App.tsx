@@ -658,6 +658,13 @@ export default function App() {
       });
   };
 
+  const cancelAgent = (threadId: string) => {
+    setThreadStreaming('');
+    alfred.cancelAgentThread(threadId).catch((err) => {
+      pushLog({ tag: 'CONVERSA', tone: 'red', msg: err instanceof Error ? err.message : String(err) });
+    });
+  };
+
   const refreshJobs = () => {
     alfred.listJobs().then(setJobs).catch(() => {});
   };
@@ -2060,6 +2067,7 @@ export default function App() {
           onOpenThread={openThread}
           onNewThread={newThread}
           onSendToAgent={sendToAgent}
+          onCancelAgent={cancelAgent}
           onClose={() => setInboxOpen(false)}
         />
       )}
