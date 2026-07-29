@@ -1,6 +1,5 @@
 import { execFile } from 'node:child_process';
 import path from 'node:path';
-import { denialError } from '../core/governance.ts';
 import { scrubbedEnv } from '../core/env-scoping-pure.ts';
 import type { Tool } from './types.ts';
 
@@ -19,27 +18,6 @@ interface Args {
   command: string;
   cwd?: string;
   timeoutMs?: number;
-}
-
-/**
- * Heuristic detector for irreversible / destructive shell commands.
- * ponytail: regex heuristic, not a real parser. Errs toward asking. Upgrade to a
- * shell-lexer allowlist if false-positives get annoying.
- */
-const DESTRUCTIVE =
-  /(\brm\b|\bmkfs\b|\bdd\b|\bshutdown\b|\breboot\b|\bkillall\b|\bkill\s+-9\b|>\s*\/dev\/|\bsudo\b|\bchmod\s+-R\b|\bchown\s+-R\b|\bgit\s+.*\b(reset\s+--hard|clean\s+-[a-z]*f|push\s+.*--force)|:\(\)\s*\{|\bnpm\s+publish\b|\bmv\s+.*\s+\/)/i;
-
-/**
- * Package-manager mutations (installs/removals) are egress + supply-chain risk →
- * T2 per the documented policy (AGENTS.md: "installs need approval"). Kept as a
- * separate clause (mirrors core/governance.isDestructiveShell) so the shell tool
- * gates them even though its own risk() overrides the generic classifier.
- */
-const PACKAGE_MUTATION =
-  /\b(npm|pnpm|yarn|pip|pip3|brew|apt|apt-get|gem|cargo|go)\b[\s\S]*\b(install|add|remove|uninstall)\b/i;
-
-function isDestructive(cmd: string): boolean {
-  return DESTRUCTIVE.test(cmd) || PACKAGE_MUTATION.test(cmd);
 }
 
 function run(
@@ -74,7 +52,7 @@ export const shell: Tool<Args> = {
   name: 'shell',
   description:
     'Run a shell command on the Mac (via /bin/sh -c) with a timeout and captured output. ' +
-    'Destructive commands (rm -rf, dd, sudo, git reset --hard, ...) require human approval first.',
+    'Shell commands require host approval in normal mode; dangerous mode executes them directly.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -85,22 +63,13 @@ export const shell: Tool<Args> = {
     required: ['command'],
   },
 
-  risk: (a) => (isDestructive(a.command) ? 'T2' : 'T1'),
+  // `/bin/sh -c` can hide arbitrary effects behind aliases, scripts, expansion,
+  // pipes and substitutions. Static regexes cannot prove a command reversible.
+  risk: () => 'T2',
 
   async execute(a, ctx) {
     const cwd = a.cwd ? (path.isAbsolute(a.cwd) ? a.cwd : path.resolve(ctx.workspace, a.cwd)) : ctx.workspace;
     const timeoutMs = a.timeoutMs && a.timeoutMs > 0 ? a.timeoutMs : 60_000;
-
-    if (isDestructive(a.command)) {
-      const res = await ctx.governance.requestApproval({
-        sessionId: ctx.sessionId,
-        toolName: this.name,
-        args: { command: a.command, cwd },
-        tier: 'T2',
-        reason: `Run destructive command: ${a.command}`,
-      });
-      if (res.decision !== 'approve') return { ok: false, error: denialError(res) };
-    }
 
     const out = await run(a.command, cwd, timeoutMs);
     if (out.timedOut) return { ok: false, error: `Timed out after ${timeoutMs}ms`, result: out };

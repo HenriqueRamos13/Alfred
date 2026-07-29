@@ -1168,13 +1168,9 @@ test('parseDisplays — resolution + main flag, never throws on garbage', () => 
 
 // ── tool risk() gates — the authoritative per-tool classifier (overrides classifyAction) ──
 
-test('shell.risk — destructive commands escalate to T2, ordinary ones stay T1', () => {
+test('shell.risk — every /bin/sh command is T2 because effects cannot be proven statically', () => {
   const risk = (command: string) => shell.risk!({ command } as never);
-  // reversible / read-only work
-  for (const c of ['ls -la', 'git status --porcelain', 'echo hi > out.txt', 'cat file', 'node build.js'])
-    assert.equal(risk(c), 'T1', `${c} should be T1`);
-  // destructive / irreversible
-  for (const c of ['rm -rf /tmp/x', 'sudo reboot', 'dd if=/dev/zero of=/dev/sda', 'git reset --hard HEAD~3', 'git push origin main --force', 'chmod -R 777 /'])
+  for (const c of ['ls -la', 'git status --porcelain', 'echo hi > out.txt', 'cat file', 'node build.js', 'rm -rf /tmp/x', 'sudo reboot'])
     assert.equal(risk(c), 'T2', `${c} should be T2`);
 });
 
@@ -1182,9 +1178,9 @@ test('shell.risk — package-manager installs/removals are T2 (supply-chain egre
   const risk = (command: string) => shell.risk!({ command } as never);
   for (const c of ['npm install left-pad', 'pnpm add react', 'yarn add -D vitest', 'pip install requests', 'pip3 install numpy', 'brew install jq', 'apt-get install curl', 'gem install rails', 'cargo add serde', 'go install ./...', 'npm uninstall foo', 'brew remove wget'])
     assert.equal(risk(c), 'T2', `${c} should be T2`);
-  // non-mutating package-manager reads stay T1
+  // Even read/build subcommands remain T2 because they still run through a shell.
   for (const c of ['npm run build', 'npm test', 'brew list', 'pip list', 'cargo build'])
-    assert.equal(risk(c), 'T1', `${c} should be T1`);
+    assert.equal(risk(c), 'T2', `${c} should be T2`);
 });
 
 test('filesystem.risk — read/list T0, mkdir/write T1, delete T2', () => {
