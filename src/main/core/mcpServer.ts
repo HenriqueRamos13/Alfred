@@ -23,7 +23,14 @@ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/
 import { CallToolRequestSchema, ListToolsRequestSchema, isInitializeRequest } from '@modelcontextprotocol/sdk/types.js';
 import type { Tool, ToolCtx } from './types.ts';
 import { runGovernedTool } from './governance.ts';
-import { MCP_SERVER_NAME, setActiveMcpBridge, toMcpTools, type McpEndpoint } from './mcpConfig.ts';
+import {
+  declaredMcpBodyTooLarge,
+  MCP_REQUEST_BODY_MAX_BYTES,
+  MCP_SERVER_NAME,
+  setActiveMcpBridge,
+  toMcpTools,
+  type McpEndpoint,
+} from './mcpConfig.ts';
 
 export interface McpBridgeHandle {
   endpoint: McpEndpoint;
@@ -39,16 +46,36 @@ function bearerOk(header: string | string[] | undefined, token: string): boolean
   return a.length === b.length && timingSafeEqual(a, b);
 }
 
-/** Read and JSON-parse a request body (undefined when empty/invalid). */
+class McpHttpError extends Error {
+  readonly status: number;
+
+  constructor(status: number, message: string) {
+    super(message);
+    this.status = status;
+  }
+}
+
+/** Read one JSON body with a hard memory bound. */
 async function readBody(req: IncomingMessage): Promise<unknown> {
+  if (declaredMcpBodyTooLarge(req.headers['content-length'])) {
+    throw new McpHttpError(413, `MCP request body exceeds ${MCP_REQUEST_BODY_MAX_BYTES} bytes`);
+  }
   const chunks: Buffer[] = [];
-  for await (const c of req) chunks.push(c as Buffer);
+  let size = 0;
+  for await (const chunk of req) {
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    size += buffer.length;
+    if (size > MCP_REQUEST_BODY_MAX_BYTES) {
+      throw new McpHttpError(413, `MCP request body exceeds ${MCP_REQUEST_BODY_MAX_BYTES} bytes`);
+    }
+    chunks.push(buffer);
+  }
   const raw = Buffer.concat(chunks).toString('utf8');
-  if (!raw) return undefined;
+  if (!raw) throw new McpHttpError(400, 'MCP POST body is required');
   try {
     return JSON.parse(raw);
   } catch {
-    return undefined;
+    throw new McpHttpError(400, 'MCP request body is not valid JSON');
   }
 }
 
@@ -97,14 +124,16 @@ export async function startMcpBridge(tools: Tool[], ctx: ToolCtx): Promise<McpBr
       const sid = httpReq.headers['mcp-session-id'];
       const sessionId = Array.isArray(sid) ? sid[0] : sid;
       const existing = sessionId ? transports.get(sessionId) : undefined;
+      // Parse every POST once before selecting a transport. Passing the parsed
+      // body to the SDK applies the same limit to initialized sessions too.
+      const body = httpReq.method === 'POST' ? await readBody(httpReq) : undefined;
 
       if (existing) {
-        await existing.handleRequest(httpReq, httpRes);
+        await existing.handleRequest(httpReq, httpRes, body);
         return;
       }
 
       // No session yet: only a POST carrying an `initialize` request may open one.
-      const body = httpReq.method === 'POST' ? await readBody(httpReq) : undefined;
       if (!isInitializeRequest(body)) {
         httpRes.writeHead(400, { 'content-type': 'application/json' });
         httpRes.end(JSON.stringify({ jsonrpc: '2.0', id: null, error: { code: -32000, message: 'No valid session' } }));
@@ -126,6 +155,13 @@ export async function startMcpBridge(tools: Tool[], ctx: ToolCtx): Promise<McpBr
 
     const http = createServer((req, res) => {
       handle(req, res).catch((err) => {
+        if (err instanceof McpHttpError) {
+          if (!res.headersSent) {
+            res.writeHead(err.status, { 'content-type': 'application/json', connection: 'close' });
+          }
+          res.end(JSON.stringify({ error: err.message }));
+          return;
+        }
         console.error('[alfred] MCP request failed:', err instanceof Error ? err.message : err);
         if (!res.headersSent) res.writeHead(500);
         res.end();

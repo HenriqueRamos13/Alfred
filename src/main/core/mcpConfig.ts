@@ -11,6 +11,15 @@ import type { JSONSchema, Tool } from './types.ts';
 
 /** Server name Claude Code namespaces our tools under: `mcp__alfred__<tool>`. */
 export const MCP_SERVER_NAME = 'alfred';
+export const MCP_REQUEST_BODY_MAX_BYTES = 1024 * 1024;
+
+/** Strict Content-Length check used before buffering an MCP POST body. */
+export function declaredMcpBodyTooLarge(value: string | string[] | undefined): boolean {
+  const raw = Array.isArray(value) ? value[0] : value;
+  if (raw === undefined) return false;
+  if (!/^\d+$/.test(raw.trim())) return true;
+  return Number(raw) > MCP_REQUEST_BODY_MAX_BYTES;
+}
 
 export interface McpEndpoint {
   url: string;

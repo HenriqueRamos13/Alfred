@@ -214,6 +214,8 @@ import {
   buildAllowedTools,
   bridgeEnabled,
   mcpCliArgs,
+  declaredMcpBodyTooLarge,
+  MCP_REQUEST_BODY_MAX_BYTES,
 } from '../src/main/core/mcpConfig.ts';
 import {
   modelSupportsVision,
@@ -1359,6 +1361,14 @@ test('Gmail OAuth callback — requires matching state and accepts one code shap
     error: 'access_denied',
   });
   assert.deepEqual(classifyOAuthCallback('/?code=abc&state=nonce', 'nonce'), { kind: 'code', code: 'abc' });
+});
+
+test('MCP body limit — rejects oversized and malformed Content-Length values', () => {
+  assert.equal(declaredMcpBodyTooLarge(undefined), false);
+  assert.equal(declaredMcpBodyTooLarge(String(MCP_REQUEST_BODY_MAX_BYTES)), false);
+  assert.equal(declaredMcpBodyTooLarge(String(MCP_REQUEST_BODY_MAX_BYTES + 1)), true);
+  assert.equal(declaredMcpBodyTooLarge('-1'), true);
+  assert.equal(declaredMcpBodyTooLarge('not-a-number'), true);
 });
 
 // ── stt/wakeword shared protocol reader (line-delimited JSON) ─────────────────
