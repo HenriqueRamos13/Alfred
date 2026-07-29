@@ -7,6 +7,7 @@ import Database from 'better-sqlite3';
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { isUserMsgStatus, statusTransition, type UserMsgStatus } from './thread-pure.ts';
+import { markTurnMetricStatus } from './turn-metrics.ts';
 
 export type AlfredDb = Database.Database;
 
@@ -95,6 +96,32 @@ CREATE TABLE IF NOT EXISTS messages (
   status      TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, ts);
+
+-- Per-turn latency telemetry. Timestamps are stored instead of derived durations
+-- so queue/context/TTFT/total can be recomputed and audited independently.
+CREATE TABLE IF NOT EXISTS turn_metrics (
+  message_id       TEXT PRIMARY KEY,
+  scope            TEXT NOT NULL,              -- main | thread
+  target_id        TEXT NOT NULL,              -- session id | thread id
+  provider         TEXT,
+  model            TEXT,
+  queued_ts        INTEGER NOT NULL,
+  started_ts       INTEGER,
+  context_ready_ts INTEGER,
+  first_token_ts   INTEGER,
+  done_ts          INTEGER,
+  status           TEXT NOT NULL DEFAULT 'queued'
+);
+CREATE INDEX IF NOT EXISTS idx_turn_metrics_scope ON turn_metrics(scope, queued_ts);
+CREATE VIEW IF NOT EXISTS turn_latency AS
+SELECT message_id, scope, target_id, provider, model, status, queued_ts,
+       CASE WHEN started_ts IS NULL THEN NULL ELSE MAX(0, started_ts - queued_ts) END AS queue_ms,
+       CASE WHEN context_ready_ts IS NULL OR started_ts IS NULL THEN NULL
+            ELSE MAX(0, context_ready_ts - started_ts) END AS context_ms,
+       CASE WHEN first_token_ts IS NULL OR started_ts IS NULL THEN NULL
+            ELSE MAX(0, first_token_ts - started_ts) END AS ttft_ms,
+       CASE WHEN done_ts IS NULL THEN NULL ELSE MAX(0, done_ts - queued_ts) END AS total_ms
+  FROM turn_metrics;
 
 -- Full-text search over the transcript (Phase 6 stage 4): zero-LLM "what did we
 -- say weeks ago" recall. Standalone FTS5 (not external-content) so the schema is
@@ -476,5 +503,6 @@ export function setMessageStatus(db: AlfredDb, id: string, status: UserMsgStatus
     }
   }
   db.prepare('UPDATE messages SET status = ? WHERE id = ?').run(status, id);
+  markTurnMetricStatus(db, [id], status);
   return true;
 }

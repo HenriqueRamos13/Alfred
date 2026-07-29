@@ -184,6 +184,8 @@ export interface RosterRunOpts {
   onDelta?: (text: string) => void;
   /** Optional hard interrupt propagated to the selected provider. */
   signal?: AbortSignal;
+  /** Fires after project/team/knowledge context has been assembled. */
+  onContextReady?: () => void;
 }
 
 /**
@@ -248,6 +250,7 @@ export async function runRosterAgentAttended(
     // through here) — so the agent knows its projects instead of answering "none".
     const memberships = await projectsForAgent(ctx.db, ctx.workspace, agent.id).catch(() => undefined);
     const context = await loadAgentContext(ctx.workspace, agent, project, memberships);
+    opts?.onContextReady?.();
 
     // A NESTED spawn (this call itself runs inside a delegated child, depth ≥ 1)
     // is UNATTENDED — no human watches a fan-out — so the child runs FAIL-CLOSED

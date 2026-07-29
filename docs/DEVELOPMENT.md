@@ -81,6 +81,9 @@ Full recipes with exact wiring live in
 
 ## Conventions (enforced)
 
+Turn latency is persisted in `turn_metrics`; query the `turn_latency` view for
+`queue_ms`, `context_ms`, `ttft_ms`, and `total_ms` by provider/model.
+
 - **ESM, explicit `.ts` extensions** on relative imports. Conventional Commits;
   English for code/identifiers/commits.
 - **Renderer never imports `node:*` / `electron` / `better-sqlite3`** (see gate 2).

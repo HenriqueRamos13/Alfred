@@ -20,6 +20,7 @@ import {
   denialError,
 } from '../src/main/core/governance.ts';
 import { readJsonLines } from '../src/main/core/stt.ts';
+import { turnMetricDurations } from '../src/main/core/turn-metrics.ts';
 import {
   classifyWakeExit,
   WAKE_MAX_FAST_FAILS,
@@ -5541,6 +5542,25 @@ test('claudeSpawn — idle watchdog defaults to 10 min, supports override and di
   assert.equal(resolveChildIdleTimeout({ ALFRED_CHILD_IDLE_TIMEOUT_MS: '12345.9' }), 12_345);
   assert.equal(resolveChildIdleTimeout({ ALFRED_CHILD_IDLE_TIMEOUT_MS: '0' }), 0);
   assert.equal(resolveChildIdleTimeout({ ALFRED_CHILD_IDLE_TIMEOUT_MS: '-1' }), 10 * 60_000);
+});
+
+test('turn metrics — derives queue, context, TTFT and total without negative durations', () => {
+  assert.deepEqual(
+    turnMetricDurations({
+      queuedTs: 100,
+      startedTs: 140,
+      contextReadyTs: 170,
+      firstTokenTs: 260,
+      doneTs: 400,
+    }),
+    { queueMs: 40, contextMs: 30, ttftMs: 120, totalMs: 300 },
+  );
+  assert.deepEqual(turnMetricDurations({ queuedTs: 100, startedTs: 90 }), {
+    queueMs: 0,
+    contextMs: undefined,
+    ttftMs: undefined,
+    totalMs: undefined,
+  });
 });
 
 test('atwork-pure — agentsAtWork filters idle, orders by precedence, missing activity = idle', () => {

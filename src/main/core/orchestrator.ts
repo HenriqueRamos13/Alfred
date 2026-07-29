@@ -118,6 +118,12 @@ import {
 import type { AgentConfig, AgentConfigMap, AgentId, ProviderId, CatalogModel } from './modelCatalog.ts';
 import { getSetting, setSetting, insertMessage, getRecentMessages, setMessageStatus } from './db.ts';
 import {
+  createTurnMetric,
+  startTurnMetrics,
+  markTurnMetricsContextReady,
+  markTurnMetricsFirstToken,
+} from './turn-metrics.ts';
+import {
   JobScheduler,
   listJobs,
   listPendingApprovals,
@@ -284,6 +290,8 @@ export interface OrchestratorDeps {
   projectContext?: string;
   /** Cap on model output tokens per turn. */
   maxTokens?: number;
+  onContextReady?: () => void;
+  onFirstToken?: () => void;
 }
 
 export class Orchestrator {
@@ -325,10 +333,12 @@ export class Orchestrator {
     this.controller = new AbortController();
     ctx.emit({ kind: 'agent.status', sessionId: ctx.sessionId, status: 'thinking' });
     const system = await this.buildSystem();
+    this.deps.onContextReady?.();
 
     ctx.emit({ kind: 'agent.status', sessionId: ctx.sessionId, status: 'thinking' });
 
     let assistantText = '';
+    let sawFirstToken = false;
     try {
       const result = streamText({
         model: this.deps.model,
@@ -384,6 +394,10 @@ export class Orchestrator {
             ctx.emit({ kind: 'agent.status', sessionId: ctx.sessionId, status: 'thinking' });
             break;
           case 'text-delta':
+            if (!sawFirstToken) {
+              sawFirstToken = true;
+              this.deps.onFirstToken?.();
+            }
             assistantText += part.text;
             ctx.emit({ kind: 'chat.delta', sessionId: ctx.sessionId, text: part.text });
             break;
@@ -1480,7 +1494,12 @@ export function createOrchestrator(opts: CreateOrchestratorOpts): OrchestratorHa
    * Claude Code drives its own tools; no Alfred tools, no per-turn HITL. Cost is
    * external (subscription), so the COST panel is flagged external, not estimated.
    */
-  async function runClaudeTurn(text: string, model?: string, signal?: AbortSignal): Promise<void> {
+  async function runClaudeTurn(
+    text: string,
+    model?: string,
+    signal?: AbortSignal,
+    metricIds: readonly string[] = [],
+  ): Promise<void> {
     emit({ kind: 'agent.status', sessionId, status: 'thinking' });
     // claude -p reads the CLAUDE.md of its cwd (the workspace) automatically —
     // seed it with Alfred's identity so the vanilla CLI knows it's Alfred.
@@ -1504,6 +1523,8 @@ export function createOrchestrator(opts: CreateOrchestratorOpts): OrchestratorHa
     // --append-system-prompt weighs heavily — parity with the AI-SDK buildSystem path.
     const langDirective = languageDirective(resolveLanguage(getSetting(db, 'language'), process.env.ALFRED_LANGUAGE));
     emit({ kind: 'agent.status', sessionId, status: 'thinking' });
+    markTurnMetricsContextReady(db, metricIds);
+    let sawFirstToken = false;
     const turn = await spawnClaudeConversation(
       prompt,
       config.workspace,
@@ -1512,7 +1533,13 @@ export function createOrchestrator(opts: CreateOrchestratorOpts): OrchestratorHa
       model,
       signal,
       langDirective,
-      (delta) => emit({ kind: 'chat.delta', sessionId, text: delta }),
+      (delta) => {
+        if (!sawFirstToken) {
+          sawFirstToken = true;
+          markTurnMetricsFirstToken(db, metricIds);
+        }
+        emit({ kind: 'chat.delta', sessionId, text: delta });
+      },
     );
 
     // User kill/reset: the child was SIGKILLed → clean halt, not a red error
@@ -1559,7 +1586,7 @@ export function createOrchestrator(opts: CreateOrchestratorOpts): OrchestratorHa
   // (defined above) can call it.
   // One drained turn: the body of the old send(). resetTrifecta lives HERE, at
   // the start of every turn — a per-turn reset, never mid-turn from a sibling.
-  async function runTurn(text: string): Promise<void> {
+  async function runTurn(text: string, metricIds: readonly string[]): Promise<void> {
       gov.resetTrifecta();
       try {
         const main = getAgentConfig().main;
@@ -1580,7 +1607,7 @@ export function createOrchestrator(opts: CreateOrchestratorOpts): OrchestratorHa
           }
           const ac = new AbortController();
           activeAbort = () => ac.abort();
-          await runClaudeTurn(text, main.model, ac.signal);
+          await runClaudeTurn(text, main.model, ac.signal, metricIds);
           return;
         }
 
@@ -1622,6 +1649,8 @@ export function createOrchestrator(opts: CreateOrchestratorOpts): OrchestratorHa
           modelId: provider.model,
           brainLabel: `${provider.id}:${provider.model}`,
           projectContext: await projectContext(text),
+          onContextReady: () => markTurnMetricsContextReady(db, metricIds),
+          onFirstToken: () => markTurnMetricsFirstToken(db, metricIds),
         });
         activeAbort = () => active?.abort();
         await active.run(text);
@@ -1649,8 +1678,10 @@ export function createOrchestrator(opts: CreateOrchestratorOpts): OrchestratorHa
     // 'queued' is the bottom of the shared ladder (thread-pure.ts).
     if (text.trim()) {
       const id = isValidMessageId(messageId) ? messageId : randomUUID();
+      const queuedTs = Date.now();
       try {
-        insertMessage(db, { id, sessionId, role: 'user', content: text, ts: Date.now(), status: 'queued' });
+        insertMessage(db, { id, sessionId, role: 'user', content: text, ts: queuedTs, status: 'queued' });
+        createTurnMetric(db, { messageId: id, scope: 'main', targetId: sessionId, queuedTs });
       } catch (err) {
         console.error('[alfred] persist user message failed:', err instanceof Error ? err.message : err);
       }
@@ -1683,8 +1714,10 @@ export function createOrchestrator(opts: CreateOrchestratorOpts): OrchestratorHa
         for (const item of batch) if (!ids.includes(item.id)) markTurn(item.id, 'dropped');
         if (!combined) continue;
         for (const id of ids) markTurn(id, 'executing');
+        const main = getAgentConfig().main;
+        startTurnMetrics(db, ids, main.provider, main.model);
         try {
-          await runTurn(combined);
+          await runTurn(combined, ids);
           for (const id of ids) markTurn(id, 'done');
         } catch (err) {
           const error = err instanceof Error ? err.message : String(err);

@@ -31,6 +31,13 @@ import {
   type UserMsgStatus,
 } from './thread-pure.ts';
 import { enqueueTurnItem, coalesceTurnItems, type TurnItem } from './turn-queue-pure.ts';
+import {
+  createTurnMetric,
+  startTurnMetrics,
+  markTurnMetricsContextReady,
+  markTurnMetricsFirstToken,
+  markTurnMetricStatus,
+} from './turn-metrics.ts';
 import { getAgent } from './team.ts';
 // core→tools import (precedent: jobs.ts importing runStudy) — the ATTENDED roster
 // runner is a tool-layer concern (spawn gate + provider branch) that both the
@@ -189,6 +196,7 @@ export function insertUserThreadMessage(db: DB, threadId: string, body: string, 
        (id, thread_id, author, body, status, error, created_ts, read_ts, started_ts, done_ts)
      VALUES (?, ?, 'user', ?, 'queued', NULL, ?, NULL, NULL, NULL)`,
   ).run(mid, threadId, body, now);
+  createTurnMetric(db, { messageId: mid, scope: 'thread', targetId: threadId, queuedTs: now });
   touchThread(db, threadId, now);
   return getThreadMessage(db, mid)!;
 }
@@ -240,6 +248,7 @@ function applyStatus(db: DB, ids: readonly string[], next: UserMsgStatus, errorT
   const now = Date.now();
   const sel = db.prepare('SELECT * FROM agent_thread_messages WHERE id = ?');
   const threads = new Set<string>();
+  const movedIds: string[] = [];
   let moved = 0;
   for (const id of ids) {
     const row = sel.get(id) as MessageRow | undefined;
@@ -270,9 +279,11 @@ function applyStatus(db: DB, ids: readonly string[], next: UserMsgStatus, errorT
       db.prepare('UPDATE agent_thread_messages SET status = ? WHERE id = ?').run(next, id);
     }
     threads.add(row.thread_id);
+    movedIds.push(id);
     moved++;
   }
   for (const threadId of threads) touchThread(db, threadId, now);
+  markTurnMetricStatus(db, movedIds, next, now);
   return moved;
 }
 
@@ -550,9 +561,18 @@ async function drainThread(deps: ThreadDeps, agentId: string, threadId: string, 
         for (const id of ids) emitStatus(deps, id, 'read');
         markExecuting(deps.db, ids);
         for (const id of ids) emitStatus(deps, id, 'executing');
+        startTurnMetrics(deps.db, ids, agent.provider, agent.model);
+        let sawFirstToken = false;
 
         const res = await runRosterAgentAttended(deps.ctx, agent, prompt, {
-          onDelta: (t) => deps.emit({ kind: 'agent.chat.delta', threadId, text: t }),
+          onContextReady: () => markTurnMetricsContextReady(deps.db, ids),
+          onDelta: (t) => {
+            if (!sawFirstToken) {
+              sawFirstToken = true;
+              markTurnMetricsFirstToken(deps.db, ids);
+            }
+            deps.emit({ kind: 'agent.chat.delta', threadId, text: t });
+          },
           signal: controller.signal,
         });
 
